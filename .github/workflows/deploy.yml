@@ -30,13 +30,12 @@ jobs:
       - name: Rsync code
         run: |
           rsync -avz --delete \
-            --exclude '.git' \
+            --exclude '/.git' \
             --exclude 'node_modules' \
-            --exclude '.next' \
-            --exclude 'storage' \
-            --exclude '.env' \
-            --exclude 'whatsapp-worker/node_modules' \
-            --exclude 'whatsapp-worker/sessions' \
+            --exclude '/.next' \
+            --exclude '/storage' \
+            --exclude '/.env' \
+            --exclude '/whatsapp-worker/sessions' \
             -e "ssh -i ~/.ssh/id_ed25519" \
             ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/home/igorcrm/azcrm/
 
