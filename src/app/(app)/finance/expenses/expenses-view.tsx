@@ -1,7 +1,7 @@
 'use client';
 
 // Расходы Анны: список + добавление + сводки по городам/категориям.
-// Поддерживается прикрепление скана файла (использует /api/files/upload-generic).
+// Поддерживается прикрепление скана файла (использует /api/files/upload).
 import { useState, useTransition, useRef } from 'react';
 import { Plus, Trash2, Paperclip, Save, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
