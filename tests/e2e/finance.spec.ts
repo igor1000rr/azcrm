@@ -22,9 +22,14 @@ test.describe('Финансы (только ADMIN)', () => {
     await expect(adminPage.getByText(/расход|город/i).first()).toBeVisible();
   });
 
-  test('экспорт лидов /api/leads/export → 401 без сессии', async ({ page }) => {
-    const res = await page.request.get('/api/leads/export', { failOnStatusCode: false });
-    // requireAdmin throw → next вернёт ошибку или редирект на /login
-    expect([401, 403, 302, 307, 500]).toContain(res.status());
+  test('экспорт лидов /api/leads/export → защищён без сессии', async ({ page }) => {
+    // Без сессии middleware редиректит на /login, либо requireAdmin кидает 401/500.
+    // maxRedirects: 0 — чтобы Playwright не следовал за редиректом и мы видели реальный статус.
+    const res = await page.request.get('/api/leads/export', {
+      failOnStatusCode: false,
+      maxRedirects: 0,
+    });
+    // Допустимые: редирект middleware на /login (302/303/307) или ошибка авторизации
+    expect([401, 403, 302, 303, 307, 500]).toContain(res.status());
   });
 });
