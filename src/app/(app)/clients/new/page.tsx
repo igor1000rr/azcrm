@@ -24,7 +24,7 @@ export default async function NewLeadPage({ searchParams }: PageProps) {
   const params = await searchParams;
 
   // Подгружаем справочники
-  const [funnels, cities, team, waAccounts, existingClient] = await Promise.all([
+  const [funnels, cities, team, waAccounts, services, existingClient] = await Promise.all([
     db.funnel.findMany({
       where: { isActive: true },
       orderBy: { position: 'asc' },
@@ -45,6 +45,11 @@ export default async function NewLeadPage({ searchParams }: PageProps) {
       where: { isActive: true, ...whatsappAccountFilter(user) },
       select: { id: true, label: true, phoneNumber: true },
       orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
+    }),
+    db.service.findMany({
+      where: { isActive: true },
+      orderBy: [{ position: 'asc' }, { name: 'asc' }],
+      select: { id: true, name: true, basePrice: true, funnelId: true },
     }),
     params.clientId
       ? db.client.findUnique({
@@ -82,6 +87,9 @@ export default async function NewLeadPage({ searchParams }: PageProps) {
           cities={cities}
           team={team}
           waAccounts={waAccounts}
+          services={services.map((s) => ({
+            id: s.id, name: s.name, basePrice: Number(s.basePrice), funnelId: s.funnelId,
+          }))}
           defaults={{
             funnelId: params.funnel ?? funnels[0].id,
             stageId:  params.stage,

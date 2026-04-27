@@ -18,6 +18,7 @@ interface NewLeadFormProps {
   cities: Array<{ id: string; name: string }>;
   team: Array<{ id: string; name: string; email: string; role: UserRole }>;
   waAccounts: Array<{ id: string; label: string; phoneNumber: string }>;
+  services?: Array<{ id: string; name: string; basePrice: number; funnelId: string | null }>;
   defaults: {
     funnelId: string;
     stageId?: string;
@@ -37,7 +38,7 @@ interface NewLeadFormProps {
 }
 
 export function NewLeadForm({
-  currentUser, funnels, cities, team, waAccounts, defaults, existingClient,
+  currentUser, funnels, cities, team, waAccounts, services = [], defaults, existingClient,
 }: NewLeadFormProps) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -58,20 +59,35 @@ export function NewLeadForm({
   const [stageId,        setStageId]        = useState(defaults.stageId ?? '');
   const [cityId,         setCityId]         = useState(existingClient?.cityId ?? '');
   const [waAccountId,    setWaAccountId]    = useState('');
+  const [serviceId,      setServiceId]      = useState('');
   const [salesId,        setSalesId]        = useState(currentUser.role === 'SALES' ? currentUser.id : '');
   const [legalId,        setLegalId]        = useState('');
   const [totalAmount,    setTotalAmount]    = useState('');
   const [source,         setSource]         = useState('');
+  const [sourceKind,     setSourceKind]     = useState<string>('MANUAL');
   const [summary,        setSummary]        = useState('');
 
   const currentFunnel = funnels.find((f) => f.id === funnelId);
   const stages = currentFunnel?.stages ?? [];
+  // Услуги для выбранной воронки (или все, если у услуги нет привязки)
+  const availableServices = services.filter((s) => !s.funnelId || s.funnelId === funnelId);
 
   // Если выбрали воронку — обновим этап на первый
   function onFunnelChange(id: string) {
     setFunnelId(id);
     const f = funnels.find((x) => x.id === id);
     setStageId(f?.stages[0]?.id ?? '');
+    // Сбросим услугу если она привязана к другой воронке
+    setServiceId('');
+  }
+
+  // При выборе услуги — подставляем цену (если поле пустое)
+  function onServiceChange(id: string) {
+    setServiceId(id);
+    if (id && !totalAmount) {
+      const svc = services.find((s) => s.id === id);
+      if (svc) setTotalAmount(String(svc.basePrice));
+    }
   }
 
   async function onSubmit(e: FormEvent) {
@@ -93,10 +109,12 @@ export function NewLeadForm({
         stageId:       stageId || undefined,
         cityId:        cityId || undefined,
         whatsappAccountId: waAccountId || undefined,
+        serviceId:     serviceId || undefined,
         salesManagerId: salesId || undefined,
         legalManagerId: legalId || undefined,
         totalAmount:   Number(totalAmount) || 0,
         source:        source || undefined,
+        sourceKind:    (sourceKind || 'MANUAL') as 'MANUAL',
         summary:       summary || undefined,
       });
 
@@ -197,7 +215,16 @@ export function NewLeadForm({
             </FormField>
           )}
 
-          <FormField label="Стоимость услуг (zł)">
+          <FormField label="Услуга (прайс)" hint={availableServices.length === 0 ? 'Список услуг пуст — добавьте в Финансы → Услуги' : 'Цена подставится автоматически'}>
+            <Select value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
+              <option value="">— не выбрано —</option>
+              {availableServices.map((s) => (
+                <option key={s.id} value={s.id}>{s.name} — {s.basePrice} zł</option>
+              ))}
+            </Select>
+          </FormField>
+
+          <FormField label="Стоимость услуг (zł)" hint="Можно перезаписать (скидка / индивидуальная цена)">
             <Input
               type="number"
               min="0" step="0.01"
@@ -224,8 +251,21 @@ export function NewLeadForm({
             </Select>
           </FormField>
 
-          <FormField label="Источник">
-            <Input value={source} onChange={(e) => setSource(e.target.value)} placeholder="WhatsApp, рекомендация..." />
+          <FormField label="Канал источника" hint="Используется в аналитике">
+            <Select value={sourceKind} onChange={(e) => setSourceKind(e.target.value)}>
+              <option value="MANUAL">Вручную (менеджер)</option>
+              <option value="WHATSAPP">WhatsApp</option>
+              <option value="PHONE">Телефон</option>
+              <option value="TELEGRAM">Telegram</option>
+              <option value="EMAIL">Email</option>
+              <option value="WEBSITE">Сайт</option>
+              <option value="REFERRAL">Рекомендация</option>
+              <option value="WALK_IN">Самообращение</option>
+              <option value="OTHER">Другое</option>
+            </Select>
+          </FormField>
+          <FormField label="Источник (детали)">
+            <Input value={source} onChange={(e) => setSource(e.target.value)} placeholder="Ким порекомендовал, реклама в Instagram..." />
           </FormField>
           <FormField label="Канал WhatsApp">
             <Select value={waAccountId} onChange={(e) => setWaAccountId(e.target.value)}>
