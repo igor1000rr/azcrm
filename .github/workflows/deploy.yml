@@ -48,12 +48,12 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           port: 22
           script_stop: true
-          command_timeout: 15m
+          command_timeout: 20m
           script: |
             set -e
             cd /home/igorcrm/azcrm
             npm ci
-            cd whatsapp-worker && npm ci && cd ..
+            cd whatsapp-worker && npm install --no-audit --no-fund && cd ..
             npx prisma migrate deploy
             npm run build
             pm2 reload ecosystem.config.js --update-env || pm2 start ecosystem.config.js
