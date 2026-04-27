@@ -5,15 +5,14 @@ import { useState, type DragEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Plus, AlertCircle, Calendar, CheckCircle, Trash2,
-  Clock, Edit3, X, User as UserIcon,
+  Plus, Calendar, CheckCircle, Trash2,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
 import { Input, Textarea, Select, FormField } from '@/components/ui/input';
-import { cn, formatDate, formatRelative, daysUntil } from '@/lib/utils';
+import { cn, formatDate, daysUntil } from '@/lib/utils';
 import { upsertTask, setTaskStatus, deleteTask } from './actions';
 import type { UserRole, TaskStatus, TaskPriority } from '@prisma/client';
 
