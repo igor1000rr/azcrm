@@ -9,6 +9,7 @@ import {
   Inbox, LayoutGrid, Users, Calendar, CreditCard,
   CheckSquare, Zap, BarChart3, Phone, MessageSquare,
   Settings, X, Menu, Activity, Wallet, Receipt, ListChecks, Clock,
+  Cake,
 } from 'lucide-react';
 import { Logo } from './logo';
 import { Avatar } from './ui/avatar';
@@ -58,6 +59,7 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
     { href: '/dashboard',     label: 'Обзор',         icon: LayoutGrid,   roles: ['ADMIN'] },
     { href: '/funnel',        label: 'Воронки',       icon: BarChart3,    badge: counters.leadsActive },
     { href: '/clients',       label: 'Клиенты',       icon: Users },
+    { href: '/clients/birthdays', label: 'Дни рождения', icon: Cake },
     { href: '/calls',         label: 'Звонки',        icon: Phone },
     { href: '/calendar',      label: 'Календарь',     icon: Calendar,     badge: counters.eventsToday },
     { href: '/work-calendar', label: 'Моё рабочее время', icon: Clock },
