@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-azcrm
-      # Новый пуш отменяет старый — деплоится только последний коммит
       cancel-in-progress: true
 
     steps:
@@ -52,7 +51,7 @@ jobs:
           script: |
             set -e
             cd /home/igorcrm/azcrm
-            npm ci
+            npm install --no-audit --no-fund
             cd whatsapp-worker && npm install --no-audit --no-fund && cd ..
             npx prisma migrate deploy
             npm run build

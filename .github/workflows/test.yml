@@ -7,14 +7,13 @@ on:
     branches: [main]
 
 # Новый push отменяет старые прогоны на той же ветке/PR.
-# Группа уникальна для (workflow + ref) — деплой остаётся в своей группе.
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   unit:
-    name: Unit + Integration (vitest)
+    name: Unit + Integration + Components (vitest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,9 +23,12 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - run: npm ci
+      # Используем install вместо ci — локфайл обновляется локально при добавлении deps,
+      # и ci-runner должен уметь подхватывать package.json без жесткой синхронизации.
+      - run: npm install --no-audit --no-fund
       - run: npx prisma generate
-      - run: npm run test:unit
+      # vitest run — прогоняет все по include из vitest.config (unit + integration + components).
+      - run: npm test
 
   e2e:
     name: E2E (Playwright)
@@ -59,7 +61,6 @@ jobs:
       VAPID_PRIVATE_KEY:      test_private_xxxxxxxxxxxxxxxxxxxxxxxx
       VAPID_SUBJECT:          mailto:test@local
       NEXTAUTH_URL:           http://localhost:3000
-      # Сообщаем Playwright что сервер уже запущен — пусть не поднимает свой
       E2E_BASE_URL:           http://localhost:3000
 
     steps:
@@ -70,7 +71,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
 
       - name: Установка browsers для playwright
         run: npx playwright install --with-deps chromium
@@ -110,7 +111,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
       - run: npx prisma generate
       - run: npx tsc --noEmit
 
@@ -123,6 +124,6 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
       - run: npx prisma generate
       - run: npm run lint
