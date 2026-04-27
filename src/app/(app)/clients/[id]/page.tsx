@@ -141,6 +141,8 @@ export default async function LeadPage({ params }: PageProps) {
           nationality: lead.client.nationality,
           phone:       lead.client.phone,
           altPhone:    lead.client.altPhone,
+          altPhone2:   lead.client.altPhone2,
+          altPhone3:   lead.client.altPhone3,
           email:       lead.client.email,
           addressPL:   lead.client.addressPL,
           addressHome: lead.client.addressHome,
