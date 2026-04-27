@@ -15,16 +15,21 @@
 //   STORAGE_ROOT          — директория хранилища; сессии WA в STORAGE_ROOT/wa-sessions
 //   WHATSAPP_WORKER_PORT  — порт worker (дефолт 3100)
 
-import 'dotenv/config';
 import express from 'express';
-import { Client, LocalAuth } from 'whatsapp-web.js';
-import qrcode from 'qrcode';
+// whatsapp-web.js — CommonJS, импортим через default
+import waPkg from 'whatsapp-web.js';
+const { Client, LocalAuth } = waPkg;
+// qrcode тоже CJS
+import qrcodePkg from 'qrcode';
+const qrcode = qrcodePkg;
 import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
 
 // Подгружаем основной .env из корня репо (на уровень выше)
 dotenv.config({ path: path.resolve(process.cwd(), '..', '.env'), override: false });
+// и локальный .env в whatsapp-worker если есть
+dotenv.config({ override: false });
 
 // ============ КОНФИГ ============
 
@@ -49,7 +54,6 @@ console.log('  SESSIONS_DIR    =', SESSIONS_DIR);
 
 // ============ КЛИЕНТЫ В ПАМЯТИ ============
 
-/** @type {Map<string, { client: Client; status: string; phoneNumber?: string; qr?: string; lastQrAt?: number }>} */
 const clients = new Map();
 
 function getOrCreateClient(accountId) {
