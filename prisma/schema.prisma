@@ -158,7 +158,10 @@ model Client {
   birthDate     DateTime?
   nationality   String?
   phone         String   @unique
+  // Дополнительные телефоны клиента (всего до 4 номеров: основной + 3 доп)
   altPhone      String?
+  altPhone2     String?
+  altPhone3     String?
   email         String?
   addressPL     String?  @db.Text
   addressHome   String?  @db.Text
