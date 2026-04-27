@@ -3,8 +3,10 @@ import { test as base, expect, type Page } from '@playwright/test';
 /** Логин через UI с указанными credentials. */
 export async function loginAs(page: Page, email: string, password: string) {
   await page.goto('/login');
-  await page.getByLabel(/email|почта/i).fill(email);
-  await page.getByLabel(/пароль|password/i).fill(password);
+  // exact: true — чтобы лейбл "Пароль" не матчился на aria-label кнопки
+  // "Показать пароль" / "Скрыть пароль" — иначе strict mode violation.
+  await page.getByLabel('Email',  { exact: true }).fill(email);
+  await page.getByLabel('Пароль', { exact: true }).fill(password);
   await page.getByRole('button', { name: /войти|log ?in/i }).click();
   await page.waitForURL(/\/(dashboard|funnel|inbox)/, { timeout: 10_000 });
 }
