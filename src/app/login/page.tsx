@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Logo } from '@/components/logo';
 import { Button } from '@/components/ui/button';
 import { Input, FormField } from '@/components/ui/input';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Eye, EyeOff } from 'lucide-react';
 
 // Обёртка-страница: внутренний компонент использует useSearchParams,
 // поэтому оборачиваем в Suspense (требование Next.js 15 для prerender).
@@ -23,10 +23,11 @@ function LoginForm() {
   const params = useSearchParams();
   const callbackUrl = params.get('callbackUrl') || '/funnel';
 
-  const [email, setEmail]       = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError]       = useState('');
-  const [loading, setLoading]   = useState(false);
+  const [email, setEmail]               = useState('');
+  const [password, setPassword]         = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError]               = useState('');
+  const [loading, setLoading]           = useState(false);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -80,14 +81,26 @@ function LoginForm() {
             </FormField>
 
             <FormField label="Пароль" htmlFor="password">
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                autoComplete="current-password"
-              />
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  tabIndex={-1}
+                  aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 grid place-items-center text-ink-4 hover:text-ink-2 rounded-md transition-colors"
+                >
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
             </FormField>
 
             {error && (
