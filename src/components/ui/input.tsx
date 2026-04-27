@@ -1,8 +1,11 @@
 // UI: поля ввода
-import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes, type SelectHTMLAttributes } from 'react';
 import { cn } from '@/lib/utils';
 
-interface InputProps extends InputHTMLAttributes<HTMLInputElement> {}
+// type-alias вместо пустых interface-extends — чистее и не ругается no-empty-object-type
+type InputProps    = InputHTMLAttributes<HTMLInputElement>;
+type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
+type SelectProps   = SelectHTMLAttributes<HTMLSelectElement>;
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
   ({ className, ...props }, ref) => {
@@ -25,8 +28,6 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
 
 Input.displayName = 'Input';
 
-interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {}
-
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ className, rows = 3, ...props }, ref) => {
     return (
@@ -48,8 +49,6 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
 );
 
 Textarea.displayName = 'Textarea';
-
-interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {}
 
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(
   ({ className, children, ...props }, ref) => {

@@ -145,8 +145,9 @@ export function canManageExpenses(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
-/** Просматривать СВОИ комиссии может любой, чужие — только ADMIN */
-export function canViewOwnCommissions(user: SessionUser): boolean {
+/** Просматривать СВОИ комиссии может любой, чужие — только ADMIN. Параметр сохранён для согласованности сигнатуры can*. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function canViewOwnCommissions(_user: SessionUser): boolean {
   return true; // каждый видит свои
 }
 
