@@ -51,10 +51,11 @@ model User {
   lastSeenAt   DateTime?
 
   // OAuth для Google Calendar
-  googleAccessToken  String?  @db.Text
-  googleRefreshToken String?  @db.Text
-  googleCalendarId   String?
-  googleConnectedAt  DateTime?
+  googleAccessToken           String?   @db.Text
+  googleAccessTokenExpiresAt  DateTime?
+  googleRefreshToken          String?   @db.Text
+  googleCalendarId            String?
+  googleConnectedAt           DateTime?
 
   salesLeads     Lead[]            @relation("SalesManager")
   legalLeads     Lead[]            @relation("LegalManager")
@@ -402,6 +403,7 @@ model Payment {
 
   commissions Commission[]
 
+  @@unique([leadId, sequence])
   @@index([leadId])
   @@index([paidAt])
 }
