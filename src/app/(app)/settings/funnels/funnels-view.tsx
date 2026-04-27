@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Plus, Trash2, Edit3, Power, ChevronDown, ChevronRight,
-  GripVertical, FileText, Check, X,
+  FileText, Check, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
