@@ -27,6 +27,7 @@ import {
   archiveLead,
 } from '../../actions';
 import { updateClient, removeClientFile } from './actions';
+import { setAttorney } from './attorney-actions';
 import type { UserRole, PaymentMethod, EventKind, CalendarKind, FileCategory, InternalDocFormat } from '@prisma/client';
 
 // ============ ТИПЫ ============
@@ -99,6 +100,8 @@ interface LeadCardViewProps {
     isArchived: boolean; createdAt: string;
   }>;
   team: Array<{ id: string; name: string; email: string; role: UserRole }>;
+  // Список юзеров на роль Pelnomocnik (LEGAL + ADMIN). Анна: «легализация + я»
+  attorneys: Array<{ id: string; name: string; role: UserRole }>;
 }
 
 // ============ КОМПОНЕНТ ============
@@ -379,7 +382,7 @@ function ClientEditModal({
 // ============ СДЕЛКА ============
 
 function DealCard({
-  lead, salesManager, legalManager, city, team, currentUser,
+  lead, salesManager, legalManager, city, team, attorneys, currentUser,
 }: LeadCardViewProps) {
   const router = useRouter();
   const [showSalesModal, setShowSalesModal] = useState(false);
@@ -417,11 +420,25 @@ function DealCard({
           { label: 'Дата первого контакта', value: lead.firstContactAt ? formatDate(lead.firstContactAt) : null },
         ],
         [
-          { label: 'Пелномоцник', value: lead.attorney },
           { label: 'Услуга', value: lead.serviceName ?? <span className="text-ink-4">не указана</span> },
           { label: 'Стоимость услуг', value: <span className="font-mono font-bold">{formatMoney(lead.totalAmount)} zł</span> },
         ],
       ]} />
+
+      {/* Pelnomocnik — отдельная строка, селектор справа (по запросу Анны) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-line-2 -mx-4 md:-mx-5 -mb-1 mt-px">
+        <div className="bg-paper px-4 md:px-5 py-2.5 hidden sm:block" />
+        <div className="bg-paper px-4 md:px-5 py-2.5">
+          <div className="text-[10.5px] text-ink-4 font-semibold uppercase tracking-[0.05em] mb-1">
+            Pelnomocnik
+          </div>
+          <PelnomocnikSelector
+            leadId={lead.id}
+            currentName={lead.attorney}
+            attorneys={attorneys}
+          />
+        </div>
+      </div>
 
       {/* Модалки переназначения */}
       <Modal
@@ -458,6 +475,50 @@ function DealCard({
         />
       </Modal>
     </Section>
+  );
+}
+
+function PelnomocnikSelector({
+  leadId, currentName, attorneys,
+}: {
+  leadId: string;
+  currentName: string | null;
+  attorneys: Array<{ id: string; name: string; role: UserRole }>;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  // Текущее значение может быть либо именем из списка, либо свободным вводом (legacy)
+  const currentInList = currentName && attorneys.some((a) => a.name === currentName);
+
+  async function onPick(name: string) {
+    setBusy(true);
+    try {
+      await setAttorney(leadId, name || null);
+      router.refresh();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Select
+      value={currentName ?? ''}
+      onChange={(e) => onPick(e.target.value)}
+      disabled={busy}
+    >
+      <option value="">— не назначен —</option>
+      {attorneys.map((a) => (
+        <option key={a.id} value={a.name}>
+          {a.name}
+        </option>
+      ))}
+      {currentName && !currentInList && (
+        <option value={currentName}>{currentName}</option>
+      )}
+    </Select>
   );
 }
 
