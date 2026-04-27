@@ -5,9 +5,9 @@ import { useState, useTransition, type DragEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  RefreshCw, Download, Plus, Search, Users as UsersIcon,
-  MapPin, MessageSquare, X as XIcon, LayoutGrid, List,
-  AlertCircle, Calendar as CalendarIcon, FileText, Phone,
+  RefreshCw, Download, Plus, Search,
+  X as XIcon, LayoutGrid, List,
+  AlertCircle, Calendar as CalendarIcon, FileText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar } from '@/components/ui/avatar';
