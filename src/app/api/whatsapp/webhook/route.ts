@@ -124,6 +124,7 @@ async function handleIncomingMessage(msg: IncomingMessage) {
         salesManagerId:     ownerId,
         whatsappAccountId:  account.id,
         source:             `WhatsApp: ${account.label}`,
+        sourceKind:         'WHATSAPP',
         firstContactAt:     new Date(msg.timestamp),
         events: {
           create: {

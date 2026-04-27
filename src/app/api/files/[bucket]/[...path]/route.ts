@@ -2,7 +2,7 @@
 // Отдаёт файлы из storage. Доступ:
 //  - 'docs' и 'uploads' — нужна авторизация (внутренние документы и файлы клиентов)
 //  - 'avatars', 'wa-media' — публично (для отображения в UI без auth)
-//  - 'blueprints' — только ADMIN
+//  - 'blueprints', 'expenses' — только ADMIN
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
@@ -38,7 +38,7 @@ export async function GET(
   const { bucket, path: pathSegments } = await params;
 
   // Проверка bucket
-  const allowed = ['uploads', 'docs', 'blueprints', 'wa-media', 'avatars'];
+  const allowed = ['uploads', 'docs', 'blueprints', 'wa-media', 'avatars', 'expenses'];
   if (!allowed.includes(bucket)) {
     return new NextResponse('Not found', { status: 404 });
   }
@@ -50,7 +50,8 @@ export async function GET(
     if (!session?.user) {
       return new NextResponse('Unauthorized', { status: 401 });
     }
-    if (bucket === 'blueprints' && session.user.role !== 'ADMIN') {
+    // Админские bucket'ы — только для ADMIN
+    if ((bucket === 'blueprints' || bucket === 'expenses') && session.user.role !== 'ADMIN') {
       return new NextResponse('Forbidden', { status: 403 });
     }
   }
