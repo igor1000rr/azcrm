@@ -273,6 +273,39 @@ async function main() {
     }
   }
 
+  // ==================== УСЛУГИ (прайс-лист) ====================
+  // Базовый прайс — Анна потом отредактирует через UI (Финансы → Услуги).
+  // % комиссии менеджеру при оплате (по дефолту со 2-го платежа).
+  const allFunnels = await prisma.funnel.findMany({ select: { id: true, name: true } });
+  const funnelByName = (n: string) =>
+    allFunnels.find((f) => f.name.toLowerCase().includes(n.toLowerCase()))?.id ?? null;
+
+  const services = [
+    { name: 'Karta pobytu (praca)', basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 1, fkey: 'praca' },
+    { name: 'Karta pobytu (inne)',  basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 2, fkey: 'inne' },
+    { name: 'Смена децизии',        basePrice: 1200, salesPct: 5,  legalPct: 5, pos: 3, fkey: 'смена' },
+    { name: 'Консультация',         basePrice: 200,  salesPct: 10, legalPct: 0, pos: 4, fkey: 'консультация' },
+    { name: 'Открытие бизнеса',     basePrice: 3000, salesPct: 5,  legalPct: 5, pos: 5, fkey: 'бизнес' },
+  ];
+
+  for (const s of services) {
+    const existing = await prisma.service.findUnique({ where: { name: s.name } });
+    if (!existing) {
+      await prisma.service.create({
+        data: {
+          name: s.name,
+          basePrice: s.basePrice,
+          salesCommissionPercent: s.salesPct,
+          legalCommissionPercent: s.legalPct,
+          position: s.pos,
+          funnelId: funnelByName(s.fkey),
+          isActive: true,
+        },
+      });
+      console.log(`  ✓ Услуга: ${s.name} — ${s.basePrice} zł (sales ${s.salesPct}%, legal ${s.legalPct}%)`);
+    }
+  }
+
   // ==================== АВТОМАТИЗАЦИИ ====================
   const automations = [
     {
@@ -352,6 +385,9 @@ async function main() {
     { key: 'reminders.fingerprint.days', value: [7, 1] },
     { key: 'leads.assignByWhatsappNumber', value: true },
     { key: 'leads.deduplicateByPhone', value: true },
+    // С какого по счёту платежа в лиде начислять комиссию менеджеру
+    // 1 — с первого, 2 — со второго (по умолчанию, как просила Анна)
+    { key: 'commission.startFromPaymentNumber', value: 2 },
   ];
 
   for (const s of settings) {
