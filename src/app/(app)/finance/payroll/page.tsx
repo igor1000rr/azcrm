@@ -1,7 +1,5 @@
 // Финансы → Сводная по ЗП (премии + ставка × часы − налоги). Только ADMIN.
-import Link from 'next/link';
 import { Topbar } from '@/components/topbar';
-import { Avatar } from '@/components/ui/avatar';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { formatMoney } from '@/lib/utils';
