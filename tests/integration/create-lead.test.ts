@@ -7,6 +7,11 @@
 //   - Авто-расчёт totalAmount из service.basePrice
 //   - Создание чек-листа документов из documentTemplate
 //   - audit + revalidatePath
+//
+// ВАЖНО: createLeadSchema содержит totalAmount: z.coerce.number().default(0),
+// поэтому в z.infer<...> (output type) totalAmount: number обязательное.
+// Помечаем тип входного аргумента через хелпер CreateLeadInput, чтобы не
+// дублировать totalAmount: 0 во всех вызовах теста.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type AnyFn = ReturnType<typeof vi.fn>;
@@ -43,6 +48,10 @@ vi.mock('@/lib/utils',  () => ({
 
 const { createLead } = await import('@/app/(app)/actions');
 
+// Тип входа createLead — это z.infer (output zod) с обязательным totalAmount.
+// Используем Parameters<> чтобы не падал TS на тестовых вызовах без поля.
+type CreateLeadInput = Parameters<typeof createLead>[0];
+
 beforeEach(() => {
   Object.values(mockDb).forEach((entity) => {
     Object.values(entity).forEach((fn) => (fn as AnyFn).mockReset());
@@ -69,10 +78,11 @@ describe('createLead: дедупликация клиента', () => {
     mockDb.lead.create.mockResolvedValue({ id: 'l-1' });
 
     const res = await createLead({
-      funnelId: 'f-1',
-      fullName: 'Иван',
-      phone:    '+48123',
-    });
+      funnelId:    'f-1',
+      fullName:    'Иван',
+      phone:       '+48123',
+      totalAmount: 0,
+    } as CreateLeadInput);
 
     expect(res.clientId).toBe('c-existing');
     expect(mockDb.client.create).not.toHaveBeenCalled();
@@ -87,10 +97,11 @@ describe('createLead: дедупликация клиента', () => {
     mockDb.lead.create.mockResolvedValue({ id: 'l-1' });
 
     await createLead({
-      funnelId: 'f-1',
-      fullName: 'Петр',
-      phone:    '48-123-456',
-    });
+      funnelId:    'f-1',
+      fullName:    'Петр',
+      phone:       '48-123-456',
+      totalAmount: 0,
+    } as CreateLeadInput);
 
     expect(mockDb.client.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -108,7 +119,11 @@ describe('createLead: дедупликация клиента', () => {
     mockDb.documentTemplate.findMany.mockResolvedValue([]);
     mockDb.lead.create.mockResolvedValue({ id: 'l-1' });
 
-    await createLead({ funnelId: 'f-1', clientId: 'c-given' });
+    await createLead({
+      funnelId:    'f-1',
+      clientId:    'c-given',
+      totalAmount: 0,
+    } as CreateLeadInput);
 
     expect(mockDb.client.findUnique).not.toHaveBeenCalled();
     expect(mockDb.client.create).not.toHaveBeenCalled();
@@ -122,11 +137,13 @@ describe('createLead: этап воронки', () => {
     mockDb.documentTemplate.findMany.mockResolvedValue([]);
     mockDb.lead.create.mockResolvedValue({ id: 'l-1' });
 
-    await createLead({ funnelId: 'f-1', clientId: 'c-1' });
+    await createLead({
+      funnelId: 'f-1', clientId: 'c-1', totalAmount: 0,
+    } as CreateLeadInput);
 
     expect(mockDb.stage.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { funnelId: 'f-1' },
+        where:   { funnelId: 'f-1' },
         orderBy: { position: 'asc' },
       }),
     );
@@ -138,8 +155,9 @@ describe('createLead: этап воронки', () => {
     mockDb.client.findUnique.mockResolvedValue({ id: 'c-1' });
     mockDb.stage.findFirst.mockResolvedValue(null);
 
-    await expect(createLead({ funnelId: 'f-empty', clientId: 'c-1' }))
-      .rejects.toThrow('этапов');
+    await expect(createLead({
+      funnelId: 'f-empty', clientId: 'c-1', totalAmount: 0,
+    } as CreateLeadInput)).rejects.toThrow('этапов');
     expect(mockDb.lead.create).not.toHaveBeenCalled();
   });
 });
@@ -155,7 +173,7 @@ describe('createLead: авто-расчёт totalAmount', () => {
     await createLead({
       funnelId: 'f-1', clientId: 'c-1',
       serviceId: 'srv-1', totalAmount: 0,
-    });
+    } as CreateLeadInput);
 
     const leadCall = mockDb.lead.create.mock.calls[0][0];
     expect(leadCall.data.totalAmount).toBe(2500);
@@ -170,7 +188,7 @@ describe('createLead: авто-расчёт totalAmount', () => {
     await createLead({
       funnelId: 'f-1', clientId: 'c-1',
       serviceId: 'srv-1', totalAmount: 5000,
-    });
+    } as CreateLeadInput);
 
     const leadCall = mockDb.lead.create.mock.calls[0][0];
     expect(leadCall.data.totalAmount).toBe(5000);
@@ -188,7 +206,9 @@ describe('createLead: документы в чек-листе', () => {
     ]);
     mockDb.lead.create.mockResolvedValue({ id: 'l-1' });
 
-    await createLead({ funnelId: 'f-1', clientId: 'c-1' });
+    await createLead({
+      funnelId: 'f-1', clientId: 'c-1', totalAmount: 0,
+    } as CreateLeadInput);
 
     const leadCall = mockDb.lead.create.mock.calls[0][0];
     expect(leadCall.data.documents.create).toHaveLength(2);
@@ -205,7 +225,9 @@ describe('createLead: SALES присвоение', () => {
     mockDb.documentTemplate.findMany.mockResolvedValue([]);
     mockDb.lead.create.mockResolvedValue({ id: 'l-1' });
 
-    await createLead({ funnelId: 'f-1', clientId: 'c-1' });
+    await createLead({
+      funnelId: 'f-1', clientId: 'c-1', totalAmount: 0,
+    } as CreateLeadInput);
 
     const leadCall = mockDb.lead.create.mock.calls[0][0];
     expect(leadCall.data.salesManagerId).toBe('u-sales');
@@ -217,7 +239,10 @@ describe('createLead: SALES присвоение', () => {
     mockDb.documentTemplate.findMany.mockResolvedValue([]);
     mockDb.lead.create.mockResolvedValue({ id: 'l-1' });
 
-    await createLead({ funnelId: 'f-1', clientId: 'c-1', salesManagerId: 'u-other' });
+    await createLead({
+      funnelId: 'f-1', clientId: 'c-1',
+      salesManagerId: 'u-other', totalAmount: 0,
+    } as CreateLeadInput);
 
     const leadCall = mockDb.lead.create.mock.calls[0][0];
     expect(leadCall.data.salesManagerId).toBe('u-other');
@@ -233,7 +258,9 @@ describe('createLead: audit + LEAD_CREATED', () => {
   });
 
   it('audit вызывается с lead.create', async () => {
-    await createLead({ funnelId: 'f-1', clientId: 'c-1' });
+    await createLead({
+      funnelId: 'f-1', clientId: 'c-1', totalAmount: 0,
+    } as CreateLeadInput);
 
     expect(mockAudit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -245,7 +272,9 @@ describe('createLead: audit + LEAD_CREATED', () => {
   });
 
   it('Lead.events.create — LEAD_CREATED', async () => {
-    await createLead({ funnelId: 'f-1', clientId: 'c-1' });
+    await createLead({
+      funnelId: 'f-1', clientId: 'c-1', totalAmount: 0,
+    } as CreateLeadInput);
 
     const leadCall = mockDb.lead.create.mock.calls[0][0];
     expect(leadCall.data.events.create).toMatchObject({
