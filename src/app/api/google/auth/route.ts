@@ -20,10 +20,16 @@ export async function GET() {
     const nonce = crypto.randomBytes(16).toString('hex');
     const state = `${user.id}:${nonce}`;
 
-    // Сохраняем state в cookie для проверки в callback
+    // Сохраняем state в cookie для проверки в callback.
+    // secure=true только в проде — иначе на http://localhost cookie не выставится
+    // и OAuth-поток сломается в dev-среде.
     const cookieStore = await cookies();
     cookieStore.set('google_oauth_state', state, {
-      httpOnly: true, secure: true, sameSite: 'lax', maxAge: 600,
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge:   600,
+      path:     '/',
     });
 
     return NextResponse.redirect(buildAuthUrl(state));

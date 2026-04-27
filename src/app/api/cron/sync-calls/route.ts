@@ -9,17 +9,13 @@ import { getTelephonyProvider } from '@/lib/telephony';
 import { saveBuffer } from '@/lib/storage';
 import { notify } from '@/lib/notify';
 import { sanitizeDownloadName } from '@/lib/storage';
+import { checkCronAuth } from '@/lib/cron-auth';
 
-const CRON_SECRET = process.env.CRON_SECRET ?? '';
 const SAVE_RECORDS_LOCALLY = process.env.SAVE_CALL_RECORDS === 'true';
 
 export async function POST(req: NextRequest) {
-  if (CRON_SECRET) {
-    const auth = req.headers.get('authorization') ?? '';
-    if (auth !== `Bearer ${CRON_SECRET}`) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-  }
+  const fail = checkCronAuth(req);
+  if (fail) return fail;
 
   const provider = getTelephonyProvider();
   if (!provider.isConfigured()) {

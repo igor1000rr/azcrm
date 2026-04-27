@@ -14,16 +14,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { listGoogleEvents } from '@/lib/google';
-
-const CRON_SECRET = process.env.CRON_SECRET ?? '';
+import { checkCronAuth } from '@/lib/cron-auth';
 
 export async function POST(req: NextRequest) {
-  if (CRON_SECRET) {
-    const auth = req.headers.get('authorization') ?? '';
-    if (auth !== `Bearer ${CRON_SECRET}`) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-  }
+  const fail = checkCronAuth(req);
+  if (fail) return fail;
 
   const users = await db.user.findMany({
     where: {

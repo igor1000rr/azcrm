@@ -14,8 +14,10 @@ services:
       POSTGRES_USER:     ${DB_USER:-crm}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-crm}
       POSTGRES_DB:       ${DB_NAME:-azgroup_crm}
+    # bind на localhost — не публикуем БД во внешнюю сеть.
+    # Внутри docker-сети контейнеры видят db:5432 через имя сервиса.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -60,7 +62,8 @@ services:
       SMTP_SECURE:                ${SMTP_SECURE}
       CRON_SECRET:                ${CRON_SECRET}
     ports:
-      - "3000:3000"
+      # nginx-reverse-proxy ходит к app только локально
+      - "127.0.0.1:3000:3000"
     volumes:
       - storage:/app/storage
     depends_on:
@@ -95,7 +98,8 @@ services:
       JWT_HEADER:  "Authorization"
       JWT_IN_BODY: "true"
     ports:
-      - "8080:80"
+      # OnlyOffice доступен только через nginx с SSL
+      - "127.0.0.1:8080:80"
     volumes:
       - onlyoffice-data:/var/www/onlyoffice/Data
       - onlyoffice-logs:/var/log/onlyoffice

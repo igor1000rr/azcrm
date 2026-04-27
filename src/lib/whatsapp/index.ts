@@ -10,6 +10,8 @@
 // Worker дёргает наш CRM при событиях:
 //   POST /api/whatsapp/webhook   — { kind, accountId, ...data }
 
+import crypto from 'node:crypto';
+
 const WORKER_URL = process.env.WHATSAPP_WORKER_URL ?? 'http://localhost:3100';
 const WORKER_AUTH_TOKEN = process.env.WHATSAPP_WORKER_TOKEN ?? '';
 
@@ -92,8 +94,17 @@ async function workerCall<T>(
   }
 }
 
-/** Проверка валидности webhook'a от worker'а — простая проверка токена */
+/**
+ * Проверка валидности webhook'a от worker'а.
+ * Если токен не настроен — отказ ВО ВСЕХ запросах. Иначе любой может
+ * слать фейковые входящие сообщения и плодить лиды/клиентов.
+ * Сравниваем через timingSafeEqual чтобы не сливать длину токена.
+ */
 export function verifyWebhookToken(token: string | null): boolean {
-  if (!WORKER_AUTH_TOKEN) return true; // если не настроен — пропускаем
-  return token === WORKER_AUTH_TOKEN;
+  if (!WORKER_AUTH_TOKEN) return false;
+  if (!token) return false;
+  const a = Buffer.from(token);
+  const b = Buffer.from(WORKER_AUTH_TOKEN);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }

@@ -1,6 +1,6 @@
 // POST /api/cron/reminders
 // Вызывается раз в 30 минут через crontab или systemd timer.
-// Авторизация — через CRON_SECRET в заголовке.
+// Авторизация — через CRON_SECRET в заголовке (обязательный).
 //
 // crontab пример:
 //   */30 * * * * curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" https://crm.azgroup.pl/api/cron/reminders
@@ -9,17 +9,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { workerSendMessage } from '@/lib/whatsapp';
 import { formatTime } from '@/lib/utils';
-
-const CRON_SECRET = process.env.CRON_SECRET ?? '';
+import { checkCronAuth } from '@/lib/cron-auth';
 
 export async function POST(req: NextRequest) {
-  // Проверка
-  if (CRON_SECRET) {
-    const auth = req.headers.get('authorization') ?? '';
-    if (auth !== `Bearer ${CRON_SECRET}`) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-  }
+  const fail = checkCronAuth(req);
+  if (fail) return fail;
 
   const now = new Date();
   const in7Days = new Date(now.getTime() + 7 * 86400_000);

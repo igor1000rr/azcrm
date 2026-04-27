@@ -17,8 +17,20 @@ import crypto from 'node:crypto';
 export const OO_PUBLIC_URL = process.env.ONLYOFFICE_PUBLIC_URL ?? 'http://localhost:8080';
 // Внутренний URL — куда OnlyOffice стучится за callback'ом (внутри docker)
 export const OO_CALLBACK_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? 'http://localhost:3000';
-// Секрет JWT который указан в OnlyOffice (через docker env)
-const OO_JWT_SECRET = process.env.ONLYOFFICE_JWT_SECRET ?? 'change-me-in-production';
+
+// Секрет JWT — обязателен. Без него любой может подделать callback OnlyOffice
+// и записать произвольный файл по url. Падаем громко при отсутствии в проде.
+const OO_JWT_SECRET = process.env.ONLYOFFICE_JWT_SECRET ?? '';
+
+function requireSecret(): string {
+  if (!OO_JWT_SECRET) {
+    throw new Error(
+      'ONLYOFFICE_JWT_SECRET не задан в .env — это уязвимость, отказ работать. ' +
+      'Сгенерируй: openssl rand -hex 32',
+    );
+  }
+  return OO_JWT_SECRET;
+}
 
 export interface OnlyOfficeConfig {
   document: {
@@ -121,12 +133,13 @@ export function buildEditorConfig(opts: {
 
 /** Простой HS256 JWT (без зависимостей) — OnlyOffice использует HS256 */
 export function signJwt(payload: Record<string, unknown>): string {
+  const secret = requireSecret();
   const header = { alg: 'HS256', typ: 'JWT' };
   const b64Header  = base64url(JSON.stringify(header));
   const b64Payload = base64url(JSON.stringify(payload));
   const data = `${b64Header}.${b64Payload}`;
   const sig = crypto
-    .createHmac('sha256', OO_JWT_SECRET)
+    .createHmac('sha256', secret)
     .update(data)
     .digest('base64url');
   return `${data}.${sig}`;
@@ -135,15 +148,20 @@ export function signJwt(payload: Record<string, unknown>): string {
 /** Проверка JWT (для callback от OnlyOffice) */
 export function verifyJwt<T = Record<string, unknown>>(token: string): T | null {
   try {
+    const secret = requireSecret();
     const [b64Header, b64Payload, sig] = token.split('.');
     if (!b64Header || !b64Payload || !sig) return null;
 
     const expected = crypto
-      .createHmac('sha256', OO_JWT_SECRET)
+      .createHmac('sha256', secret)
       .update(`${b64Header}.${b64Payload}`)
       .digest('base64url');
 
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+    // Защита от timing-attack + от падения при разной длине строк
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length) return null;
+    if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null;
 
     return JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf-8')) as T;
   } catch {
