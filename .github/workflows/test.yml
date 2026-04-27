@@ -1,0 +1,120 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit:
+    name: Unit + Integration (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run test:unit
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: unit
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER:     crm
+          POSTGRES_PASSWORD: crm
+          POSTGRES_DB:       azgroup_crm
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U crm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL:           postgresql://crm:crm@localhost:5432/azgroup_crm
+      AUTH_SECRET:            test-secret-min-32-chars-test-secret
+      ONLYOFFICE_JWT_SECRET:  test-onlyoffice-jwt-secret-32ch
+      WHATSAPP_WORKER_TOKEN:  test-wa-worker-token
+      CRON_SECRET:            test-cron-secret
+      APP_PUBLIC_URL:         http://localhost:3000
+      ONLYOFFICE_PUBLIC_URL:  http://localhost:8080
+      VAPID_PUBLIC_KEY:       BMQTU2_test_key_replace_in_real_use_only_for_e2e_tests_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      VAPID_PRIVATE_KEY:      test_private_xxxxxxxxxxxxxxxxxxxxxxxx
+      VAPID_SUBJECT:          mailto:test@local
+      NEXTAUTH_URL:           http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Установка browsers для playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Prisma generate + push
+        run: |
+          npx prisma generate
+          npx prisma db push --skip-generate
+
+      - name: Сид тестовых данных
+        run: npm run db:seed
+
+      - name: Build приложения
+        run: npm run build
+
+      - name: Запуск приложения в фоне
+        run: |
+          npm run start &
+          npx wait-on http://localhost:3000 -t 120000
+
+      - name: Playwright e2e
+        run: npm run test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  typecheck:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx tsc --noEmit
+
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run lint

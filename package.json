@@ -4,18 +4,26 @@
   "private": true,
   "author": "igor1000rr <https://t.me/igor1000rr>",
   "scripts": {
-    "dev":        "next dev",
-    "build":      "prisma generate && next build",
-    "start":      "next start",
-    "lint":       "next lint",
-    "db:push":    "prisma db push",
-    "db:migrate": "prisma migrate dev",
-    "db:seed":    "tsx prisma/seed.ts",
-    "db:studio":  "prisma studio",
-    "vapid":      "node scripts/generate-vapid.js",
-    "worker:install": "cd whatsapp-worker && npm install",
-    "worker:dev":   "cd whatsapp-worker && npm run dev",
-    "worker:start": "cd whatsapp-worker && npm start"
+    "dev":              "next dev",
+    "build":            "prisma generate && next build",
+    "start":            "next start",
+    "lint":             "next lint",
+    "typecheck":        "tsc --noEmit",
+    "db:push":          "prisma db push",
+    "db:migrate":       "prisma migrate dev",
+    "db:seed":          "tsx prisma/seed.ts",
+    "db:studio":        "prisma studio",
+    "vapid":            "node scripts/generate-vapid.js",
+    "worker:install":   "cd whatsapp-worker && npm install",
+    "worker:dev":       "cd whatsapp-worker && npm run dev",
+    "worker:start":     "cd whatsapp-worker && npm start",
+    "test":             "vitest run",
+    "test:watch":       "vitest",
+    "test:unit":        "vitest run tests/unit tests/integration",
+    "test:integration": "vitest run tests/integration",
+    "test:coverage":    "vitest run --coverage",
+    "test:e2e":         "playwright test",
+    "test:e2e:ui":      "playwright test --ui"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -39,12 +47,14 @@
     "zod":                  "^3.24.1"
   },
   "devDependencies": {
+    "@playwright/test":     "^1.48.0",
     "@types/bcryptjs":      "^2.4.6",
     "@types/node":          "^22.10.0",
     "@types/nodemailer":    "^6.4.17",
     "@types/react":         "^19.0.0",
     "@types/react-dom":     "^19.0.0",
     "@types/web-push":      "^3.6.4",
+    "@vitest/coverage-v8":  "^2.1.8",
     "autoprefixer":         "^10.4.20",
     "eslint":               "^9",
     "eslint-config-next":   "15.1.0",
@@ -52,6 +62,8 @@
     "prisma":               "^5.22.0",
     "tailwindcss":          "^3.4.16",
     "tsx":                  "^4.19.2",
-    "typescript":           "^5.7.2"
+    "typescript":           "^5.7.2",
+    "vitest":               "^2.1.8",
+    "wait-on":              "^8.0.1"
   }
 }

@@ -12,7 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatMoney, formatDate, daysUntil } from '@/lib/utils';
-import { changeLeadStage } from './actions';
+import { changeLeadStage } from '../actions';
 import type { UserRole } from '@prisma/client';
 
 interface FunnelLite {
