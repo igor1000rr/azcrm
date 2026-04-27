@@ -5,14 +5,14 @@ import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Send, MessageSquarePlus, Users, ChevronLeft, X, Search,
+  Send, MessageSquarePlus, Users, ChevronLeft, Search,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
 import { Input, FormField } from '@/components/ui/input';
 import {
-  cn, formatTime, formatDate, formatRelative,
+  cn, formatTime, formatDate,
 } from '@/lib/utils';
 import {
   openDirectChat, createGroupChat, sendTeamChatMessage,
@@ -160,7 +160,7 @@ export function TeamChatView({
 }
 
 function ChatPane({
-  chatId, title, members, currentUserId, messages,
+  chatId, title, members, currentUserId: _currentUserId, messages,
 }: {
   chatId: string;
   title: string;
