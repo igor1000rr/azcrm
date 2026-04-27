@@ -53,6 +53,7 @@ export default async function LeadPage({ params }: PageProps) {
         include: { createdBy: { select: { id: true, name: true } } },
       },
       whatsappAccount: { select: { id: true, label: true, phoneNumber: true } },
+      service: { select: { id: true, name: true } },
     },
   });
 
@@ -122,6 +123,7 @@ export default async function LeadPage({ params }: PageProps) {
           stageName:    lead.stage.name,
           source:       lead.source,
           attorney:     lead.attorney,
+          serviceName:  lead.service?.name ?? null,
           totalAmount:  total,
           firstContactAt: lead.firstContactAt?.toISOString() ?? null,
           fingerprintDate: lead.fingerprintDate?.toISOString() ?? null,

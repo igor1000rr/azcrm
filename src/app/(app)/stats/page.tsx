@@ -145,6 +145,26 @@ export default async function StatsPage({ searchParams }: PageProps) {
   const totalPaid = payments.reduce((s, p) => s + Number(p.amount), 0);
   const avgPayment = payments.length > 0 ? totalPaid / payments.length : 0;
 
+  // 7. Источники заявок (по sourceKind)
+  const leadsBySource = await db.lead.groupBy({
+    by: ['sourceKind'],
+    where: { createdAt: { gte: since } },
+    _count: { _all: true },
+  });
+  const SOURCE_LABEL: Record<string, string> = {
+    WHATSAPP: 'WhatsApp', PHONE: 'Телефон', TELEGRAM: 'Telegram', EMAIL: 'Email',
+    WEBSITE: 'Сайт', REFERRAL: 'Рекомендация', WALK_IN: 'Самообращение',
+    MANUAL: 'Вручную', IMPORT: 'Импорт', OTHER: 'Другое',
+  };
+  const sourcesChart = leadsBySource
+    .filter((b) => b._count._all > 0)
+    .map((b) => ({
+      kind: b.sourceKind ?? 'UNKNOWN',
+      label: b.sourceKind ? (SOURCE_LABEL[b.sourceKind] ?? b.sourceKind) : 'Не указан',
+      count: b._count._all,
+    }))
+    .sort((a, b) => b.count - a.count);
+
   return (
     <>
       <Topbar breadcrumbs={[{ label: 'CRM' }, { label: 'Аналитика' }]} />
@@ -160,6 +180,7 @@ export default async function StatsPage({ searchParams }: PageProps) {
         paymentMethodsChart={paymentMethodsChart}
         leadsChart={leadsChart}
         managersChart={managersChart}
+        sourcesChart={sourcesChart}
       />
     </>
   );

@@ -32,6 +32,7 @@ interface Props {
   paymentMethodsChart: Array<{ method: string; value: number }>;
   leadsChart: Array<{ date: string; count: number }>;
   managersChart: ManagerStat[];
+  sourcesChart: Array<{ kind: string; label: string; count: number }>;
 }
 
 const FUNNEL_COLORS = ['#0A1A35', '#7C3AED', '#DC2626', '#16A34A', '#CA8A04', '#0891B2'];
@@ -43,7 +44,7 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 export function StatsView({
-  period, kpi, funnelStats, paymentsChart, paymentMethodsChart, leadsChart, managersChart,
+  period, kpi, funnelStats, paymentsChart, paymentMethodsChart, leadsChart, managersChart, sourcesChart,
 }: Props) {
   const conversion = kpi.allLeads > 0 ? Math.round((kpi.allClosed / kpi.allLeads) * 100) : 0;
   const lostRate   = kpi.allLeads > 0 ? Math.round((kpi.allLost / kpi.allLeads) * 100)   : 0;
@@ -116,6 +117,40 @@ export function StatsView({
             <Line type="monotone" dataKey="amount" stroke="#0A1A35" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
+      </ChartCard>
+
+      {/* Источники заявок (WhatsApp / Телефон / Telegram / ...) */}
+      <ChartCard title="Источники заявок за период">
+        {sourcesChart.length === 0 ? (
+          <div className="text-center py-8 text-[12px] text-ink-4">Нет лидов за период</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-2">
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={sourcesChart} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="#ECECEC" />
+                <XAxis type="number" tick={{ fontSize: 11, fill: '#71717A' }} tickLine={false} axisLine={{ stroke: '#ECECEC' }} />
+                <YAxis dataKey="label" type="category" width={120} tick={{ fontSize: 11, fill: '#71717A' }} tickLine={false} axisLine={{ stroke: '#ECECEC' }} />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Bar dataKey="count" fill="#0A1A35" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="space-y-1.5">
+              {sourcesChart.map((s) => {
+                const total = sourcesChart.reduce((a, b) => a + b.count, 0);
+                const pct = total > 0 ? Math.round((s.count / total) * 100) : 0;
+                return (
+                  <div key={s.kind} className="flex items-center justify-between text-[12.5px] py-1.5 px-2 hover:bg-bg rounded">
+                    <span className="text-ink-2 font-medium">{s.label}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="font-mono font-bold text-ink">{s.count}</span>
+                      <span className="font-mono text-ink-3 text-[11px] w-10 text-right">{pct}%</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </ChartCard>
 
       {/* Грид: лиды + способы оплаты */}
