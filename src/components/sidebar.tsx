@@ -59,7 +59,7 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
     { href: '/dashboard',     label: 'Обзор',         icon: LayoutGrid,   roles: ['ADMIN'] },
     { href: '/funnel',        label: 'Воронки',       icon: BarChart3,    badge: counters.leadsActive },
     { href: '/clients',       label: 'Клиенты',       icon: Users },
-    { href: '/clients/birthdays', label: 'Дни рождения', icon: Cake },
+    { href: '/birthdays',     label: 'Дни рождения',  icon: Cake },
     { href: '/calls',         label: 'Звонки',        icon: Phone },
     { href: '/calendar',      label: 'Календарь',     icon: Calendar,     badge: counters.eventsToday },
     { href: '/work-calendar', label: 'Моё рабочее время', icon: Clock },
