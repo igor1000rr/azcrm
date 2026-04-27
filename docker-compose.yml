@@ -1,0 +1,100 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: azgroup-db
+    environment:
+      POSTGRES_USER:     ${DB_USER:-crm}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-crm}
+      POSTGRES_DB:       ${DB_NAME:-azgroup_crm}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test:     ["CMD-SHELL", "pg_isready -U ${DB_USER:-crm} -d ${DB_NAME:-azgroup_crm}"]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: azgroup-app
+    environment:
+      DATABASE_URL:               postgresql://${DB_USER:-crm}:${DB_PASSWORD:-crm}@db:5432/${DB_NAME:-azgroup_crm}?schema=public
+      AUTH_SECRET:                ${AUTH_SECRET}
+      AUTH_URL:                   ${APP_PUBLIC_URL}
+      APP_PUBLIC_URL:             ${APP_PUBLIC_URL}
+      APP_INTERNAL_URL:           http://app:3000
+      STORAGE_ROOT:               /app/storage
+      ONLYOFFICE_PUBLIC_URL:      ${ONLYOFFICE_PUBLIC_URL}
+      ONLYOFFICE_JWT_SECRET:      ${ONLYOFFICE_JWT_SECRET}
+      NEXT_PUBLIC_ONLYOFFICE_PUBLIC_URL: ${ONLYOFFICE_PUBLIC_URL}
+      WHATSAPP_WORKER_URL:        http://wa-worker:3100
+      WHATSAPP_WORKER_TOKEN:      ${WHATSAPP_WORKER_TOKEN}
+      GOOGLE_CLIENT_ID:           ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET:       ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI:        ${APP_PUBLIC_URL}/api/google/callback
+      PLAY_API_BASE:              ${PLAY_API_BASE}
+      PLAY_API_KEY:               ${PLAY_API_KEY}
+      SAVE_CALL_RECORDS:          ${SAVE_CALL_RECORDS}
+      VAPID_PUBLIC_KEY:           ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY:          ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT:              ${VAPID_SUBJECT}
+      SMTP_HOST:                  ${SMTP_HOST}
+      SMTP_PORT:                  ${SMTP_PORT}
+      SMTP_USER:                  ${SMTP_USER}
+      SMTP_PASS:                  ${SMTP_PASS}
+      SMTP_FROM:                  ${SMTP_FROM}
+      SMTP_SECURE:                ${SMTP_SECURE}
+      CRON_SECRET:                ${CRON_SECRET}
+    ports:
+      - "3000:3000"
+    volumes:
+      - storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  wa-worker:
+    build:
+      context: ./whatsapp-worker
+      dockerfile: Dockerfile
+    container_name: azgroup-wa-worker
+    environment:
+      PORT:               3100
+      WORKER_AUTH_TOKEN:  ${WHATSAPP_WORKER_TOKEN}
+      CRM_WEBHOOK_URL:    http://app:3000/api/whatsapp/webhook
+      SESSIONS_DIR:       /app/sessions
+    volumes:
+      - wa-sessions:/app/sessions
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: azgroup-onlyoffice
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET:  ${ONLYOFFICE_JWT_SECRET}
+      JWT_HEADER:  "Authorization"
+      JWT_IN_BODY: "true"
+    ports:
+      - "8080:80"
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-logs:/var/log/onlyoffice
+      - onlyoffice-cache:/var/lib/onlyoffice/documentserver/App_Data/cache/files
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  storage:
+  wa-sessions:
+  onlyoffice-data:
+  onlyoffice-logs:
+  onlyoffice-cache:

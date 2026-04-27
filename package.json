@@ -1,0 +1,57 @@
+{
+  "name": "azgroup-crm",
+  "version": "0.1.0",
+  "private": true,
+  "author": "igor1000rr <https://t.me/igor1000rr>",
+  "scripts": {
+    "dev":        "next dev",
+    "build":      "prisma generate && next build",
+    "start":      "next start",
+    "lint":       "next lint",
+    "db:push":    "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "db:seed":    "tsx prisma/seed.ts",
+    "db:studio":  "prisma studio",
+    "vapid":      "node scripts/generate-vapid.js",
+    "worker:install": "cd whatsapp-worker && npm install",
+    "worker:dev":   "cd whatsapp-worker && npm run dev",
+    "worker:start": "cd whatsapp-worker && npm start"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@auth/prisma-adapter": "^2.7.4",
+    "@prisma/client":       "^5.22.0",
+    "bcryptjs":             "^2.4.3",
+    "clsx":                 "^2.1.1",
+    "docx":                 "^9.0.3",
+    "docxtemplater":        "^3.55.4",
+    "lucide-react":         "^0.468.0",
+    "next":                 "15.1.0",
+    "next-auth":            "5.0.0-beta.25",
+    "nodemailer":           "^6.9.16",
+    "pizzip":               "^3.1.7",
+    "react":                "^19.0.0",
+    "react-dom":            "^19.0.0",
+    "recharts":             "^2.15.0",
+    "web-push":             "^3.6.7",
+    "zod":                  "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs":      "^2.4.6",
+    "@types/node":          "^22.10.0",
+    "@types/nodemailer":    "^6.4.17",
+    "@types/react":         "^19.0.0",
+    "@types/react-dom":     "^19.0.0",
+    "@types/web-push":      "^3.6.4",
+    "autoprefixer":         "^10.4.20",
+    "eslint":               "^9",
+    "eslint-config-next":   "15.1.0",
+    "postcss":              "^8.4.49",
+    "prisma":               "^5.22.0",
+    "tailwindcss":          "^3.4.16",
+    "tsx":                  "^4.19.2",
+    "typescript":           "^5.7.2"
+  }
+}
