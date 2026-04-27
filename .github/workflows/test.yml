@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Новый push отменяет старые прогоны на той же ветке/PR.
+# Группа уникальна для (workflow + ref) — деплой остаётся в своей группе.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unit:
     name: Unit + Integration (vitest)
