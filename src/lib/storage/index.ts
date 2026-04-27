@@ -18,7 +18,8 @@ export type StorageBucket =
   | 'blueprints'   // шаблоны .docx
   | 'wa-media'     // медиа из WhatsApp
   | 'wa-sessions'  // зашифрованные сессии whatsapp-web.js
-  | 'avatars';     // аватары пользователей
+  | 'avatars'      // аватары пользователей
+  | 'expenses';    // сканы документов расходов (только админ)
 
 export interface SavedFile {
   /** Относительный путь от bucket, который записывается в БД */

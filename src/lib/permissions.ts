@@ -128,6 +128,45 @@ export function canViewAuditLog(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
+// ====================== ФИНАНСЫ ======================
+
+/** Сводки по финансам, премии всех менеджеров, сводная по ЗП — только ADMIN */
+export function canViewFinance(user: SessionUser): boolean {
+  return user.role === 'ADMIN';
+}
+
+/** Управлять услугами / прайсом — только ADMIN */
+export function canManageServices(user: SessionUser): boolean {
+  return user.role === 'ADMIN';
+}
+
+/** Расходы (загрузка и просмотр) — только ADMIN */
+export function canManageExpenses(user: SessionUser): boolean {
+  return user.role === 'ADMIN';
+}
+
+/** Просматривать СВОИ комиссии может любой, чужие — только ADMIN */
+export function canViewOwnCommissions(user: SessionUser): boolean {
+  return true; // каждый видит свои
+}
+
+/** Помечать выплату комиссии — только ADMIN */
+export function canMarkCommissionPaid(user: SessionUser): boolean {
+  return user.role === 'ADMIN';
+}
+
+// ====================== РАБОЧЕЕ ВРЕМЯ ======================
+
+/** Свой WorkLog: создавать / редактировать / удалять — может сам сотрудник или ADMIN */
+export function canEditWorkLog(user: SessionUser, ownerId: string): boolean {
+  return user.role === 'ADMIN' || user.id === ownerId;
+}
+
+/** Видеть чужие WorkLog — только ADMIN */
+export function canViewAllWorkLogs(user: SessionUser): boolean {
+  return user.role === 'ADMIN';
+}
+
 // ====================== ВИДИМОСТЬ ЧАТОВ ======================
 
 /**
