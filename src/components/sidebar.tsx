@@ -8,7 +8,7 @@ import { useState } from 'react';
 import {
   Inbox, LayoutGrid, Users, Calendar, CreditCard,
   CheckSquare, Zap, BarChart3, Phone, MessageSquare,
-  Settings, X, Menu, Activity,
+  Settings, X, Menu, Activity, Wallet, Receipt, ListChecks, Clock,
 } from 'lucide-react';
 import { Logo } from './logo';
 import { Avatar } from './ui/avatar';
@@ -54,17 +54,25 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
   const [open, setOpen] = useState(false);
 
   const items: NavItem[] = [
-    { href: '/inbox',       label: 'Inbox',         icon: Inbox,        badge: counters.inboxUnread,    pulse: !!counters.inboxUnread },
-    { href: '/dashboard',   label: 'Обзор',         icon: LayoutGrid,   roles: ['ADMIN'] },
-    { href: '/funnel',      label: 'Воронки',       icon: BarChart3,    badge: counters.leadsActive },
-    { href: '/clients',     label: 'Клиенты',       icon: Users },
-    { href: '/calls',       label: 'Звонки',        icon: Phone },
-    { href: '/calendar',    label: 'Календарь',     icon: Calendar,     badge: counters.eventsToday },
-    { href: '/payments',    label: 'Оплаты',        icon: CreditCard,   badge: counters.paymentsOverdue, pulse: !!counters.paymentsOverdue },
-    { href: '/tasks',       label: 'Задачи',        icon: CheckSquare,  badge: counters.tasksOpen },
-    { href: '/team-chat',   label: 'Чат команды',   icon: MessageSquare, badge: counters.teamChatUnread, pulse: !!counters.teamChatUnread },
-    { href: '/automations', label: 'Автоматизации', icon: Zap,          badge: counters.automationsActive, roles: ['ADMIN'] },
-    { href: '/stats',       label: 'Аналитика',     icon: BarChart3,    roles: ['ADMIN'] },
+    { href: '/inbox',         label: 'Inbox',         icon: Inbox,        badge: counters.inboxUnread,    pulse: !!counters.inboxUnread },
+    { href: '/dashboard',     label: 'Обзор',         icon: LayoutGrid,   roles: ['ADMIN'] },
+    { href: '/funnel',        label: 'Воронки',       icon: BarChart3,    badge: counters.leadsActive },
+    { href: '/clients',       label: 'Клиенты',       icon: Users },
+    { href: '/calls',         label: 'Звонки',        icon: Phone },
+    { href: '/calendar',      label: 'Календарь',     icon: Calendar,     badge: counters.eventsToday },
+    { href: '/work-calendar', label: 'Моё рабочее время', icon: Clock },
+    { href: '/payments',      label: 'Оплаты',        icon: CreditCard,   badge: counters.paymentsOverdue, pulse: !!counters.paymentsOverdue },
+    { href: '/tasks',         label: 'Задачи',        icon: CheckSquare,  badge: counters.tasksOpen },
+    { href: '/team-chat',     label: 'Чат команды',   icon: MessageSquare, badge: counters.teamChatUnread, pulse: !!counters.teamChatUnread },
+    { href: '/automations',   label: 'Автоматизации', icon: Zap,          badge: counters.automationsActive, roles: ['ADMIN'] },
+    { href: '/stats',         label: 'Аналитика',     icon: BarChart3,    roles: ['ADMIN'] },
+  ];
+
+  const financeItems: NavItem[] = [
+    { href: '/finance/commissions', label: 'Премии менеджеров', icon: Wallet },
+    { href: '/finance/payroll',     label: 'Сводная по ЗП',     icon: ListChecks, roles: ['ADMIN'] },
+    { href: '/finance/expenses',    label: 'Расходы',           icon: Receipt,    roles: ['ADMIN'] },
+    { href: '/finance/services',    label: 'Услуги (прайс)',    icon: BarChart3,  roles: ['ADMIN'] },
   ];
 
   const settingsItems: NavItem[] = [
@@ -76,7 +84,8 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
     { href: '/settings/audit',          label: 'Аудит-лог',        icon: Activity,      roles: ['ADMIN'] },
   ];
 
-  const visibleItems = items.filter((it) => !it.roles || it.roles.includes(user.role));
+  const visibleItems    = items.filter((it) => !it.roles || it.roles.includes(user.role));
+  const visibleFinance  = financeItems.filter((it) => !it.roles || it.roles.includes(user.role));
   const visibleSettings = settingsItems.filter((it) => !it.roles || it.roles.includes(user.role));
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + '/');
@@ -160,6 +169,21 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
                   <span className="text-[10.5px] text-danger font-bold">{wa.unread}</span>
                 )}
               </Link>
+            ))}
+          </>
+        )}
+
+        {/* Финансы — раздел с премиями, ЗП, расходами */}
+        {visibleFinance.length > 0 && (
+          <>
+            <NavLabel>Финансы</NavLabel>
+            {visibleFinance.map((item) => (
+              <NavLink
+                key={item.href}
+                item={item}
+                active={isActive(item.href)}
+                onClick={() => setOpen(false)}
+              />
             ))}
           </>
         )}
