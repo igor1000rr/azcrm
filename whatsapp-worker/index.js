@@ -39,8 +39,13 @@ const APP_PUBLIC_URL   = process.env.APP_PUBLIC_URL ?? process.env.AUTH_URL ?? '
 const CRM_WEBHOOK_URL  = process.env.CRM_WEBHOOK_URL ?? `${APP_PUBLIC_URL.replace(/\/$/, '')}/api/whatsapp/webhook`;
 const STORAGE_ROOT     = process.env.STORAGE_ROOT ?? path.resolve(process.cwd(), '..', 'storage');
 const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(STORAGE_ROOT, 'wa-sessions');
+// Куда сохраняем входящие медиа из WhatsApp. Эта папка должна быть смонтирована
+// одним volume и в worker, и в CRM-app — CRM раздаёт из неё файлы по
+// /api/files/wa-media/<filename> через bucket=wa-media (публичный).
+const WA_MEDIA_DIR     = process.env.WA_MEDIA_DIR ?? path.join(STORAGE_ROOT, 'wa-media');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+if (!fs.existsSync(WA_MEDIA_DIR)) fs.mkdirSync(WA_MEDIA_DIR, { recursive: true });
 
 if (!AUTH_TOKEN) {
   console.warn('[worker] WHATSAPP_WORKER_TOKEN не задан — auth отключена');
@@ -149,9 +154,16 @@ function bindEvents(accountId, client, entry) {
         try {
           const media = await msg.downloadMedia();
           if (media) {
-            mediaName = media.filename || `media.${media.mimetype?.split('/')[1] || 'bin'}`;
-            mediaSize = Buffer.from(media.data, 'base64').length;
-            // TODO: загрузить в storage, получить URL. Пока null.
+            const buf = Buffer.from(media.data, 'base64');
+            mediaName = sanitizeFilename(media.filename || `media.${guessExt(media.mimetype)}`);
+            mediaSize = buf.length;
+            // Уникальное имя файла: timestamp + random + safe-расширение
+            const ext = path.extname(mediaName) || `.${guessExt(media.mimetype)}`;
+            const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
+            const fullPath = path.join(WA_MEDIA_DIR, storedName);
+            fs.writeFileSync(fullPath, buf);
+            // CRM раздаёт по bucket=wa-media (публичный), без auth
+            mediaUrl = `/api/files/wa-media/${storedName}`;
           }
         } catch (e) {
           console.error('downloadMedia error:', e);
@@ -203,6 +215,33 @@ function mapMessageType(waType) {
   if (waType === 'location') return 'location';
   if (waType === 'vcard') return 'contact';
   return 'text';
+}
+
+// Уборка имени файла от path traversal и спецсимволов FS
+function sanitizeFilename(name) {
+  return String(name || 'file')
+    .replace(/[\/\\\x00-\x1f]/g, '_')   // убираем разделители путей и control-chars
+    .replace(/^\.+/, '')                 // никаких ведущих точек
+    .slice(0, 200) || 'file';
+}
+
+// Угадать расширение по mime-типу WhatsApp
+function guessExt(mimetype) {
+  const m = String(mimetype || '').toLowerCase();
+  if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
+  if (m.includes('png'))  return 'png';
+  if (m.includes('webp')) return 'webp';
+  if (m.includes('gif'))  return 'gif';
+  if (m.includes('pdf'))  return 'pdf';
+  if (m.includes('mp4'))  return 'mp4';
+  if (m.includes('ogg'))  return 'ogg';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  if (m.includes('wav'))  return 'wav';
+  if (m.includes('msword') || m.includes('officedocument.wordprocessingml')) return 'docx';
+  if (m.includes('spreadsheetml') || m.includes('ms-excel')) return 'xlsx';
+  // fallback из mime/subtype
+  const sub = m.split('/')[1] || 'bin';
+  return sub.replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
 }
 
 async function sendWebhook(payload) {

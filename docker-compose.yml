@@ -82,8 +82,12 @@ services:
       WORKER_AUTH_TOKEN:  ${WHATSAPP_WORKER_TOKEN}
       CRM_WEBHOOK_URL:    http://app:3000/api/whatsapp/webhook
       SESSIONS_DIR:       /app/sessions
+      STORAGE_ROOT:       /app/storage
+      WA_MEDIA_DIR:       /app/storage/wa-media
     volumes:
       - wa-sessions:/app/sessions
+      # Общий volume с CRM-app — worker пишет media сюда, CRM раздаёт по /api/files/wa-media/...
+      - storage:/app/storage
     depends_on:
       - app
     restart: unless-stopped
