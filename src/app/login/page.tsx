@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { Suspense, useState, type FormEvent } from 'react';
 import { signIn } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Logo } from '@/components/logo';
@@ -8,7 +8,17 @@ import { Button } from '@/components/ui/button';
 import { Input, FormField } from '@/components/ui/input';
 import { AlertCircle } from 'lucide-react';
 
+// Обёртка-страница: внутренний компонент использует useSearchParams,
+// поэтому оборачиваем в Suspense (требование Next.js 15 для prerender).
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginSkeleton />}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const callbackUrl = params.get('callbackUrl') || '/funnel';
@@ -102,6 +112,19 @@ export default function LoginPage() {
         <p className="text-center text-[11px] text-ink-4 mt-5">
           Возникли проблемы с входом? Свяжитесь с администратором.
         </p>
+      </div>
+    </div>
+  );
+}
+
+function LoginSkeleton() {
+  return (
+    <div className="min-h-dvh flex items-center justify-center bg-bg px-4 py-10">
+      <div className="w-full max-w-[400px]">
+        <div className="flex justify-center mb-7">
+          <Logo size="lg" />
+        </div>
+        <div className="bg-paper border border-line rounded-lg p-6 md:p-7 shadow-sm h-[280px]" />
       </div>
     </div>
   );
