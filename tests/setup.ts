@@ -1,6 +1,6 @@
 // Глобальные настройки vitest. Подменяем next/server и next/navigation чтобы
 // можно было импортировать server actions без полного next runtime.
-import { vi } from 'vitest';
+import { vi, afterEach } from 'vitest';
 
 // Заглушка для revalidatePath — server actions её зовут
 vi.mock('next/cache', () => ({
@@ -36,3 +36,16 @@ vi.mock('next/headers', () => ({
 // jest-dom матчеры (toBeInTheDocument, toHaveClass, etc.) — для UI-тестов в jsdom.
 // В node-окружении matchers просто не используются, импорт безвреден.
 import '@testing-library/jest-dom/vitest';
+
+// Авто-cleanup React DOM между тестами — без него каждый render() накапливает
+// элементы в document.body, и getByRole/getByPlaceholderText находят несколько
+// и падают с TestingLibraryElementError.
+//
+// Импорт условный: в node-окружении (server actions tests) cleanup не нужен,
+// и динамический import не вызовется.
+afterEach(async () => {
+  if (typeof window !== 'undefined') {
+    const { cleanup } = await import('@testing-library/react');
+    cleanup();
+  }
+});
