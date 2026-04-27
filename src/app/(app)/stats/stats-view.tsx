@@ -8,7 +8,6 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, Tooltip, CartesianGrid, Legend,
 } from 'recharts';
 import { cn, formatMoney } from '@/lib/utils';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import type { UserRole } from '@prisma/client';
 
 interface FunnelStat {
