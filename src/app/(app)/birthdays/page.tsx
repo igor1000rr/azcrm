@@ -244,9 +244,10 @@ function Row({ client }: { client: ClientWithBirthday }) {
     .join('')
     .toUpperCase();
 
+  // /clients принимает параметр `q`, не `search`
   const href = client.latestLeadId
     ? `/clients/${client.latestLeadId}`
-    : `/clients?search=${encodeURIComponent(client.phone)}`;
+    : `/clients?q=${encodeURIComponent(client.phone)}`;
 
   return (
     <Link
