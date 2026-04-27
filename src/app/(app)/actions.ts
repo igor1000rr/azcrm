@@ -33,7 +33,9 @@ const createLeadSchema = z.object({
   stageId:       z.string().optional(),
   cityId:        z.string().optional(),
   source:        z.string().optional(),
+  sourceKind:    z.enum(['WHATSAPP','PHONE','TELEGRAM','EMAIL','WEBSITE','REFERRAL','WALK_IN','MANUAL','IMPORT','OTHER']).optional(),
   whatsappAccountId: z.string().optional(),
+  serviceId:     z.string().optional(),
   salesManagerId: z.string().optional(),
   legalManagerId: z.string().optional(),
   totalAmount:   z.coerce.number().min(0).default(0),
@@ -92,6 +94,16 @@ export async function createLead(input: z.infer<typeof createLeadSchema>) {
     orderBy: { position: 'asc' },
   });
 
+  // Если выбрана услуга и сумма не задана — берём цену из прайса
+  let totalAmount = data.totalAmount;
+  if (data.serviceId && (!totalAmount || totalAmount === 0)) {
+    const svc = await db.service.findUnique({
+      where: { id: data.serviceId },
+      select: { basePrice: true },
+    });
+    if (svc) totalAmount = Number(svc.basePrice);
+  }
+
   const lead = await db.lead.create({
     data: {
       clientId,
@@ -99,10 +111,12 @@ export async function createLead(input: z.infer<typeof createLeadSchema>) {
       stageId,
       cityId:         data.cityId || null,
       source:         data.source || null,
+      sourceKind:     data.sourceKind ?? 'MANUAL',
       whatsappAccountId: data.whatsappAccountId || null,
+      serviceId:      data.serviceId || null,
       salesManagerId: data.salesManagerId || (user.role === 'SALES' ? user.id : null),
       legalManagerId: data.legalManagerId || null,
-      totalAmount:    data.totalAmount,
+      totalAmount,
       summary:        data.summary || null,
       firstContactAt: new Date(),
       documents: {
@@ -299,10 +313,30 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
 
   const lead = await db.lead.findUnique({
     where: { id: data.leadId },
-    select: { id: true, salesManagerId: true, legalManagerId: true },
+    select: {
+      id: true, salesManagerId: true, legalManagerId: true,
+      service: { select: { salesCommissionPercent: true, legalCommissionPercent: true } },
+    },
   });
   if (!lead) throw new Error('Лид не найден');
   assert(canEditLead(user, lead));
+
+  // Узнаём порядковый номер платежа в этом лиде
+  const prevCount = await db.payment.count({ where: { leadId: data.leadId } });
+  const sequence = prevCount + 1;
+
+  // Глобальная настройка: с какого по счёту платежа начинать начислять комиссии
+  // По умолчанию 2 (со второго). Анна может поменять в настройках.
+  const setting = await db.setting.findUnique({
+    where: { key: 'commission.startFromPaymentNumber' },
+  });
+  const startFromN = Number(setting?.value ?? 2) || 2;
+
+  // Дефолтные % комиссии (если у лида не задана услуга)
+  const defaultSalesPct = 5;
+  const defaultLegalPct = 5;
+  const salesPct = lead.service ? Number(lead.service.salesCommissionPercent) : defaultSalesPct;
+  const legalPct = lead.service ? Number(lead.service.legalCommissionPercent) : defaultLegalPct;
 
   const payment = await db.payment.create({
     data: {
@@ -311,22 +345,62 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
       method:      data.method,
       paidAt:      data.paidAt ? new Date(data.paidAt) : new Date(),
       notes:       data.notes || null,
+      sequence,
       createdById: user.id,
     },
   });
+
+  // Если платёж попадает под условие — создаём комиссии менеджерам
+  const shouldCalcCommission = sequence >= startFromN;
+  if (shouldCalcCommission) {
+    const commissionsToCreate: Array<{
+      paymentId: string;
+      userId: string;
+      role: 'SALES' | 'LEGAL';
+      basePayment: number;
+      percent: number;
+      amount: number;
+    }> = [];
+
+    if (lead.salesManagerId && salesPct > 0) {
+      commissionsToCreate.push({
+        paymentId: payment.id,
+        userId: lead.salesManagerId,
+        role: 'SALES',
+        basePayment: data.amount,
+        percent: salesPct,
+        amount: Math.round((data.amount * salesPct) / 100 * 100) / 100,
+      });
+    }
+    if (lead.legalManagerId && legalPct > 0) {
+      commissionsToCreate.push({
+        paymentId: payment.id,
+        userId: lead.legalManagerId,
+        role: 'LEGAL',
+        basePayment: data.amount,
+        percent: legalPct,
+        amount: Math.round((data.amount * legalPct) / 100 * 100) / 100,
+      });
+    }
+    if (commissionsToCreate.length > 0) {
+      await db.commission.createMany({ data: commissionsToCreate });
+    }
+  }
 
   await db.leadEvent.create({
     data: {
       leadId:   data.leadId,
       authorId: user.id,
       kind:     'PAYMENT_ADDED',
-      message:  `+${data.amount} zł (${methodLabel(data.method)})`,
-      payload:  { paymentId: payment.id, amount: data.amount, method: data.method },
+      message:  `+${data.amount} zł (${methodLabel(data.method)}, платёж #${sequence}${shouldCalcCommission ? ', начислены комиссии' : ''})`,
+      payload:  { paymentId: payment.id, amount: data.amount, method: data.method, sequence },
     },
   });
 
   revalidatePath(`/clients/${data.leadId}`);
   revalidatePath('/payments');
+  revalidatePath('/finance/commissions');
+  revalidatePath('/finance/payroll');
   return { id: payment.id };
 }
 
@@ -363,6 +437,8 @@ export async function deletePayment(paymentId: string) {
 
   revalidatePath(`/clients/${payment.leadId}`);
   revalidatePath('/payments');
+  revalidatePath('/finance/commissions');
+  revalidatePath('/finance/payroll');
   return { ok: true };
 }
 
