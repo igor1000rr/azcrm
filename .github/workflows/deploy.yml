@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-azcrm
-      cancel-in-progress: false
+      # Новый пуш отменяет старый — деплоится только последний коммит
+      cancel-in-progress: true
 
     steps:
       - uses: actions/checkout@v4
