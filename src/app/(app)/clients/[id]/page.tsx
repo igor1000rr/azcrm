@@ -69,11 +69,18 @@ export default async function LeadPage({ params }: PageProps) {
     orderBy: { position: 'asc' },
   });
 
-  // Команда (для выпадашек переназначения)
+  // Команда (для выпадашек переназначения менеджеров)
   const team = await db.user.findMany({
     where: { isActive: true, role: { in: ['SALES', 'LEGAL'] } },
     select: { id: true, name: true, email: true, role: true },
     orderBy: { name: 'asc' },
+  });
+
+  // Пелномоцники: менеджеры легализации + админы (Anna просила «легализация + я»)
+  const attorneys = await db.user.findMany({
+    where: { isActive: true, role: { in: ['LEGAL', 'ADMIN'] } },
+    select: { id: true, name: true, role: true },
+    orderBy: [{ role: 'asc' }, { name: 'asc' }],
   });
 
   // Все файлы клиента (общая папка, не привязано к лиду)
@@ -221,6 +228,7 @@ export default async function LeadPage({ params }: PageProps) {
           createdAt:  l.createdAt.toISOString(),
         }))}
         team={team}
+        attorneys={attorneys}
       />
     </>
   );
