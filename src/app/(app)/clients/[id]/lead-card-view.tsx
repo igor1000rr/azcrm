@@ -5,11 +5,11 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Edit3, Phone, MessageSquare, Mail, MoreHorizontal,
+  Edit3, Phone, MessageSquare, Mail,
   Plus, Check, AlertCircle, Calendar as CalendarIcon,
-  FileText, Paperclip, X, Upload, ExternalLink,
+  FileText, Paperclip, X, Upload,
   CheckCircle, Trash2, Repeat, Activity, Clock,
-  ChevronRight, FileType,
+  ChevronRight,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -1161,10 +1161,9 @@ function BlueprintsModal({
 
 // ============ ФАЙЛЫ КЛИЕНТА (общая папка) ============
 
-function ClientFilesCard({ clientFiles, client, currentUser }: LeadCardViewProps) {
+function ClientFilesCard({ clientFiles, client }: LeadCardViewProps) {
   const router = useRouter();
   const [uploading, setUploading] = useState(false);
-  const fileInputRef = useState<HTMLInputElement | null>(null);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
