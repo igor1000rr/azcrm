@@ -3,7 +3,7 @@
 // UI: управление пользователями
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Edit3, Power, Key, CheckCircle, XCircle } from 'lucide-react';
+import { Plus, Edit3, Power, Key, CheckCircle } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
