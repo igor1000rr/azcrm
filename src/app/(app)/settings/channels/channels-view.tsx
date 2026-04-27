@@ -7,7 +7,6 @@ import {
   Plus, QrCode, Smartphone, Trash2, Edit3, Power,
   CheckCircle, XCircle, Loader2, RefreshCw,
 } from 'lucide-react';
-import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
