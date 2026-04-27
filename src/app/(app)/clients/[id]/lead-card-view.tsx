@@ -40,6 +40,7 @@ interface LeadCardViewProps {
   lead: {
     id: string; stageId: string; funnelId: string; funnelName: string;
     stageName: string; source: string | null; attorney: string | null;
+    serviceName: string | null;
     totalAmount: number; firstContactAt: string | null;
     fingerprintDate: string | null; fingerprintLocation: string | null;
     isArchived: boolean; summary: string | null;
@@ -394,6 +395,7 @@ function DealCard({
         ],
         [
           { label: 'Пелномоцник', value: lead.attorney },
+          { label: 'Услуга', value: lead.serviceName ?? <span className="text-ink-4">не указана</span> },
           { label: 'Стоимость услуг', value: <span className="font-mono font-bold">{formatMoney(lead.totalAmount)} zł</span> },
         ],
       ]} />
