@@ -1,4 +1,12 @@
-// Google Calendar OAuth + API
+// Google Calendar OAuth + API.
+//
+// Поток:
+//   1. Менеджер на /settings/profile жмёт "Подключить Google Calendar"
+//   2. Редирект на /api/google/auth — формирует URL OAuth и редиректит на Google
+//   3. Google редиректит на /api/google/callback?code=...
+//   4. Меняем code → access_token + refresh_token, сохраняем в User
+//   5. При создании CalendarEvent (отпечатки) — создаём событие в календаре через API
+
 import { db } from '@/lib/db';
 
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID ?? '';
@@ -15,19 +23,21 @@ export function isGoogleConfigured(): boolean {
   return !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
 
+/** URL для редиректа на согласие пользователя */
 export function buildAuthUrl(state: string): string {
   const params = new URLSearchParams({
     client_id:     GOOGLE_CLIENT_ID,
     redirect_uri:  GOOGLE_REDIRECT_URI,
     response_type: 'code',
     scope:         SCOPES.join(' '),
-    access_type:   'offline',
-    prompt:        'consent',
+    access_type:   'offline',          // нужен refresh_token
+    prompt:        'consent',          // принудительно — иначе refresh_token могут не выдать
     state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
 
+/** Обмен code на токены */
 export async function exchangeCodeForTokens(code: string): Promise<{
   access_token: string;
   refresh_token?: string;
@@ -52,6 +62,7 @@ export async function exchangeCodeForTokens(code: string): Promise<{
   return res.json();
 }
 
+/** Обновить access_token по refresh_token */
 async function refreshAccessToken(refreshToken: string): Promise<{
   access_token: string; expires_in: number;
 }> {
@@ -71,6 +82,7 @@ async function refreshAccessToken(refreshToken: string): Promise<{
   return res.json();
 }
 
+/** Получить актуальный access_token для пользователя */
 export async function getAccessTokenForUser(userId: string): Promise<string | null> {
   const user = await db.user.findUnique({
     where: { id: userId },
@@ -78,6 +90,7 @@ export async function getAccessTokenForUser(userId: string): Promise<string | nu
   });
   if (!user?.googleRefreshToken) return null;
 
+  // На простоту — каждый раз обновляем (или можно хранить expires_at)
   try {
     const fresh = await refreshAccessToken(user.googleRefreshToken);
     await db.user.update({
@@ -103,6 +116,7 @@ interface GoogleEventPayload {
   };
 }
 
+/** Создать событие в Google Calendar */
 export async function createGoogleEvent(
   userId: string,
   event: GoogleEventPayload,
@@ -131,6 +145,7 @@ export async function createGoogleEvent(
   return data.id;
 }
 
+/** Обновить событие */
 export async function updateGoogleEvent(
   userId: string,
   eventId: string,
@@ -154,6 +169,7 @@ export async function updateGoogleEvent(
   return res.ok;
 }
 
+/** Удалить событие */
 export async function deleteGoogleEvent(userId: string, eventId: string): Promise<boolean> {
   const token = await getAccessTokenForUser(userId);
   if (!token) return false;
@@ -165,9 +181,10 @@ export async function deleteGoogleEvent(userId: string, eventId: string): Promis
       headers: { 'Authorization': `Bearer ${token}` },
     },
   );
-  return res.ok || res.status === 410;
+  return res.ok || res.status === 410; // 410 = уже удалено
 }
 
+/** Список событий за период (для sync Google → CRM) */
 export interface GoogleEventLite {
   id:          string;
   summary?:    string;

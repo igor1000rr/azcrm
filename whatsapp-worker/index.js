@@ -2,6 +2,12 @@
 //
 // Отдельный Node-процесс который держит WhatsApp Web сессии через puppeteer.
 // Не зависит от Next.js — общается через HTTP webhook'и.
+//
+// Принципы:
+//   - На каждый WhatsappAccount (id) создаётся отдельный Client
+//   - Сессия сохраняется через LocalAuth в STORAGE_ROOT/wa-sessions/<id>
+//   - События (входящие, статусы) отправляются на CRM_WEBHOOK_URL
+//   - Управление через REST API на этом же процессе
 
 import express from 'express';
 import { Client, LocalAuth } from 'whatsapp-web.js';
@@ -9,12 +15,16 @@ import qrcode from 'qrcode';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// ============ КОНФИГ ============
+
 const PORT             = parseInt(process.env.PORT ?? '3100', 10);
 const AUTH_TOKEN       = process.env.WORKER_AUTH_TOKEN ?? '';
 const CRM_WEBHOOK_URL  = process.env.CRM_WEBHOOK_URL ?? 'http://localhost:3000/api/whatsapp/webhook';
 const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(process.cwd(), '..', 'storage', 'wa-sessions');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+
+// ============ КЛИЕНТЫ В ПАМЯТИ ============
 
 /** @type {Map<string, { client: Client; status: string; phoneNumber?: string; qr?: string; lastQrAt?: number }>} */
 const clients = new Map();
@@ -31,9 +41,13 @@ function getOrCreateClient(accountId) {
     puppeteer: {
       headless: true,
       args: [
-        '--no-sandbox', '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
-        '--no-first-run', '--no-zygote', '--disable-gpu',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
       ],
     },
   });
@@ -94,6 +108,7 @@ function bindEvents(accountId, client, entry) {
 
   client.on('message', async (msg) => {
     try {
+      // Игнорируем статусы и групповые сообщения
       if (msg.from === 'status@broadcast') return;
       if (msg.from.endsWith('@g.us')) return;
 
@@ -102,11 +117,14 @@ function bindEvents(accountId, client, entry) {
 
       let mediaUrl, mediaName, mediaSize;
       if (msg.hasMedia) {
+        // Скачиваем медиа и временно отдаём как data URL
+        // В продакшене — заливать в storage и отдавать ссылку
         try {
           const media = await msg.downloadMedia();
           if (media) {
             mediaName = media.filename || `media.${media.mimetype?.split('/')[1] || 'bin'}`;
             mediaSize = Buffer.from(media.data, 'base64').length;
+            // TODO: загрузить в storage, получить URL. Пока null.
           }
         } catch (e) {
           console.error('downloadMedia error:', e);
@@ -121,7 +139,9 @@ function bindEvents(accountId, client, entry) {
         fromName:   contact?.pushname || contact?.name || undefined,
         type:       mapMessageType(msg.type),
         body:       msg.body || undefined,
-        mediaUrl, mediaName, mediaSize,
+        mediaUrl,
+        mediaName,
+        mediaSize,
         timestamp:  msg.timestamp * 1000,
       });
     } catch (e) {
@@ -130,6 +150,7 @@ function bindEvents(accountId, client, entry) {
   });
 
   client.on('message_ack', (msg, ack) => {
+    // ack: -1=error, 0=pending, 1=sent, 2=delivered, 3=read, 4=played
     let status;
     if (ack === 1) status = 'sent';
     else if (ack === 2) status = 'delivered';
@@ -172,9 +193,12 @@ async function sendWebhook(payload) {
   }
 }
 
+// ============ HTTP API ============
+
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// Auth middleware
 app.use((req, res, next) => {
   if (!AUTH_TOKEN) return next();
   const auth = req.headers.authorization ?? '';
@@ -199,11 +223,13 @@ app.post('/accounts/:id/connect', async (req, res) => {
       return res.json({ status: 'qr', qr: entry.qr });
     }
 
+    // Запускаем initialize, ждём первого events
     entry.client.initialize().catch((e) => {
       console.error(`[${id}] initialize error:`, e);
       entry.status = 'failed';
     });
 
+    // Ждём до 30 сек QR или ready
     const start = Date.now();
     while (Date.now() - start < 30000) {
       await new Promise((r) => setTimeout(r, 500));
@@ -264,6 +290,7 @@ app.post('/accounts/:id/send', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'to and body required' });
     }
 
+    // Нормализуем номер для WhatsApp (убираем + и добавляем @c.us)
     const cleanPhone = to.replace(/[^\d]/g, '');
     const chatId = `${cleanPhone}@c.us`;
 
@@ -281,6 +308,7 @@ app.listen(PORT, () => {
   console.log(`webhook URL: ${CRM_WEBHOOK_URL}`);
 });
 
+// Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('shutting down...');
   for (const [id, entry] of clients) {

@@ -1,4 +1,11 @@
-// Web Push уведомления
+// Web Push уведомления для PWA
+//
+// Поток:
+//   1. Браузер запрашивает разрешение → создаёт PushSubscription
+//   2. Отправляет на /api/push/subscribe → сохраняется в БД
+//   3. Серверный код вызывает sendPushToUser() → web-push доставляет в браузер
+//   4. service-worker.js (в /public) показывает уведомление
+
 import webpush from 'web-push';
 import { db } from '@/lib/db';
 
@@ -31,6 +38,7 @@ interface PushPayload {
   tag?:  string;
 }
 
+/** Отправить push уведомление одному юзеру (на все его устройства) */
 export async function sendPushToUser(
   userId:  string,
   payload: PushPayload,
@@ -53,6 +61,7 @@ export async function sendPushToUser(
         },
         json,
       );
+      // Обновляем lastUsedAt
       await db.pushSubscription.update({
         where: { id: sub.id },
         data:  { lastUsedAt: new Date() },
@@ -60,6 +69,7 @@ export async function sendPushToUser(
       sent++;
     } catch (e) {
       const statusCode = (e as { statusCode?: number }).statusCode;
+      // 404/410 — подписка протухла, удаляем
       if (statusCode === 404 || statusCode === 410) {
         await db.pushSubscription.delete({ where: { id: sub.id } });
       } else {
@@ -72,6 +82,7 @@ export async function sendPushToUser(
   return { sent, failed };
 }
 
+/** Послать нескольким юзерам параллельно */
 export async function sendPushToUsers(
   userIds: string[],
   payload: PushPayload,

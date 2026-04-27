@@ -1,4 +1,13 @@
 // Права доступа для AZ Group CRM
+// Ключевая логика:
+//   ADMIN — видит и управляет всем
+//   SALES — видит только лиды где он ответственный (salesManagerId == userId)
+//           или общие WA-каналы (для чатов)
+//   LEGAL — видит только лиды где он ответственный (legalManagerId == userId)
+//
+// Все операции "опасные" (удаление, передача, изменение прайса) — только ADMIN
+// Передачу легализатора может делать менеджер продаж лида.
+
 import type { UserRole } from '@prisma/client';
 
 export type SessionUser = {
@@ -8,8 +17,13 @@ export type SessionUser = {
   role:  UserRole;
 };
 
+// ====================== ВИДИМОСТЬ ЛИДОВ ======================
+
+/** Where-условие для Prisma — какие лиды видит пользователь */
 export function leadVisibilityFilter(user: SessionUser) {
-  if (user.role === 'ADMIN') return {};
+  if (user.role === 'ADMIN') return {}; // всё
+
+  // Менеджер видит лида если он salesMgr ИЛИ legalMgr на этом лиде
   return {
     OR: [
       { salesManagerId: user.id },
@@ -18,6 +32,8 @@ export function leadVisibilityFilter(user: SessionUser) {
   };
 }
 
+/** Where-условие для клиентов — клиент видим если есть видимый лид
+ *  ИЛИ если ownerId == userId (он первый завёл клиента) */
 export function clientVisibilityFilter(user: SessionUser) {
   if (user.role === 'ADMIN') return {};
   return {
@@ -37,6 +53,9 @@ export function clientVisibilityFilter(user: SessionUser) {
   };
 }
 
+// ====================== ДЕЙСТВИЯ ======================
+
+/** Может ли пользователь видеть лида? */
 export function canViewLead(
   user: SessionUser,
   lead: { salesManagerId: string | null; legalManagerId: string | null },
@@ -45,6 +64,7 @@ export function canViewLead(
   return lead.salesManagerId === user.id || lead.legalManagerId === user.id;
 }
 
+/** Может ли пользователь редактировать поля лида? */
 export function canEditLead(
   user: SessionUser,
   lead: { salesManagerId: string | null; legalManagerId: string | null },
@@ -52,6 +72,9 @@ export function canEditLead(
   return canViewLead(user, lead);
 }
 
+/** Может ли передать лида другому менеджеру?
+ *  - ADMIN — всегда
+ *  - SALES (текущий владелец) — может передать другому менеджеру продаж */
 export function canTransferLead(
   user: SessionUser,
   lead: { salesManagerId: string | null },
@@ -60,6 +83,9 @@ export function canTransferLead(
   return user.role === 'SALES' && lead.salesManagerId === user.id;
 }
 
+/** Может ли назначить/сменить менеджера легализации?
+ *  - ADMIN — всегда
+ *  - SALES (владелец) — может выбрать/сменить легализатора (кросс-продажи) */
 export function canAssignLegalManager(
   user: SessionUser,
   lead: { salesManagerId: string | null },
@@ -68,6 +94,7 @@ export function canAssignLegalManager(
   return user.role === 'SALES' && lead.salesManagerId === user.id;
 }
 
+/** Архив / удаление — только ADMIN */
 export function canArchiveLead(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
@@ -76,36 +103,52 @@ export function canDeleteLead(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
+/** Управлять пользователями (создавать, деактивировать) — только ADMIN */
 export function canManageUsers(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
+/** Управлять воронками, этапами, шаблонами — только ADMIN */
 export function canManageSettings(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
+/** Видеть аналитику — только ADMIN */
 export function canViewAnalytics(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
+/** Удалять платежи — только ADMIN (изменения денег ответственны) */
 export function canDeletePayment(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
+/** Аудит-лог — только ADMIN */
 export function canViewAuditLog(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
+// ====================== ВИДИМОСТЬ ЧАТОВ ======================
+
+/**
+ * Видимость WhatsApp-каналов:
+ *  - ADMIN видит все
+ *  - Общий канал (ownerId === null) — видят все
+ *  - Личный канал — видит только владелец
+ */
 export function whatsappAccountFilter(user: SessionUser) {
   if (user.role === 'ADMIN') return {};
   return {
     OR: [
-      { ownerId: null },
-      { ownerId: user.id },
+      { ownerId: null },        // общие
+      { ownerId: user.id },     // его личный
     ],
   };
 }
 
+// ====================== УТИЛИТЫ ======================
+
+/** Бросает 403 если нет прав */
 export function assert(condition: boolean, message = 'Недостаточно прав') {
   if (!condition) {
     const e = new Error(message);

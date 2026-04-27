@@ -21,7 +21,7 @@ declare module 'next-auth' {
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
-  session: { strategy: 'jwt', maxAge: 60 * 60 * 24 * 30 },
+  session: { strategy: 'jwt', maxAge: 60 * 60 * 24 * 30 }, // 30 дней
   pages: { signIn: '/login' },
   providers: [
     Credentials({
@@ -36,11 +36,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         const user = await db.user.findUnique({ where: { email } });
         if (!user) return null;
+        // Деактивированных не пускаем
         if (!user.isActive) return null;
 
         const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) return null;
 
+        // Обновляем "последний вход"
         await db.user.update({
           where: { id: user.id },
           data:  { lastSeenAt: new Date(), status: 'ONLINE' },
@@ -74,11 +76,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
 });
 
+/** Хелпер: получить текущего пользователя или null */
 export async function currentUser() {
   const session = await auth();
   return session?.user ?? null;
 }
 
+/** Хелпер: получить юзера ИЛИ выкинуть 401 (для server actions) */
 export async function requireUser() {
   const user = await currentUser();
   if (!user) {
@@ -89,6 +93,7 @@ export async function requireUser() {
   return user;
 }
 
+/** Хелпер: только админ */
 export async function requireAdmin() {
   const user = await requireUser();
   if (user.role !== 'ADMIN') {

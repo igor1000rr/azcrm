@@ -1,16 +1,32 @@
-// OnlyOffice Document Server интеграция
-import crypto from 'node:crypto';
+// OnlyOffice Document Server интеграция.
+//
+// Архитектура:
+//   1. Anna открывает документ в карточке лида → /api/onlyoffice/config?docId=...
+//   2. Endpoint возвращает JSON конфиг с JWT-токеном
+//   3. Frontend инжектит api.js OnlyOffice и отрисовывает редактор
+//   4. OnlyOffice сохраняет → callback на /api/onlyoffice/callback
+//   5. Callback скачивает .docx с OO и сохраняет в storage, обновляет БД
+//
+// ВАЖНО: OnlyOffice сервер должен иметь доступ к нашему /api/files/...
+// и наоборот — мы должны иметь доступ к OnlyOffice по OO_PUBLIC_URL.
+// В docker-compose они в одной сети.
 
+import crypto from 'node:crypto';
+import path from 'node:path';
+
+// Публичный URL OnlyOffice — куда смотрит браузер пользователя
 export const OO_PUBLIC_URL = process.env.ONLYOFFICE_PUBLIC_URL ?? 'http://localhost:8080';
+// Внутренний URL — куда OnlyOffice стучится за callback'ом (внутри docker)
 export const OO_CALLBACK_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? 'http://localhost:3000';
+// Секрет JWT который указан в OnlyOffice (через docker env)
 const OO_JWT_SECRET = process.env.ONLYOFFICE_JWT_SECRET ?? 'change-me-in-production';
 
 export interface OnlyOfficeConfig {
   document: {
     fileType:  string;
-    key:       string;
+    key:       string;     // уникальный ключ — менять при смене содержимого
     title:     string;
-    url:       string;
+    url:       string;     // откуда OO скачает файл
     permissions: {
       edit:     boolean;
       download: boolean;
@@ -20,7 +36,7 @@ export interface OnlyOfficeConfig {
   };
   documentType: 'word' | 'cell' | 'slide' | 'pdf';
   editorConfig: {
-    callbackUrl: string;
+    callbackUrl: string;   // куда OO отправит callback при сохранении
     user: { id: string; name: string };
     customization: {
       autosave:     boolean;
@@ -36,7 +52,7 @@ export interface OnlyOfficeConfig {
   height: string;
   width:  string;
   type:   'desktop' | 'mobile' | 'embedded';
-  token?: string;
+  token?: string;          // подпись JWT всего конфига
 }
 
 export type DocFormat = 'DOCX' | 'XLSX' | 'PPTX' | 'PDF';
@@ -49,12 +65,16 @@ export function getFileExtension(format: DocFormat): string {
   return ({DOCX: 'docx', XLSX: 'xlsx', PPTX: 'pptx', PDF: 'pdf'} as const)[format];
 }
 
+/**
+ * Сборка конфига для OnlyOffice editor.
+ * Подписывает JWT-токеном чтобы OO принял запрос.
+ */
 export function buildEditorConfig(opts: {
   documentId: string;
-  documentKey: string;
+  documentKey: string;       // должен меняться при изменении файла
   fileName:   string;
   format:     DocFormat;
-  fileUrl:    string;
+  fileUrl:    string;        // относительный URL: /api/files/docs/...
   user:       { id: string; name: string };
   mode?:      'edit' | 'view';
 }): OnlyOfficeConfig {
@@ -95,10 +115,12 @@ export function buildEditorConfig(opts: {
     type:   'desktop',
   };
 
+  // Подписываем весь конфиг JWT
   config.token = signJwt(config);
   return config;
 }
 
+/** Простой HS256 JWT (без зависимостей) — OnlyOffice использует HS256 */
 export function signJwt(payload: Record<string, unknown>): string {
   const header = { alg: 'HS256', typ: 'JWT' };
   const b64Header  = base64url(JSON.stringify(header));
@@ -111,6 +133,7 @@ export function signJwt(payload: Record<string, unknown>): string {
   return `${data}.${sig}`;
 }
 
+/** Проверка JWT (для callback от OnlyOffice) */
 export function verifyJwt<T = Record<string, unknown>>(token: string): T | null {
   try {
     const [b64Header, b64Payload, sig] = token.split('.');
@@ -135,10 +158,21 @@ function base64url(str: string): string {
 
 function absoluteUrl(relativeOrAbsolute: string): string {
   if (relativeOrAbsolute.startsWith('http')) return relativeOrAbsolute;
+  // Внутри docker OnlyOffice идёт к app по внутренней сети
   const internal = process.env.APP_INTERNAL_URL ?? OO_CALLBACK_PUBLIC_URL;
   return `${internal}${relativeOrAbsolute}`;
 }
 
+/**
+ * Статусы callback'а OnlyOffice
+ * 0 — без изменений
+ * 1 — редактируется
+ * 2 — готов к сохранению (нужно скачать)
+ * 3 — ошибка сохранения
+ * 4 — закрыт без изменений
+ * 6 — редактируется, но текущая версия сохранена
+ * 7 — ошибка при принудительном сохранении
+ */
 export const OOCallbackStatus = {
   NO_CHANGES:    0,
   EDITING:       1,
@@ -152,7 +186,7 @@ export const OOCallbackStatus = {
 export interface OOCallbackBody {
   key:    string;
   status: number;
-  url?:   string;
-  users?: string[];
+  url?:   string;       // URL для скачивания нового состояния (status=2)
+  users?: string[];     // кто редактировал
   actions?: Array<{ type: number; userid: string }>;
 }

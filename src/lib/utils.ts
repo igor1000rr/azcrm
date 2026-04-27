@@ -1,10 +1,14 @@
 // Универсальные утилиты для UI и форматирования
 import clsx, { type ClassValue } from 'clsx';
 
+// Объединение Tailwind классов
 export function cn(...inputs: ClassValue[]) {
   return clsx(inputs);
 }
 
+// ====================== ДЕНЬГИ ======================
+
+/** Форматирует сумму без валюты: 12 345 */
 export function formatMoney(value: number | { toString(): string } | null | undefined) {
   if (value == null) return '0';
   const n = typeof value === 'number' ? value : Number(value.toString());
@@ -12,27 +16,40 @@ export function formatMoney(value: number | { toString(): string } | null | unde
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(n);
 }
 
+/** Форматирует с валютой: 12 345 zł */
 export function formatPrice(value: number | { toString(): string } | null | undefined) {
   return `${formatMoney(value)} zł`;
 }
 
+// ====================== ДАТЫ ======================
+
+/** ДД.ММ.ГГГГ */
 export function formatDate(d: Date | string | null | undefined) {
   if (!d) return '—';
   const date = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return date.toLocaleDateString('ru-RU', {
+    day:   '2-digit',
+    month: '2-digit',
+    year:  'numeric',
+  });
 }
 
+/** ДД.ММ ГГГГ ЧЧ:ММ */
 export function formatDateTime(d: Date | string | null | undefined) {
   if (!d) return '—';
   const date = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(date.getTime())) return '—';
   return date.toLocaleString('ru-RU', {
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    day:    '2-digit',
+    month:  '2-digit',
+    year:   'numeric',
+    hour:   '2-digit',
+    minute: '2-digit',
   });
 }
 
+/** ЧЧ:ММ */
 export function formatTime(d: Date | string | null | undefined) {
   if (!d) return '—';
   const date = d instanceof Date ? d : new Date(d);
@@ -40,12 +57,15 @@ export function formatTime(d: Date | string | null | undefined) {
   return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Относительное время: "5 мин назад", "вчера", "3 дня назад" */
 export function formatRelative(d: Date | string | null | undefined) {
   if (!d) return '';
   const date = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(date.getTime())) return '';
+
   const now  = Date.now();
-  const diff = (now - date.getTime()) / 1000;
+  const diff = (now - date.getTime()) / 1000; // в секундах
+
   if (diff < 60) return 'только что';
   if (diff < 3600) {
     const m = Math.floor(diff / 60);
@@ -57,12 +77,13 @@ export function formatRelative(d: Date | string | null | undefined) {
   }
   if (diff < 86400 * 2) return 'вчера';
   if (diff < 86400 * 7) {
-    const dn = Math.floor(diff / 86400);
-    return `${dn} ${plural(dn, 'день', 'дня', 'дней')} назад`;
+    const d = Math.floor(diff / 86400);
+    return `${d} ${plural(d, 'день', 'дня', 'дней')} назад`;
   }
   return formatDate(date);
 }
 
+/** Дни между датами (положительное число — в будущем) */
 export function daysUntil(d: Date | string | null | undefined): number | null {
   if (!d) return null;
   const date = d instanceof Date ? d : new Date(d);
@@ -71,11 +92,27 @@ export function daysUntil(d: Date | string | null | undefined): number | null {
   return Math.ceil(ms / (1000 * 60 * 60 * 24));
 }
 
+// ====================== ИМЕНА ======================
+
+/** Инициалы: "Иван Петров" → "ИП", максимум 2 буквы */
 export function initials(name: string | null | undefined): string {
   if (!name) return '?';
-  return name.trim().split(/\s+/).map((s) => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+  return name
+    .trim()
+    .split(/\s+/)
+    .map((s) => s[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
 }
 
+// ====================== ТЕЛЕФОНЫ ======================
+
+/**
+ * Нормализация номера: убираем пробелы, скобки, дефисы.
+ * Возвращает в формате "+48..." (если нет +, добавляем).
+ */
 export function normalizePhone(phone: string | null | undefined): string {
   if (!phone) return '';
   let p = phone.replace(/[\s\-()]/g, '');
@@ -83,18 +120,25 @@ export function normalizePhone(phone: string | null | undefined): string {
   return p;
 }
 
+/** Форматирование номера для отображения: "+48 731 006 935" */
 export function formatPhone(phone: string | null | undefined): string {
   if (!phone) return '';
   const p = normalizePhone(phone);
+  // PL: +48 XXX XXX XXX
   const m = p.match(/^\+48(\d{3})(\d{3})(\d{3})$/);
   if (m) return `+48 ${m[1]} ${m[2]} ${m[3]}`;
+  // UA: +380 XX XXX XX XX
   const ua = p.match(/^\+380(\d{2})(\d{3})(\d{2})(\d{2})$/);
   if (ua) return `+380 ${ua[1]} ${ua[2]} ${ua[3]} ${ua[4]}`;
+  // BY: +375 XX XXX-XX-XX
   const by = p.match(/^\+375(\d{2})(\d{3})(\d{2})(\d{2})$/);
   if (by) return `+375 ${by[1]} ${by[2]} ${by[3]} ${by[4]}`;
   return p;
 }
 
+// ====================== ПЛЮРАЛИЗАЦИЯ ======================
+
+/** Русское склонение по числу: plural(n, 'товар', 'товара', 'товаров') */
 export function plural(n: number, one: string, few: string, many: string): string {
   const mod10  = n % 10;
   const mod100 = n % 100;
@@ -103,10 +147,14 @@ export function plural(n: number, one: string, few: string, many: string): strin
   return many;
 }
 
+// ====================== ОБРЕЗАНИЕ ======================
+
 export function truncate(text: string | null | undefined, len = 60): string {
   if (!text) return '';
   return text.length > len ? text.slice(0, len - 1) + '…' : text;
 }
+
+// ====================== РАЗМЕРЫ ФАЙЛОВ ======================
 
 export function formatFileSize(bytes: number): string {
   if (!bytes) return '0 Б';

@@ -1,11 +1,22 @@
 // Клиент к whatsapp-worker процессу.
+// Worker — отдельный Node.js процесс, держащий puppeteer-сессии WhatsApp Web.
+//
+// API worker'а (внутренний, по WORKER_API_URL):
+//   POST /accounts/:id/connect   — старт сессии, возвращает QR код
+//   POST /accounts/:id/disconnect — отключить
+//   GET  /accounts/:id/status    — статус
+//   POST /accounts/:id/send      — отправить сообщение
+//
+// Worker дёргает наш CRM при событиях:
+//   POST /api/whatsapp/webhook   — { kind, accountId, ...data }
+
 const WORKER_URL = process.env.WHATSAPP_WORKER_URL ?? 'http://localhost:3100';
 const WORKER_AUTH_TOKEN = process.env.WHATSAPP_WORKER_TOKEN ?? '';
 
 interface ConnectResult {
-  qr?:        string;
+  qr?:        string;     // base64 QR-кода (если требуется сканирование)
   status:     'qr' | 'authenticating' | 'ready' | 'failed';
-  phoneNumber?: string;
+  phoneNumber?: string;   // подтверждённый номер после ready
   error?:     string;
 }
 
@@ -22,26 +33,32 @@ interface AccountStatus {
   qr?: string;
 }
 
+/** Запросить QR / подключиться к WhatsApp */
 export async function workerConnect(accountId: string): Promise<ConnectResult> {
   return workerCall<ConnectResult>('POST', `/accounts/${accountId}/connect`);
 }
 
+/** Отключить аккаунт */
 export async function workerDisconnect(accountId: string): Promise<{ ok: boolean }> {
   return workerCall<{ ok: boolean }>('POST', `/accounts/${accountId}/disconnect`);
 }
 
+/** Получить текущий статус аккаунта */
 export async function workerStatus(accountId: string): Promise<AccountStatus> {
   return workerCall<AccountStatus>('GET', `/accounts/${accountId}/status`);
 }
 
+/** Отправить сообщение */
 export async function workerSendMessage(
   accountId: string,
-  toPhone:   string,
+  toPhone:   string,        // полный международный формат
   body:      string,
   mediaUrl?: string,
 ): Promise<SendResult> {
   return workerCall<SendResult>('POST', `/accounts/${accountId}/send`, {
-    to: toPhone, body, mediaUrl,
+    to:    toPhone,
+    body,
+    mediaUrl,
   });
 }
 
@@ -67,6 +84,7 @@ async function workerCall<T>(
     }
     return res.json() as Promise<T>;
   } catch (e) {
+    // Worker может быть не запущен — возвращаем дефолт
     if ((e as Error).message.includes('fetch failed')) {
       throw new Error('WhatsApp worker недоступен. Проверьте что процесс запущен.');
     }
@@ -74,7 +92,8 @@ async function workerCall<T>(
   }
 }
 
+/** Проверка валидности webhook'a от worker'а — простая проверка токена */
 export function verifyWebhookToken(token: string | null): boolean {
-  if (!WORKER_AUTH_TOKEN) return true;
+  if (!WORKER_AUTH_TOKEN) return true; // если не настроен — пропускаем
   return token === WORKER_AUTH_TOKEN;
 }

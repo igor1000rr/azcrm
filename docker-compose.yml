@@ -1,4 +1,12 @@
+# AZ Group CRM — полный стек
+# - db: PostgreSQL 16
+# - app: Next.js приложение
+# - wa-worker: WhatsApp Web сервер на puppeteer
+# - onlyoffice: OnlyOffice Document Server
+
 services:
+
+  # ============ БАЗА ДАННЫХ ============
   db:
     image: postgres:16-alpine
     container_name: azgroup-db
@@ -17,6 +25,7 @@ services:
       timeout:  5s
       retries:  5
 
+  # ============ ПРИЛОЖЕНИЕ ============
   app:
     build:
       context: .
@@ -59,6 +68,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ============ WHATSAPP WORKER ============
   wa-worker:
     build:
       context: ./whatsapp-worker
@@ -75,6 +85,7 @@ services:
       - app
     restart: unless-stopped
 
+  # ============ ONLYOFFICE ============
   onlyoffice:
     image: onlyoffice/documentserver:latest
     container_name: azgroup-onlyoffice

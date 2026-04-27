@@ -10,17 +10,22 @@ interface NotifyInput {
   title:  string;
   body?:  string | null;
   link?:  string | null;
+  /** Отправить email-копию даже если у юзера выключено */
   forceEmail?: boolean;
 }
 
 const APP_URL = process.env.APP_PUBLIC_URL ?? 'http://localhost:3000';
 
+/**
+ * Критичные типы — для них шлём email всегда (если SMTP настроен)
+ */
 const CRITICAL_KINDS: NotificationKind[] = [
   'LEAD_TRANSFERRED',
   'TASK_OVERDUE',
 ];
 
 export async function notify(input: NotifyInput): Promise<void> {
+  // 1. БД
   await db.notification.create({
     data: {
       userId: input.userId,
@@ -31,6 +36,7 @@ export async function notify(input: NotifyInput): Promise<void> {
     },
   });
 
+  // 2. Push (fire and forget)
   sendPushToUser(input.userId, {
     title: input.title,
     body:  input.body ?? undefined,
@@ -38,6 +44,7 @@ export async function notify(input: NotifyInput): Promise<void> {
     tag:   input.kind,
   }).catch((e) => console.error('push failed:', e));
 
+  // 3. Email (если настроен и тип критичный)
   if (
     isEmailConfigured()
     && (input.forceEmail || CRITICAL_KINDS.includes(input.kind))

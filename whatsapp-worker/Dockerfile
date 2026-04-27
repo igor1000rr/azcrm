@@ -1,5 +1,7 @@
+# WhatsApp Worker — отдельный контейнер с puppeteer и Chromium
 FROM node:20-bookworm-slim
 
+# Зависимости для Chromium (puppeteer)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     fonts-liberation fonts-noto-color-emoji \

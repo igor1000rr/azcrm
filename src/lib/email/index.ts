@@ -1,4 +1,7 @@
-// Email уведомления через SMTP
+// Email уведомления через SMTP (nodemailer).
+// Используется для дублирования критичных уведомлений на email,
+// если у юзера нет push или браузер закрыт.
+
 import nodemailer from 'nodemailer';
 
 const SMTP_HOST = process.env.SMTP_HOST ?? '';
@@ -15,8 +18,10 @@ function getTransporter(): nodemailer.Transporter | null {
   if (transporter) return transporter;
 
   transporter = nodemailer.createTransport({
-    host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_SECURE,
-    auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
+    host:   SMTP_HOST,
+    port:   SMTP_PORT,
+    secure: SMTP_SECURE,
+    auth:   SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
   });
 
   return transporter;
@@ -54,9 +59,10 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
   }
 }
 
+/** Простой HTML-шаблон письма с фирменным стилем */
 export function renderEmailTemplate(opts: {
   title: string;
-  body:  string;
+  body:  string;       // текст параграфами (\n\n)
   ctaUrl?: string;
   ctaLabel?: string;
 }): string {

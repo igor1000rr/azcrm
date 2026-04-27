@@ -4,13 +4,17 @@ import { headers } from 'next/headers';
 
 interface AuditInput {
   userId?:    string | null;
-  action:     string;
+  action:     string;       // 'lead.create', 'payment.delete' и т.д.
   entityType?: string;
   entityId?:   string;
   before?:    Record<string, unknown> | null;
   after?:     Record<string, unknown> | null;
 }
 
+/**
+ * Записать действие в аудит-лог.
+ * Не бросает ошибки чтобы не сломать основное действие.
+ */
 export async function audit(input: AuditInput): Promise<void> {
   try {
     let ipAddress: string | null = null;

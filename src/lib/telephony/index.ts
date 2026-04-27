@@ -1,22 +1,43 @@
-// Абстракция провайдера телефонии (Play в Польше).
+// Абстракция провайдера телефонии.
+// Сейчас реализован Play (Польша). При смене провайдера — добавить новый класс
+// и переключить через TELEPHONY_PROVIDER в .env
+
 export interface CallRecord {
+  /** Уникальный ID звонка у провайдера — для дедупликации */
   externalId:  string;
   direction:   'IN' | 'OUT' | 'MISSED';
+  /** Кто звонил (международный формат +48...) */
   fromNumber:  string;
+  /** Кому звонил */
   toNumber:    string;
   startedAt:   Date;
   endedAt?:    Date;
   durationSec?: number;
+  /** Прямая ссылка на запись (mp3) если есть */
   recordUrl?:  string;
+  /** Сырые данные провайдера для архива */
   metadata?:   Record<string, unknown>;
 }
 
 export interface TelephonyProvider {
   name: string;
+  /**
+   * Получить новые звонки за период.
+   * Возвращает массив звонков, готовых к импорту.
+   */
   fetchCalls(opts: { since: Date; until?: Date }): Promise<CallRecord[]>;
+  /**
+   * Скачать запись разговора если нужно.
+   * Возвращает Buffer или null если нет записи.
+   */
   downloadRecord?(externalId: string): Promise<Buffer | null>;
+  /**
+   * Проверка что провайдер настроен (есть API ключ и т.д.)
+   */
   isConfigured(): boolean;
 }
+
+// ============ PLAY (Польша) ============
 
 const PLAY_API_BASE = process.env.PLAY_API_BASE ?? 'https://api.play.pl/v1';
 const PLAY_API_KEY  = process.env.PLAY_API_KEY  ?? '';
@@ -30,6 +51,10 @@ export class PlayProvider implements TelephonyProvider {
 
   async fetchCalls(opts: { since: Date; until?: Date }): Promise<CallRecord[]> {
     if (!this.isConfigured()) return [];
+
+    // ВАЖНО: точный формат API Play узнаем когда Anna даст документацию.
+    // Сейчас — placeholder с правдоподобной структурой запроса.
+    // После получения доступа — меняем endpoint, заголовки, парсинг.
 
     const params = new URLSearchParams({
       from: opts.since.toISOString(),
@@ -96,10 +121,13 @@ export class PlayProvider implements TelephonyProvider {
   }
 }
 
+// ============ ВЫБОР ПРОВАЙДЕРА ============
+
 let provider: TelephonyProvider | null = null;
 
 export function getTelephonyProvider(): TelephonyProvider {
   if (provider) return provider;
+  // Сейчас только Play. Можно расширить через ENV переменную TELEPHONY_PROVIDER.
   provider = new PlayProvider();
   return provider;
 }
@@ -108,7 +136,7 @@ function normalizeIntl(p: string): string {
   let cleaned = p.replace(/[\s\-()]/g, '');
   if (!cleaned.startsWith('+')) {
     if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
-    else if (/^\d/.test(cleaned)) cleaned = '+48' + cleaned;
+    else if (/^\d/.test(cleaned)) cleaned = '+48' + cleaned; // дефолт PL
   }
   return cleaned;
 }
