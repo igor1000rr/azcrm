@@ -48,7 +48,10 @@ interface LeadCardViewProps {
   };
   client: {
     id: string; fullName: string; birthDate: string | null;
-    nationality: string | null; phone: string; altPhone: string | null;
+    nationality: string | null; phone: string;
+    altPhone: string | null;
+    altPhone2: string | null;
+    altPhone3: string | null;
     email: string | null; addressPL: string | null; addressHome: string | null;
   };
   city: { id: string; name: string } | null;
@@ -219,6 +222,10 @@ function ClientHeader({ client, lead, city, stages, currentUser }: LeadCardViewP
 function ClientCard({ client, lead }: LeadCardViewProps) {
   const [editing, setEditing] = useState(false);
 
+  // Собираем все доп. телефоны в один читаемый список
+  const altPhones = [client.altPhone, client.altPhone2, client.altPhone3]
+    .filter((p): p is string => Boolean(p && p.trim()));
+
   return (
     <Section
       title="Карточка клиента"
@@ -244,6 +251,12 @@ function ClientCard({ client, lead }: LeadCardViewProps) {
           ],
         ]}
       />
+      {altPhones.length > 0 && (
+        <FieldFull
+          label={`Доп. телефоны (${altPhones.length})`}
+          value={altPhones.map(formatPhone).join('   ·   ')}
+        />
+      )}
       <FieldFull label="Адрес проживания в Польше" value={client.addressPL} />
       <FieldFull label="Адрес проживания на родине" value={client.addressHome} />
 
@@ -267,6 +280,8 @@ function ClientEditModal({
   const [fullName, setFullName]       = useState(client.fullName);
   const [phone, setPhone]             = useState(client.phone);
   const [altPhone, setAltPhone]       = useState(client.altPhone ?? '');
+  const [altPhone2, setAltPhone2]     = useState(client.altPhone2 ?? '');
+  const [altPhone3, setAltPhone3]     = useState(client.altPhone3 ?? '');
   const [email, setEmail]             = useState(client.email ?? '');
   const [birthDate, setBirthDate]     = useState(
     client.birthDate ? client.birthDate.slice(0, 10) : '',
@@ -284,7 +299,9 @@ function ClientEditModal({
       await updateClient({
         id: client.id,
         fullName, phone,
-        altPhone: altPhone || null,
+        altPhone:  altPhone  || null,
+        altPhone2: altPhone2 || null,
+        altPhone3: altPhone3 || null,
         email,
         birthDate: birthDate || null,
         nationality: nationality || null,
@@ -320,11 +337,17 @@ function ClientEditModal({
         <FormField label="Дата рождения">
           <Input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} />
         </FormField>
-        <FormField label="Телефон" required>
+        <FormField label="Телефон (основной)" required hint="Уникален в системе">
           <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
         </FormField>
-        <FormField label="Доп. телефон">
-          <Input type="tel" value={altPhone} onChange={(e) => setAltPhone(e.target.value)} />
+        <FormField label="Доп. телефон 1">
+          <Input type="tel" value={altPhone} onChange={(e) => setAltPhone(e.target.value)} placeholder="+48..." />
+        </FormField>
+        <FormField label="Доп. телефон 2">
+          <Input type="tel" value={altPhone2} onChange={(e) => setAltPhone2(e.target.value)} placeholder="+48..." />
+        </FormField>
+        <FormField label="Доп. телефон 3">
+          <Input type="tel" value={altPhone3} onChange={(e) => setAltPhone3(e.target.value)} placeholder="+48..." />
         </FormField>
         <FormField label="Email">
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
