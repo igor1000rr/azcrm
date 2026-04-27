@@ -224,9 +224,6 @@ export function FunnelView({
             <Button onClick={() => router.refresh()} className="hidden md:inline-flex">
               <RefreshCw size={12} /> Обновить
             </Button>
-            <Button className="hidden md:inline-flex">
-              <Download size={12} /> Экспорт
-            </Button>
             <Link href="/clients/new">
               <Button variant="primary">
                 <Plus size={12} /> Новый лид
@@ -308,27 +305,38 @@ export function FunnelView({
           )}
         </button>
 
-        <div className="ml-auto hidden md:flex border border-line rounded-md p-0.5 bg-paper">
-          <button
-            type="button"
-            onClick={() => setViewMode('kanban')}
-            className={cn(
-              'px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1',
-              viewMode === 'kanban' ? 'bg-navy text-white' : 'text-ink-3 hover:text-ink',
-            )}
-          >
-            <LayoutGrid size={11} /> Канбан
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('list')}
-            className={cn(
-              'px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1',
-              viewMode === 'list' ? 'bg-navy text-white' : 'text-ink-3 hover:text-ink',
-            )}
-          >
-            <List size={11} /> Список
-          </button>
+        <div className="ml-auto hidden md:flex items-center gap-2">
+          {currentUserRole === 'ADMIN' && (
+            <a
+              href={`/api/leads/export?funnel=${currentFunnelId}${currentFilters.city ? `&city=${currentFilters.city}` : ''}`}
+              className="px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1 border border-line bg-paper text-ink-2 hover:text-ink hover:bg-bg"
+              title="Экспорт всех лидов воронки в CSV"
+            >
+              <Download size={11} /> Экспорт
+            </a>
+          )}
+          <div className="flex border border-line rounded-md p-0.5 bg-paper">
+            <button
+              type="button"
+              onClick={() => setViewMode('kanban')}
+              className={cn(
+                'px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1',
+                viewMode === 'kanban' ? 'bg-navy text-white' : 'text-ink-3 hover:text-ink',
+              )}
+            >
+              <LayoutGrid size={11} /> Канбан
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              className={cn(
+                'px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1',
+                viewMode === 'list' ? 'bg-navy text-white' : 'text-ink-3 hover:text-ink',
+              )}
+            >
+              <List size={11} /> Список
+            </button>
+          </div>
         </div>
       </div>
 
