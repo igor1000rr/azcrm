@@ -12,7 +12,6 @@
 // В docker-compose они в одной сети.
 
 import crypto from 'node:crypto';
-import path from 'node:path';
 
 // Публичный URL OnlyOffice — куда смотрит браузер пользователя
 export const OO_PUBLIC_URL = process.env.ONLYOFFICE_PUBLIC_URL ?? 'http://localhost:8080';
@@ -115,8 +114,8 @@ export function buildEditorConfig(opts: {
     type:   'desktop',
   };
 
-  // Подписываем весь конфиг JWT
-  config.token = signJwt(config);
+  // Подписываем весь конфиг JWT (кастуем к Record для signJwt-signature)
+  config.token = signJwt(config as unknown as Record<string, unknown>);
   return config;
 }
 

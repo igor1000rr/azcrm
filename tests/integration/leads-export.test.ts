@@ -39,8 +39,15 @@ describe('GET /api/leads/export', () => {
 
     const res = await GET(makeReq('?funnel=f1'));
     expect(res.headers.get('Content-Type')).toContain('text/csv');
+
+    // BOM нужно проверять в байтах — Response.text() стрипает BOM по WHATWG spec
+    const bytes = new Uint8Array(await res.clone().arrayBuffer());
+    expect(bytes[0]).toBe(0xEF);
+    expect(bytes[1]).toBe(0xBB);
+    expect(bytes[2]).toBe(0xBF);
+
+    // Содержимое проверяем через распарсенный текст (BOM уже стрипнут)
     const body = await res.text();
-    expect(body.charCodeAt(0)).toBe(0xFEFF);
     expect(body).toContain('Иван Иванов');
     expect(body).toContain('+48123');
     expect(body).toContain('WhatsApp');

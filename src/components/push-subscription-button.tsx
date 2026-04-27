@@ -49,10 +49,11 @@ export function PushSubscriptionButton() {
         return;
       }
 
-      // Подписываемся
+      // Подписываемся. PushSubscriptionOptionsInit в текущем lib.dom не дружит
+      // с Uint8Array<ArrayBufferLike> (баг TS5.7) — каст до BufferSource.
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(key),
+        applicationServerKey: urlBase64ToUint8Array(key) as unknown as BufferSource,
       });
 
       // Отправляем на сервер

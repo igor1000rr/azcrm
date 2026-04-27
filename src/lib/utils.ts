@@ -8,12 +8,20 @@ export function cn(...inputs: ClassValue[]) {
 
 // ====================== ДЕНЬГИ ======================
 
-/** Форматирует сумму без валюты: 12 345 */
+/**
+ * Форматирует сумму без валюты: 12 345 или 12 345,67.
+ * Копейки показываются только если они не нулевые — это важно
+ * для комиссий менеджеров (часто дробные суммы вроде 61.73 zł)
+ * и в то же время не засоряет KPI целыми суммами (1 000 вместо 1 000,00).
+ */
 export function formatMoney(value: number | { toString(): string } | null | undefined) {
   if (value == null) return '0';
   const n = typeof value === 'number' ? value : Number(value.toString());
   if (Number.isNaN(n)) return '0';
-  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(n);
+  return new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(n);
 }
 
 /** Форматирует с валютой: 12 345 zł */
@@ -83,13 +91,17 @@ export function formatRelative(d: Date | string | null | undefined) {
   return formatDate(date);
 }
 
-/** Дни между датами (положительное число — в будущем) */
+/**
+ * Дни между датами (положительное число — в будущем).
+ * Нормализуем -0 → 0 чтобы Object.is работал предсказуемо.
+ */
 export function daysUntil(d: Date | string | null | undefined): number | null {
   if (!d) return null;
   const date = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(date.getTime())) return null;
   const ms = date.getTime() - Date.now();
-  return Math.ceil(ms / (1000 * 60 * 60 * 24));
+  const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+  return days === 0 ? 0 : days; // нормализация -0 → +0
 }
 
 // ====================== ИМЕНА ======================

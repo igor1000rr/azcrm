@@ -4,22 +4,28 @@
 // Только для админа (расходы — закрытый раздел).
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
-import { saveBuffer } from '@/lib/storage';
+import { saveBuffer, type StorageBucket } from '@/lib/storage';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 МБ
-const ALLOWED_BUCKETS = ['expenses'] as const;
+const ALLOWED_BUCKETS = ['expenses'] as const satisfies readonly StorageBucket[];
+
+function isAllowedBucket(b: string): b is (typeof ALLOWED_BUCKETS)[number] {
+  return (ALLOWED_BUCKETS as readonly string[]).includes(b);
+}
 
 export async function POST(req: NextRequest) {
   try {
     await requireAdmin();
     const form = await req.formData();
     const file = form.get('file') as File | null;
-    const bucket = (form.get('bucket') as string | null) ?? 'expenses';
+    const bucketRaw = (form.get('bucket') as string | null) ?? 'expenses';
 
     if (!file) return NextResponse.json({ error: 'file required' }, { status: 400 });
-    if (!ALLOWED_BUCKETS.includes(bucket as (typeof ALLOWED_BUCKETS)[number])) {
+    if (!isAllowedBucket(bucketRaw)) {
       return NextResponse.json({ error: 'invalid bucket' }, { status: 400 });
     }
+    const bucket: StorageBucket = bucketRaw;
+
     if (file.size > MAX_FILE_SIZE) {
       return NextResponse.json({ error: 'file too large (max 50 MB)' }, { status: 413 });
     }

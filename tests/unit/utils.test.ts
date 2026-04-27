@@ -7,9 +7,14 @@ describe('formatMoney', () => {
     const out = formatMoney(1000);
     expect(out.replace(/[\s,]/g, '')).toBe('1000');
   });
-  it('копейки сохраняются если есть', () => {
+  it('копейки сохраняются если есть (важно для комиссий)', () => {
     const out = formatMoney(1234.56);
-    expect(out).toMatch(/1[\s,]?234[.,]56/);
+    // Русская локаль использует "," как разделитель дробной части
+    expect(out).toMatch(/1[\s ]?234[.,]56/);
+  });
+  it('маленькая сумма с копейками — комиссия менеджера', () => {
+    const out = formatMoney(61.73);
+    expect(out).toMatch(/61[.,]73/);
   });
   it('0 → "0"', () => {
     expect(formatMoney(0).replace(/[\s,]/g, '')).toBe('0');
@@ -37,9 +42,13 @@ describe('plural (русский)', () => {
 });
 
 describe('daysUntil', () => {
+  // toEqual (не toBe) — не различает -0 и +0, но реализация всё равно нормализует
   it('сегодня → 0', () => {
     const today = new Date().toISOString();
-    expect(daysUntil(today)).toBe(0);
+    const result = daysUntil(today);
+    expect(result).toEqual(0);
+    // проверяем что именно +0, не -0 (важно для Object.is в production)
+    expect(Object.is(result, -0)).toBe(false);
   });
   it('завтра → 1', () => {
     const tomorrow = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
