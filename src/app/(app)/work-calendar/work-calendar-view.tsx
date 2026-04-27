@@ -28,6 +28,10 @@ interface Props {
 const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
+// Дефолт рабочего времени в офисе AZ Group (Анна: «у нас рабочее время с 8 до 16»)
+const DEFAULT_START = '08:00';
+const DEFAULT_END   = '16:00';
+
 export function WorkCalendarView({ year, month, targetUser, canPickUser, allUsers, canEdit, logs, totals }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
 
@@ -165,8 +169,8 @@ function DayEditor({ date, existing, targetUserId, onClose }: {
   targetUserId: string | null;
   onClose: () => void;
 }) {
-  const [start, setStart] = useState(existing?.startTime ?? '09:00');
-  const [end, setEnd] = useState(existing?.endTime ?? '18:00');
+  const [start, setStart] = useState(existing?.startTime ?? DEFAULT_START);
+  const [end, setEnd] = useState(existing?.endTime ?? DEFAULT_END);
   const [notes, setNotes] = useState(existing?.notes ?? '');
   const [pending, startTransition] = useTransition();
 
