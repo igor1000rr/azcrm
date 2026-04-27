@@ -53,6 +53,8 @@ jobs:
       VAPID_PRIVATE_KEY:      test_private_xxxxxxxxxxxxxxxxxxxxxxxx
       VAPID_SUBJECT:          mailto:test@local
       NEXTAUTH_URL:           http://localhost:3000
+      # Сообщаем Playwright что сервер уже запущен — пусть не поднимает свой
+      E2E_BASE_URL:           http://localhost:3000
 
     steps:
       - uses: actions/checkout@v4
