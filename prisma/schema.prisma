@@ -1,0 +1,799 @@
+// ============================================================
+// AZ Group CRM — схема БД
+// Миграционная юридическая фирма в Польше
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ПОЛЬЗОВАТЕЛИ И КОМАНДА
+// ============================================================
+
+enum UserRole {
+  ADMIN
+  SALES
+  LEGAL
+}
+
+enum UserStatus {
+  ONLINE
+  AWAY
+  OFFLINE
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         UserRole   @default(SALES)
+  status       UserStatus @default(OFFLINE)
+  avatar       String?
+  isActive     Boolean    @default(true)
+  phone        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  lastSeenAt   DateTime?
+
+  googleAccessToken  String?  @db.Text
+  googleRefreshToken String?  @db.Text
+  googleCalendarId   String?
+  googleConnectedAt  DateTime?
+
+  salesLeads     Lead[]            @relation("SalesManager")
+  legalLeads     Lead[]            @relation("LegalManager")
+  ownedClients   Client[]          @relation("ClientOwner")
+
+  whatsappAccounts WhatsappAccount[]
+
+  notes          Note[]
+  payments       Payment[]
+  events         LeadEvent[]
+  tasks          Task[]            @relation("TaskAssignee")
+  createdTasks   Task[]            @relation("TaskCreator")
+  calendarEvents CalendarEvent[]
+  sessions       Session[]
+  auditLogs      AuditLog[]
+  notifications  Notification[]
+  uploadedFiles  ClientFile[]
+  documents      InternalDocument[]
+  sentMessages   ChatMessage[]     @relation("MessageSender")
+
+  teamChatMembers   TeamChatMember[]
+  teamChatMessages  TeamChatMessage[]
+  pushSubscriptions PushSubscription[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  ipAddress String?
+  userAgent String?  @db.Text
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+}
+
+// ============================================================
+// СПРАВОЧНИКИ
+// ============================================================
+
+model City {
+  id        String  @id @default(cuid())
+  name      String  @unique
+  isDefault Boolean @default(false)
+  position  Int     @default(0)
+  isActive  Boolean @default(true)
+
+  clients   Client[]
+  leads     Lead[]
+}
+
+model Funnel {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  position    Int      @default(0)
+  isActive    Boolean  @default(true)
+  color       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stages       Stage[]
+  leads        Lead[]
+  docTemplates DocumentTemplate[]
+}
+
+model Stage {
+  id        String   @id @default(cuid())
+  funnelId  String
+  funnel    Funnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  name      String
+  color     String?
+  position  Int      @default(0)
+  isFinal   Boolean  @default(false)
+  isLost    Boolean  @default(false)
+
+  leads     Lead[]
+
+  @@unique([funnelId, position])
+  @@index([funnelId])
+}
+
+// ============================================================
+// КЛИЕНТ И ЛИД
+// ============================================================
+
+model Client {
+  id            String   @id @default(cuid())
+  fullName      String
+  birthDate     DateTime?
+  nationality   String?
+  phone         String   @unique
+  altPhone      String?
+  email         String?
+  addressPL     String?  @db.Text
+  addressHome   String?  @db.Text
+  cityId        String?
+  city          City?    @relation(fields: [cityId], references: [id])
+  ownerId       String?
+  owner         User?    @relation("ClientOwner", fields: [ownerId], references: [id])
+  source        String?
+  notes         String?  @db.Text
+  isArchived    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  leads         Lead[]
+  files         ClientFile[]
+  calls         Call[]
+  chatThreads   ChatThread[]
+
+  @@index([phone])
+  @@index([fullName])
+  @@index([ownerId])
+}
+
+model Lead {
+  id            String   @id @default(cuid())
+
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  funnelId      String
+  funnel        Funnel   @relation(fields: [funnelId], references: [id])
+  stageId       String
+  stage         Stage    @relation(fields: [stageId], references: [id])
+
+  cityId        String?
+  city          City?    @relation(fields: [cityId], references: [id])
+
+  salesManagerId String?
+  salesManager   User?   @relation("SalesManager", fields: [salesManagerId], references: [id])
+  legalManagerId String?
+  legalManager   User?   @relation("LegalManager", fields: [legalManagerId], references: [id])
+
+  attorney      String?
+  source        String?
+  whatsappAccountId String?
+  whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
+
+  totalAmount   Decimal  @default(0) @db.Decimal(10, 2)
+
+  firstContactAt    DateTime?
+  fingerprintDate   DateTime?
+  fingerprintLocation String?
+
+  isArchived    Boolean  @default(false)
+  closedAt      DateTime?
+  summary       String?  @db.Text
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  documents     LeadDocument[]
+  payments      Payment[]
+  notes         Note[]
+  events        LeadEvent[]
+  calendarEvents CalendarEvent[]
+  tasks         Task[]
+  internalDocs  InternalDocument[]
+  calls         Call[]
+  chatThreads   ChatThread[]
+
+  @@index([clientId])
+  @@index([funnelId, stageId])
+  @@index([salesManagerId])
+  @@index([legalManagerId])
+  @@index([cityId])
+  @@index([fingerprintDate])
+  @@index([isArchived])
+}
+
+// ============================================================
+// ДОКУМЕНТЫ ЛИДА
+// ============================================================
+
+model DocumentTemplate {
+  id        String   @id @default(cuid())
+  funnelId  String
+  funnel    Funnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  name      String
+  position  Int      @default(0)
+  isRequired Boolean @default(true)
+
+  @@index([funnelId])
+}
+
+model LeadDocument {
+  id          String   @id @default(cuid())
+  leadId      String
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  name        String
+  isPresent   Boolean  @default(false)
+  fileUrl     String?
+  fileName    String?
+  fileSize    Int?
+  uploadedAt  DateTime?
+  position    Int      @default(0)
+  notes       String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([leadId])
+}
+
+// ============================================================
+// ФАЙЛЫ КЛИЕНТА
+// ============================================================
+
+enum FileCategory {
+  GENERAL
+  PASSPORT
+  CONTRACT
+  CERTIFICATE
+  PHOTO
+  SCAN
+  OTHER
+}
+
+model ClientFile {
+  id          String       @id @default(cuid())
+  clientId    String
+  client      Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String
+  fileUrl     String
+  fileSize    Int
+  mimeType    String?
+  category    FileCategory @default(GENERAL)
+  uploadedById String?
+  uploadedBy   User?       @relation(fields: [uploadedById], references: [id])
+  notes       String?      @db.Text
+  createdAt   DateTime     @default(now())
+
+  @@index([clientId])
+  @@index([uploadedById])
+}
+
+// ============================================================
+// ВНУТРЕННИЕ ДОКУМЕНТЫ — OnlyOffice
+// ============================================================
+
+enum InternalDocFormat {
+  DOCX
+  XLSX
+  PPTX
+  PDF
+}
+
+enum InternalDocSource {
+  BLANK
+  TEMPLATE
+  UPLOAD
+}
+
+model DocumentBlueprint {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  fileUrl     String
+  format      InternalDocFormat @default(DOCX)
+  placeholders String[] @default([])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  documents   InternalDocument[]
+}
+
+model InternalDocument {
+  id           String   @id @default(cuid())
+  leadId       String
+  lead         Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  name         String
+  fileUrl      String
+  format       InternalDocFormat @default(DOCX)
+  fileSize     Int?
+  source       InternalDocSource @default(BLANK)
+  blueprintId  String?
+  blueprint    DocumentBlueprint? @relation(fields: [blueprintId], references: [id])
+  ooDocumentKey String?
+  createdById  String?
+  createdBy    User?    @relation(fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  version      Int      @default(1)
+  parentId     String?
+  parent       InternalDocument?  @relation("DocVersions", fields: [parentId], references: [id])
+  versions     InternalDocument[] @relation("DocVersions")
+
+  @@index([leadId])
+  @@index([createdById])
+}
+
+// ============================================================
+// ПЛАТЕЖИ
+// ============================================================
+
+enum PaymentMethod {
+  CARD
+  CASH
+  TRANSFER
+  OTHER
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  leadId    String
+  lead      Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  amount    Decimal       @db.Decimal(10, 2)
+  method    PaymentMethod @default(CASH)
+  paidAt    DateTime      @default(now())
+  notes     String?       @db.Text
+  createdById String?
+  createdBy   User?       @relation(fields: [createdById], references: [id])
+  createdAt DateTime      @default(now())
+
+  @@index([leadId])
+  @@index([paidAt])
+}
+
+// ============================================================
+// ЗАМЕТКИ
+// ============================================================
+
+model Note {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String   @db.Text
+  mentions  String[] @default([])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId])
+  @@index([authorId])
+}
+
+// ============================================================
+// СОБЫТИЯ И КАЛЕНДАРЬ
+// ============================================================
+
+enum EventKind {
+  LEAD_CREATED
+  STAGE_CHANGED
+  MANAGER_CHANGED
+  PAYMENT_ADDED
+  PAYMENT_REMOVED
+  DOCUMENT_TOGGLED
+  DOCUMENT_UPLOADED
+  FINGERPRINT_SET
+  EXTRA_CALL_SET
+  CALL_LOGGED
+  MESSAGE_RECEIVED
+  MESSAGE_SENT
+  NOTE_ADDED
+  TASK_CREATED
+  ARCHIVED
+  RESTORED
+  CUSTOM
+}
+
+model LeadEvent {
+  id        String    @id @default(cuid())
+  leadId    String
+  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    User?     @relation(fields: [authorId], references: [id])
+  kind      EventKind
+  payload   Json?
+  message   String?   @db.Text
+  createdAt DateTime  @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+enum CalendarKind {
+  FINGERPRINT
+  EXTRA_CALL
+  CONSULTATION
+  INTERNAL_MEETING
+  CUSTOM
+}
+
+model CalendarEvent {
+  id          String       @id @default(cuid())
+  leadId      String?
+  lead        Lead?        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  ownerId     String?
+  owner       User?        @relation(fields: [ownerId], references: [id])
+  kind        CalendarKind @default(CUSTOM)
+  title       String
+  description String?      @db.Text
+  location    String?
+  startsAt    DateTime
+  endsAt      DateTime?
+  googleId    String?
+  reminderSent7d  Boolean  @default(false)
+  reminderSent1d  Boolean  @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  participants CalendarEventParticipant[]
+
+  @@index([leadId])
+  @@index([ownerId])
+  @@index([startsAt])
+}
+
+model CalendarEventParticipant {
+  id        String        @id @default(cuid())
+  eventId   String
+  event     CalendarEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  userId    String
+  status    String        @default("invited")
+
+  @@unique([eventId, userId])
+  @@index([userId])
+}
+
+// ============================================================
+// КАНАЛЫ СВЯЗИ
+// ============================================================
+
+enum ChannelKind {
+  WHATSAPP
+  TELEGRAM
+  PHONE
+  EMAIL
+}
+
+model WhatsappAccount {
+  id          String   @id @default(cuid())
+  phoneNumber String   @unique
+  label       String
+  ownerId     String?
+  owner       User?    @relation(fields: [ownerId], references: [id])
+  isConnected Boolean  @default(false)
+  sessionData String?  @db.Text
+  lastSeenAt  DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  threads     ChatThread[]
+  leads       Lead[]
+  messages    ChatMessage[]
+
+  @@index([ownerId])
+}
+
+model ChatThread {
+  id          String   @id @default(cuid())
+  channel     ChannelKind
+  clientId    String?
+  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  leadId      String?
+  lead        Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  whatsappAccountId String?
+  whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
+  externalId  String?
+  externalPhoneNumber String?
+  externalUserName    String?
+  unreadCount Int      @default(0)
+  lastMessageAt DateTime?
+  lastMessageText String? @db.Text
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  messages    ChatMessage[]
+
+  @@index([clientId])
+  @@index([leadId])
+  @@index([channel, externalId])
+}
+
+enum MessageDirection {
+  IN
+  OUT
+  SYSTEM
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  AUDIO
+  VIDEO
+  LOCATION
+  CONTACT
+  TEMPLATE
+  CALL
+  SYSTEM
+}
+
+model ChatMessage {
+  id          String           @id @default(cuid())
+  threadId    String
+  thread      ChatThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  whatsappAccountId String?
+  whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
+  direction   MessageDirection
+  type        MessageType      @default(TEXT)
+  body        String?          @db.Text
+  mediaUrl    String?
+  mediaName   String?
+  mediaSize   Int?
+  externalId  String?
+  senderId    String?
+  sender      User?            @relation("MessageSender", fields: [senderId], references: [id])
+  isRead      Boolean          @default(false)
+  deliveredAt DateTime?
+  readAt      DateTime?
+  createdAt   DateTime         @default(now())
+
+  @@index([threadId, createdAt])
+  @@index([externalId])
+}
+
+model ChatTemplate {
+  id        String   @id @default(cuid())
+  name      String
+  body      String   @db.Text
+  category  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================================
+// ЗВОНКИ
+// ============================================================
+
+enum CallDirection {
+  IN
+  OUT
+  MISSED
+}
+
+model Call {
+  id          String        @id @default(cuid())
+  clientId    String?
+  client      Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  leadId      String?
+  lead        Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  externalId  String        @unique
+  direction   CallDirection
+  fromNumber  String
+  toNumber    String
+  startedAt   DateTime
+  endedAt     DateTime?
+  durationSec Int?
+  recordUrl   String?
+  recordLocalUrl String?
+  managerId   String?
+  metadata    Json?
+  createdAt   DateTime      @default(now())
+
+  @@index([clientId])
+  @@index([leadId])
+  @@index([startedAt])
+  @@index([fromNumber])
+}
+
+// ============================================================
+// ЗАДАЧИ
+// ============================================================
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  OPEN
+  DONE
+  CANCELLED
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  title       String
+  description String?      @db.Text
+  leadId      String?
+  lead        Lead?        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assigneeId  String?
+  assignee    User?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  creatorId   String
+  creator     User         @relation("TaskCreator", fields: [creatorId], references: [id])
+  status      TaskStatus   @default(OPEN)
+  priority    TaskPriority @default(NORMAL)
+  dueAt       DateTime?
+  completedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([assigneeId, status])
+  @@index([leadId])
+  @@index([dueAt])
+}
+
+// ============================================================
+// АВТОМАТИЗАЦИИ
+// ============================================================
+
+model Automation {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  trigger     String
+  triggerParams Json?
+  action      String
+  actionParams Json?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ============================================================
+// ВНУТРЕННИЕ ЧАТЫ
+// ============================================================
+
+enum TeamChatKind {
+  DIRECT
+  GROUP
+}
+
+model TeamChat {
+  id        String       @id @default(cuid())
+  kind      TeamChatKind @default(DIRECT)
+  name      String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  lastMessageAt DateTime?
+  lastMessageText String? @db.Text
+
+  members   TeamChatMember[]
+  messages  TeamChatMessage[]
+}
+
+model TeamChatMember {
+  id          String   @id @default(cuid())
+  chatId      String
+  chat        TeamChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt    DateTime @default(now())
+  lastReadAt  DateTime?
+
+  @@unique([chatId, userId])
+  @@index([userId])
+}
+
+model TeamChatMessage {
+  id        String   @id @default(cuid())
+  chatId    String
+  chat      TeamChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String   @db.Text
+  mediaUrl  String?
+  createdAt DateTime @default(now())
+
+  @@index([chatId, createdAt])
+}
+
+// ============================================================
+// УВЕДОМЛЕНИЯ
+// ============================================================
+
+enum NotificationKind {
+  LEAD_TRANSFERRED
+  MENTION_IN_NOTE
+  TASK_ASSIGNED
+  TASK_OVERDUE
+  PAYMENT_RECEIVED
+  NEW_MESSAGE
+  FINGERPRINT_REMINDER
+  CUSTOM
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      NotificationKind
+  title     String
+  body      String?          @db.Text
+  link      String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, isRead, createdAt])
+}
+
+// ============================================================
+// PUSH
+// ============================================================
+
+model PushSubscription {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint    String   @unique
+  p256dh      String
+  authKey     String
+  userAgent   String?  @db.Text
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ============================================================
+// АУДИТ-ЛОГ
+// ============================================================
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entityType String?
+  entityId   String?
+  before    Json?
+  after     Json?
+  ipAddress String?
+  userAgent String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+}
+
+// ============================================================
+// НАСТРОЙКИ
+// ============================================================
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
