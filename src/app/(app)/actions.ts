@@ -323,12 +323,7 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
   if (!lead) throw new Error('Лид не найден');
   assert(canEditLead(user, lead));
 
-  // Узнаём порядковый номер платежа в этом лиде
-  const prevCount = await db.payment.count({ where: { leadId: data.leadId } });
-  const sequence = prevCount + 1;
-
   // Глобальная настройка: с какого по счёту платежа начинать начислять комиссии
-  // По умолчанию 2 (со второго). Анна может поменять в настройках.
   const setting = await db.setting.findUnique({
     where: { key: 'commission.startFromPaymentNumber' },
   });
@@ -340,70 +335,101 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
   const salesPct = lead.service ? Number(lead.service.salesCommissionPercent) : defaultSalesPct;
   const legalPct = lead.service ? Number(lead.service.legalCommissionPercent) : defaultLegalPct;
 
-  const payment = await db.payment.create({
-    data: {
-      leadId:      data.leadId,
-      amount:      data.amount,
-      method:      data.method,
-      paidAt:      data.paidAt ? new Date(data.paidAt) : new Date(),
-      notes:       data.notes || null,
-      sequence,
-      createdById: user.id,
-    },
-  });
+  // Создание платежа + комиссий + события атомарно с retry на P2002
+  // (race condition: два параллельных addPayment могут получить одинаковый
+  // sequence; @@unique([leadId, sequence]) отбросит второй — повторяем).
+  const MAX_RETRIES = 5;
+  let lastErr: unknown = null;
 
-  // Если платёж попадает под условие — создаём комиссии менеджерам
-  const shouldCalcCommission = sequence >= startFromN;
-  if (shouldCalcCommission) {
-    const commissionsToCreate: Array<{
-      paymentId: string;
-      userId: string;
-      role: 'SALES' | 'LEGAL';
-      basePayment: number;
-      percent: number;
-      amount: number;
-    }> = [];
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const result = await db.$transaction(async (tx) => {
+        // Считаем sequence через MAX внутри транзакции
+        const last = await tx.payment.aggregate({
+          where: { leadId: data.leadId },
+          _max:  { sequence: true },
+        });
+        const sequence = (last._max.sequence ?? 0) + 1;
+        const shouldCalcCommission = sequence >= startFromN;
 
-    if (lead.salesManagerId && salesPct > 0) {
-      commissionsToCreate.push({
-        paymentId: payment.id,
-        userId: lead.salesManagerId,
-        role: 'SALES',
-        basePayment: data.amount,
-        percent: salesPct,
-        amount: Math.round((data.amount * salesPct) / 100 * 100) / 100,
+        const payment = await tx.payment.create({
+          data: {
+            leadId:      data.leadId,
+            amount:      data.amount,
+            method:      data.method,
+            paidAt:      data.paidAt ? new Date(data.paidAt) : new Date(),
+            notes:       data.notes || null,
+            sequence,
+            createdById: user.id,
+          },
+        });
+
+        if (shouldCalcCommission) {
+          const commissionsToCreate: Array<{
+            paymentId: string;
+            userId: string;
+            role: 'SALES' | 'LEGAL';
+            basePayment: number;
+            percent: number;
+            amount: number;
+          }> = [];
+
+          if (lead.salesManagerId && salesPct > 0) {
+            commissionsToCreate.push({
+              paymentId:   payment.id,
+              userId:      lead.salesManagerId,
+              role:        'SALES',
+              basePayment: data.amount,
+              percent:     salesPct,
+              amount:      Math.round((data.amount * salesPct) / 100 * 100) / 100,
+            });
+          }
+          if (lead.legalManagerId && legalPct > 0) {
+            commissionsToCreate.push({
+              paymentId:   payment.id,
+              userId:      lead.legalManagerId,
+              role:        'LEGAL',
+              basePayment: data.amount,
+              percent:     legalPct,
+              amount:      Math.round((data.amount * legalPct) / 100 * 100) / 100,
+            });
+          }
+          if (commissionsToCreate.length > 0) {
+            await tx.commission.createMany({ data: commissionsToCreate });
+          }
+        }
+
+        await tx.leadEvent.create({
+          data: {
+            leadId:   data.leadId,
+            authorId: user.id,
+            kind:     'PAYMENT_ADDED',
+            message:  `+${data.amount} zł (${methodLabel(data.method)}, платёж #${sequence}${shouldCalcCommission ? ', начислены комиссии' : ''})`,
+            payload:  { paymentId: payment.id, amount: data.amount, method: data.method, sequence },
+          },
+        });
+
+        return { id: payment.id };
       });
-    }
-    if (lead.legalManagerId && legalPct > 0) {
-      commissionsToCreate.push({
-        paymentId: payment.id,
-        userId: lead.legalManagerId,
-        role: 'LEGAL',
-        basePayment: data.amount,
-        percent: legalPct,
-        amount: Math.round((data.amount * legalPct) / 100 * 100) / 100,
-      });
-    }
-    if (commissionsToCreate.length > 0) {
-      await db.commission.createMany({ data: commissionsToCreate });
+
+      revalidatePath(`/clients/${data.leadId}`);
+      revalidatePath('/payments');
+      revalidatePath('/finance/commissions');
+      revalidatePath('/finance/payroll');
+      return result;
+    } catch (e) {
+      lastErr = e;
+      // P2002 = unique constraint violation на (leadId, sequence)
+      const code = (e as { code?: string }).code;
+      if (code === 'P2002') {
+        // Повторяем — другой запрос забрал наш sequence
+        continue;
+      }
+      throw e;
     }
   }
 
-  await db.leadEvent.create({
-    data: {
-      leadId:   data.leadId,
-      authorId: user.id,
-      kind:     'PAYMENT_ADDED',
-      message:  `+${data.amount} zł (${methodLabel(data.method)}, платёж #${sequence}${shouldCalcCommission ? ', начислены комиссии' : ''})`,
-      payload:  { paymentId: payment.id, amount: data.amount, method: data.method, sequence },
-    },
-  });
-
-  revalidatePath(`/clients/${data.leadId}`);
-  revalidatePath('/payments');
-  revalidatePath('/finance/commissions');
-  revalidatePath('/finance/payroll');
-  return { id: payment.id };
+  throw new Error(`Не удалось создать платёж после ${MAX_RETRIES} попыток: ${(lastErr as Error)?.message ?? 'unknown'}`);
 }
 
 export async function deletePayment(paymentId: string) {

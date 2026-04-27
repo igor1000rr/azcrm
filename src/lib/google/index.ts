@@ -19,6 +19,10 @@ const SCOPES = [
   'openid', 'email', 'profile',
 ];
 
+// Буфер до истечения — обновляем токен заранее, чтобы запрос Google API
+// не упал на полпути на 401.
+const REFRESH_BUFFER_MS = 60 * 1000; // 60 секунд
+
 export function isGoogleConfigured(): boolean {
   return !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
@@ -82,20 +86,43 @@ async function refreshAccessToken(refreshToken: string): Promise<{
   return res.json();
 }
 
-/** Получить актуальный access_token для пользователя */
+/**
+ * Получить актуальный access_token для пользователя.
+ * Использует кэшированный токен из БД, если он ещё валиден (с буфером 60 сек).
+ * Иначе обновляет через refresh_token и сохраняет новый expires_at.
+ */
 export async function getAccessTokenForUser(userId: string): Promise<string | null> {
   const user = await db.user.findUnique({
     where: { id: userId },
-    select: { googleAccessToken: true, googleRefreshToken: true },
+    select: {
+      googleAccessToken:          true,
+      googleRefreshToken:         true,
+      googleAccessTokenExpiresAt: true,
+    },
   });
   if (!user?.googleRefreshToken) return null;
 
-  // На простоту — каждый раз обновляем (или можно хранить expires_at)
+  // Если есть валидный кэшированный токен — отдаём его без HTTP-запроса
+  const now = Date.now();
+  if (
+    user.googleAccessToken
+    && user.googleAccessTokenExpiresAt
+    && user.googleAccessTokenExpiresAt.getTime() - REFRESH_BUFFER_MS > now
+  ) {
+    return user.googleAccessToken;
+  }
+
+  // Иначе — обновляем
   try {
     const fresh = await refreshAccessToken(user.googleRefreshToken);
+    const expiresAt = new Date(now + fresh.expires_in * 1000);
+
     await db.user.update({
       where: { id: userId },
-      data: { googleAccessToken: fresh.access_token },
+      data: {
+        googleAccessToken:          fresh.access_token,
+        googleAccessTokenExpiresAt: expiresAt,
+      },
     });
     return fresh.access_token;
   } catch (e) {

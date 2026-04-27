@@ -28,14 +28,16 @@ export async function GET(req: NextRequest) {
 
   try {
     const tokens = await exchangeCodeForTokens(code);
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
 
     await db.user.update({
       where: { id: userId },
       data: {
-        googleAccessToken:  tokens.access_token,
-        googleRefreshToken: tokens.refresh_token ?? undefined,
-        googleCalendarId:   'primary',
-        googleConnectedAt:  new Date(),
+        googleAccessToken:          tokens.access_token,
+        googleAccessTokenExpiresAt: expiresAt,
+        googleRefreshToken:         tokens.refresh_token ?? undefined,
+        googleCalendarId:           'primary',
+        googleConnectedAt:          new Date(),
       },
     });
 
