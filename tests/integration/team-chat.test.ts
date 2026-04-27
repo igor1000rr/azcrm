@@ -5,8 +5,13 @@ type AnyFn = ReturnType<typeof vi.fn>;
 
 const mockDb = {
   teamChat:        { findFirst: vi.fn() as AnyFn, create: vi.fn() as AnyFn, update: vi.fn() as AnyFn },
-  teamChatMember:  { findUnique: vi.fn() as AnyFn },
-  teamChatMessage: { create:    vi.fn() as AnyFn },
+  teamChatMember:  {
+    findUnique: vi.fn() as AnyFn,
+    findMany:   vi.fn() as AnyFn,
+    updateMany: vi.fn() as AnyFn,
+  },
+  teamChatMessage: { create: vi.fn() as AnyFn },
+  notification:    { createMany: vi.fn() as AnyFn },
   $transaction: vi.fn(async (arg: unknown) => {
     if (typeof arg === 'function') return (arg as (tx: typeof mockDb) => Promise<unknown>)(mockDb);
     if (Array.isArray(arg)) return Promise.all(arg);
@@ -34,6 +39,9 @@ beforeEach(() => {
     if (typeof arg === 'function') return (arg as (tx: typeof mockDb) => Promise<unknown>)(mockDb);
     if (Array.isArray(arg)) return Promise.all(arg);
   });
+  // По умолчанию teamChatMember.findMany возвращает пустой список
+  // (для итерации .map в sendTeamChatMessage).
+  mockDb.teamChatMember.findMany.mockResolvedValue([]);
 });
 
 describe('openDirectChat', () => {
@@ -123,7 +131,7 @@ describe('sendTeamChatMessage', () => {
     expect(mockDb.teamChatMessage.create).not.toHaveBeenCalled();
   });
 
-  it('участник: сообщение создаётся + chat обновляет lastMessageAt', async () => {
+  it('участник: сообщение создаётся + chat обновляет lastMessageAt + lastReadAt автора', async () => {
     mockDb.teamChatMember.findUnique.mockResolvedValue({
       chatId: 'c-1', userId: 'u-1',
     });
@@ -144,6 +152,43 @@ describe('sendTeamChatMessage', () => {
         where: { id: 'c-1' },
         data:  expect.objectContaining({ lastMessageAt: expect.any(Date) }),
       }),
+    );
+    // Автор помечается как прочитавший
+    expect(mockDb.teamChatMember.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'c-1', userId: 'u-1' },
+        data:  expect.objectContaining({ lastReadAt: expect.any(Date) }),
+      }),
+    );
+  });
+
+  it('уведомления остальным участникам чата через notification.createMany', async () => {
+    mockDb.teamChatMember.findUnique.mockResolvedValue({ chatId: 'c-1', userId: 'u-1' });
+    mockDb.teamChatMember.findMany.mockResolvedValue([
+      { userId: 'u-bob' },
+      { userId: 'u-alice' },
+    ]);
+
+    await sendTeamChatMessage({ chatId: 'c-1', body: 'hi all' });
+
+    expect(mockDb.notification.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.arrayContaining([
+          expect.objectContaining({ userId: 'u-bob',   kind: 'NEW_MESSAGE' }),
+          expect.objectContaining({ userId: 'u-alice', kind: 'NEW_MESSAGE' }),
+        ]),
+      }),
+    );
+  });
+
+  it('нет других участников → notification.createMany вызывается с пустым массивом', async () => {
+    mockDb.teamChatMember.findUnique.mockResolvedValue({ chatId: 'c-1', userId: 'u-1' });
+    mockDb.teamChatMember.findMany.mockResolvedValue([]); // нет других
+
+    await sendTeamChatMessage({ chatId: 'c-1', body: 'solo' });
+
+    expect(mockDb.notification.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: [] }),
     );
   });
 });

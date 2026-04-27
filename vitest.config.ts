@@ -2,6 +2,12 @@ import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 
 export default defineConfig({
+  // JSX automatic трансформ — React 17+ режим, не требует import React.
+  // Без этого tests/components/*.tsx падают с "React is not defined".
+  esbuild: {
+    jsx:             'automatic',
+    jsxImportSource: 'react',
+  },
   test: {
     environment: 'node',
     // tests/components/** запускаются под jsdom (для @testing-library/react),
