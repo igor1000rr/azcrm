@@ -1,21 +1,26 @@
-// PM2 — два процесса: Next.js + WhatsApp worker
+// PM2 — два процесса: Next.js (standalone) + WhatsApp worker
+//
+// azcrm-web запускается через standalone-сервер Next.js (.next/standalone/server.js)
+// — это значительно меньше памяти и быстрее старт, чем `next start`.
+// Зависит от того что после `next build` отрабатывает postbuild npm-скрипт,
+// который копирует public/ и .next/static/ внутрь .next/standalone.
 module.exports = {
   apps: [
     {
       name: 'azcrm-web',
       cwd: '/home/igorcrm/azcrm',
-      script: 'node_modules/next/dist/bin/next',
-      args: 'start -p 3000',
+      script: '.next/standalone/server.js',
       env: {
         NODE_ENV: 'production',
-        PORT: '3000',
+        PORT:     '3000',
+        HOSTNAME: '0.0.0.0',
       },
       instances: 1,
       exec_mode: 'fork',
       max_memory_restart: '1G',
       autorestart: true,
       watch: false,
-      out_file: '/home/igorcrm/logs/web-out.log',
+      out_file:   '/home/igorcrm/logs/web-out.log',
       error_file: '/home/igorcrm/logs/web-err.log',
       time: true,
     },
@@ -32,7 +37,7 @@ module.exports = {
       max_memory_restart: '1G',
       autorestart: true,
       watch: false,
-      out_file: '/home/igorcrm/logs/worker-out.log',
+      out_file:   '/home/igorcrm/logs/worker-out.log',
       error_file: '/home/igorcrm/logs/worker-err.log',
       time: true,
     },
