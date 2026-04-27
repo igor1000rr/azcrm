@@ -7,7 +7,7 @@ import { Plus, FileText, Trash2, Download, Upload, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
 import { Input, Textarea, FormField } from '@/components/ui/input';
-import { formatRelative, formatPrice } from '@/lib/utils';
+import { formatRelative } from '@/lib/utils';
 
 interface BlueprintLite {
   id: string;
