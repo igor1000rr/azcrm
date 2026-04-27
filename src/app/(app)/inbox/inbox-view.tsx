@@ -5,13 +5,12 @@ import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Send, Paperclip, Search, MessageSquare, Phone,
-  ChevronLeft, MoreHorizontal, FileText, Image as ImageIcon,
-  Mic, MapPin, User as UserIcon, Sparkles,
+  Send, Paperclip, Search, MessageSquare,
+  ChevronLeft, FileText, Sparkles,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Modal } from '@/components/ui/modal';
-import { cn, formatTime, formatRelative, formatPhone, formatDate } from '@/lib/utils';
+import { cn, formatTime, formatPhone, formatDate } from '@/lib/utils';
 
 interface AccountLite {
   id: string; label: string; phoneNumber: string;
