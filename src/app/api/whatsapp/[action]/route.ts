@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { whatsappAccountFilter } from '@/lib/permissions';
+import { checkRateLimit } from '@/lib/rate-limit';
 import {
   workerConnect, workerDisconnect, workerSendMessage, workerStatus,
 } from '@/lib/whatsapp';
@@ -16,6 +17,12 @@ import { revalidatePath } from 'next/cache';
 
 const ACTIONS = ['connect', 'disconnect', 'send', 'status'] as const;
 type Action = typeof ACTIONS[number];
+
+// Лимит на отправку: 30 сообщений в минуту на пользователя.
+// Защита от случайных циклов в UI и от спам-ботов через скомпрометированный
+// аккаунт менеджера. Реальный темп ручной переписки — единицы в минуту.
+const SEND_MAX        = 30;
+const SEND_WINDOW_MS  = 60 * 1000;
 
 export async function POST(
   req:    NextRequest,
@@ -63,6 +70,14 @@ export async function POST(
         return NextResponse.json(res);
       }
       case 'send': {
+        // Rate-limit на пользователя
+        if (!checkRateLimit(`wa-send:${user.id}`, SEND_MAX, SEND_WINDOW_MS)) {
+          return NextResponse.json(
+            { ok: false, error: `Слишком много сообщений. Подождите минуту.` },
+            { status: 429 },
+          );
+        }
+
         const { threadId, body: msgBody, mediaUrl } = body;
         if (!threadId || !msgBody) {
           return NextResponse.json({ error: 'threadId and body required' }, { status: 400 });

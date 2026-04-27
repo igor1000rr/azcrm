@@ -38,7 +38,12 @@ interface PushPayload {
   tag?:  string;
 }
 
-/** Отправить push уведомление одному юзеру (на все его устройства) */
+/**
+ * Отправить push уведомление одному юзеру (на все его устройства).
+ * Все подписки шлются параллельно через Promise.allSettled — раньше
+ * был последовательный цикл с await в for-of, при N подписках это
+ * блокировало server action на N×latency push-сервиса.
+ */
 export async function sendPushToUser(
   userId:  string,
   payload: PushPayload,
@@ -50,35 +55,41 @@ export async function sendPushToUser(
   if (subs.length === 0) return { sent: 0, failed: 0 };
 
   const json = JSON.stringify(payload);
-  let sent = 0, failed = 0;
 
-  for (const sub of subs) {
-    try {
-      await webpush.sendNotification(
-        {
-          endpoint: sub.endpoint,
-          keys: { p256dh: sub.p256dh, auth: sub.authKey },
-        },
-        json,
-      );
-      // Обновляем lastUsedAt
-      await db.pushSubscription.update({
-        where: { id: sub.id },
-        data:  { lastUsedAt: new Date() },
-      });
-      sent++;
-    } catch (e) {
-      const statusCode = (e as { statusCode?: number }).statusCode;
-      // 404/410 — подписка протухла, удаляем
-      if (statusCode === 404 || statusCode === 410) {
-        await db.pushSubscription.delete({ where: { id: sub.id } });
-      } else {
-        console.error(`push failed for ${userId}:`, e);
+  const results = await Promise.allSettled(
+    subs.map(async (sub) => {
+      try {
+        await webpush.sendNotification(
+          {
+            endpoint: sub.endpoint,
+            keys: { p256dh: sub.p256dh, auth: sub.authKey },
+          },
+          json,
+        );
+        // Обновляем lastUsedAt
+        await db.pushSubscription.update({
+          where: { id: sub.id },
+          data:  { lastUsedAt: new Date() },
+        });
+        return { ok: true as const };
+      } catch (e) {
+        const statusCode = (e as { statusCode?: number }).statusCode;
+        // 404/410 — подписка протухла, удаляем
+        if (statusCode === 404 || statusCode === 410) {
+          await db.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
+        } else {
+          console.error(`push failed for ${userId}:`, e);
+        }
+        return { ok: false as const };
       }
-      failed++;
-    }
-  }
+    }),
+  );
 
+  let sent = 0, failed = 0;
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value.ok) sent++;
+    else failed++;
+  }
   return { sent, failed };
 }
 

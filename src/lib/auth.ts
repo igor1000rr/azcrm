@@ -3,6 +3,7 @@ import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { db } from './db';
+import { checkRateLimit, resetRateLimit } from './rate-limit';
 import type { UserRole } from '@prisma/client';
 
 declare module 'next-auth' {
@@ -19,6 +20,11 @@ declare module 'next-auth' {
   }
 }
 
+// Лимит попыток логина: 10 за 15 минут на email. Достаточно для опечаток
+// и одновременно отбивает brute-force. После успешного входа счётчик сбрасывается.
+const LOGIN_MAX        = 10;
+const LOGIN_WINDOW_MS  = 15 * 60 * 1000;
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
   session: { strategy: 'jwt', maxAge: 60 * 60 * 24 * 30 }, // 30 дней
@@ -34,6 +40,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const password = String(credentials?.password ?? '');
         if (!email || !password) return null;
 
+        // Rate-limit по email — отбивает brute-force
+        const rlKey = `login:${email}`;
+        if (!checkRateLimit(rlKey, LOGIN_MAX, LOGIN_WINDOW_MS)) {
+          // Нарочно не различаем "много попыток" от "неверный пароль" в ответе
+          // чтобы атакующий не мог понять что email существует и просто залочен.
+          console.warn(`[auth] rate-limit hit for ${email}`);
+          return null;
+        }
+
         const user = await db.user.findUnique({ where: { email } });
         if (!user) return null;
         // Деактивированных не пускаем
@@ -41,6 +56,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) return null;
+
+        // Сбрасываем счётчик попыток при успешном входе
+        resetRateLimit(rlKey);
 
         // Обновляем "последний вход"
         await db.user.update({
