@@ -3,10 +3,9 @@
 // Если перейдём на S3 — этот модуль это инкапсулирует.
 
 import { promises as fs } from 'node:fs';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { pipeline } from 'node:stream/promises';
 
 // Базовый путь хранилища. В docker — будет смонтированный volume.
 const STORAGE_ROOT = process.env.STORAGE_ROOT ?? path.join(process.cwd(), 'storage');

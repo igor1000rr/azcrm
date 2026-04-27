@@ -7,7 +7,7 @@ import { db } from '@/lib/db';
 import { requireUser, requireAdmin } from '@/lib/auth';
 import {
   canEditLead, canTransferLead, canAssignLegalManager,
-  canArchiveLead, canDeletePayment, canDeleteLead,
+  canDeletePayment,
   assert,
 } from '@/lib/permissions';
 import { normalizePhone } from '@/lib/utils';

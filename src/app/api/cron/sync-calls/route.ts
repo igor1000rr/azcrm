@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Создаём запись звонка
-      const created = await db.call.create({
+      await db.call.create({
         data: {
           externalId:    call.externalId,
           direction:     call.direction,

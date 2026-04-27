@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { canEditLead, assert } from '@/lib/permissions';
+import { canEditLead } from '@/lib/permissions';
 import { normalizePhone } from '@/lib/utils';
 import { audit } from '@/lib/audit';
 

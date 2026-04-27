@@ -2,7 +2,7 @@
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
-import { formatMoney, plural } from '@/lib/utils';
+import { formatMoney } from '@/lib/utils';
 import {
   Users, BarChart3, CreditCard, AlertCircle,
   TrendingUp, Calendar as CalendarIcon,

@@ -6,7 +6,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireUser, requireAdmin } from '@/lib/auth';
-import { canViewLead, canEditLead, assert } from '@/lib/permissions';
+import { canEditLead, assert } from '@/lib/permissions';
 import { saveBuffer, removeFile } from '@/lib/storage';
 import { renderBlueprint } from '@/lib/docx-templates';
 import path from 'node:path';

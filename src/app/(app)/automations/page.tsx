@@ -2,8 +2,7 @@
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
-import { Zap, Clock } from 'lucide-react';
-import { formatRelative } from '@/lib/utils';
+import { Zap } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 

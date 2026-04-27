@@ -4,7 +4,7 @@ import { Topbar } from '@/components/topbar';
 import { Badge } from '@/components/ui/badge';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { formatDate, formatTime, formatRelative, daysUntil } from '@/lib/utils';
+import { formatDate, formatTime, daysUntil } from '@/lib/utils';
 import { Calendar as CalendarIcon, MapPin } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';

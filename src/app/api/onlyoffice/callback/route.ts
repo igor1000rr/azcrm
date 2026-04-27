@@ -10,7 +10,7 @@ import { db } from '@/lib/db';
 import {
   verifyJwt, OOCallbackStatus, type OOCallbackBody,
 } from '@/lib/onlyoffice';
-import { downloadAndSave, removeFile } from '@/lib/storage';
+import { downloadAndSave } from '@/lib/storage';
 import path from 'node:path';
 
 export async function POST(req: NextRequest) {

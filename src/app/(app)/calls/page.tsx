@@ -2,7 +2,6 @@
 import Link from 'next/link';
 import { Topbar } from '@/components/topbar';
 import { Avatar } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { leadVisibilityFilter } from '@/lib/permissions';
