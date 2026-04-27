@@ -297,52 +297,7 @@ export async function reassignLegalManager(leadId: string, newLegalId: string | 
   return { ok: true };
 }
 
-// ====================== PELNOMOCNIK (доверенное лицо) ======================
-// Имя адвоката-представителя в делах. Доступен набор: LEGAL + ADMIN.
-// Хранится как строка (имя на момент назначения).
-
-export async function setLeadAttorney(leadId: string, attorney: string | null) {
-  const user = await requireUser();
-
-  const lead = await db.lead.findUnique({
-    where: { id: leadId },
-    select: { id: true, salesManagerId: true, legalManagerId: true, attorney: true },
-  });
-  if (!lead) throw new Error('Лид не найден');
-  assert(canEditLead(user, lead));
-
-  const cleanAttorney = attorney?.trim() || null;
-
-  await db.$transaction([
-    db.lead.update({
-      where: { id: leadId },
-      data:  { attorney: cleanAttorney },
-    }),
-    db.leadEvent.create({
-      data: {
-        leadId,
-        authorId: user.id,
-        kind:     'CUSTOM',
-        message:  cleanAttorney
-          ? `Pelnomocnik: ${cleanAttorney}`
-          : 'Pelnomocnik снят',
-        payload:  { from: lead.attorney, to: cleanAttorney },
-      },
-    }),
-  ]);
-
-  await audit({
-    userId:     user.id,
-    action:     'lead.set_attorney',
-    entityType: 'Lead',
-    entityId:   leadId,
-    before:     { attorney: lead.attorney },
-    after:      { attorney: cleanAttorney },
-  });
-
-  revalidatePath(`/clients/${leadId}`);
-  return { ok: true };
-}
+// Pelnomocnik (доверенное лицо) — см. ./clients/[id]/attorney-actions.ts (setAttorney)
 
 // ====================== ОПЛАТЫ ======================
 
