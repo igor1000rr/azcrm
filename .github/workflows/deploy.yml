@@ -1,0 +1,34 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-azcrm
+      cancel-in-progress: false
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            set -e
+            cd /home/igorcrm/azcrm
+            git fetch origin main
+            git reset --hard origin/main
+            npm ci
+            npx prisma migrate deploy
+            npm run build
+            cd whatsapp-worker && npm ci && cd ..
+            pm2 reload ecosystem.config.js --update-env
+            pm2 save
