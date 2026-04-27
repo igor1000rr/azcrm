@@ -1,7 +1,6 @@
 // Аудит-лог для администратора
 import { Topbar } from '@/components/topbar';
 import { Avatar } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { formatDateTime } from '@/lib/utils';
