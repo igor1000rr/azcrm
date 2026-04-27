@@ -92,8 +92,12 @@ export function buildEditorConfig(opts: {
   const documentType = getDocumentType(opts.format);
   const fileType     = getFileExtension(opts.format);
 
-  const fullFileUrl   = absoluteUrl(opts.fileUrl);
-  const callbackUrl   = `${OO_CALLBACK_PUBLIC_URL}/api/onlyoffice/callback?docId=${opts.documentId}`;
+  // Подписываем URL файла токеном — OO сервер скачает без сессии,
+  // но только этот конкретный путь и не дольше 10 минут.
+  const fileToken      = signFileAccessToken(opts.fileUrl, 600);
+  const fileUrlWithTok = `${opts.fileUrl}?ooToken=${encodeURIComponent(fileToken)}`;
+  const fullFileUrl    = absoluteUrl(fileUrlWithTok);
+  const callbackUrl    = `${OO_CALLBACK_PUBLIC_URL}/api/onlyoffice/callback?docId=${opts.documentId}`;
 
   const config: OnlyOfficeConfig = {
     document: {
@@ -129,6 +133,27 @@ export function buildEditorConfig(opts: {
   // Подписываем весь конфиг JWT (кастуем к Record для signJwt-signature)
   config.token = signJwt(config as unknown as Record<string, unknown>);
   return config;
+}
+
+/**
+ * Подписать short-lived токен доступа к файлу для OnlyOffice сервера.
+ * OO ходит за файлом по публичному URL без сессии — этот токен пускает
+ * только конкретный путь и только на короткий срок (по умолчанию 5 мин).
+ */
+export function signFileAccessToken(filePath: string, ttlSeconds = 300): string {
+  return signJwt({
+    p: filePath,
+    exp: Math.floor(Date.now() / 1000) + ttlSeconds,
+  });
+}
+
+/** Проверить токен из ?ooToken=... — путь должен совпадать, срок не истёк */
+export function verifyFileAccessToken(token: string, expectedPath: string): boolean {
+  const payload = verifyJwt<{ p: string; exp: number }>(token);
+  if (!payload) return false;
+  if (payload.p !== expectedPath) return false;
+  if (payload.exp < Math.floor(Date.now() / 1000)) return false;
+  return true;
 }
 
 /** Простой HS256 JWT (без зависимостей) — OnlyOffice использует HS256 */

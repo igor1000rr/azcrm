@@ -3,10 +3,14 @@
 //  - 'docs' и 'uploads' — нужна авторизация (внутренние документы и файлы клиентов)
 //  - 'avatars', 'wa-media' — публично (для отображения в UI без auth)
 //  - 'blueprints', 'expenses' — только ADMIN
+//
+// Для OnlyOffice сервера, который ходит за файлом без сессии, поддерживается
+// query-параметр ?ooToken=<JWT> — short-lived подпись на конкретный путь.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { streamFile } from '@/lib/storage';
+import { verifyFileAccessToken } from '@/lib/onlyoffice';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -45,7 +49,20 @@ export async function GET(
 
   // Проверка прав
   const isPublicBucket = bucket === 'avatars' || bucket === 'wa-media';
-  if (!isPublicBucket) {
+
+  // OnlyOffice сервер скачивает docs по подписанному URL без сессии.
+  // Принимаем ooToken только для bucket=docs (другие — ADMIN-only).
+  const ooToken = req.nextUrl.searchParams.get('ooToken');
+  let allowedByOoToken = false;
+  if (ooToken && bucket === 'docs') {
+    const storedNameTmp = pathSegments.join('/');
+    const expectedPath  = `/api/files/${bucket}/${storedNameTmp}`;
+    if (verifyFileAccessToken(ooToken, expectedPath)) {
+      allowedByOoToken = true;
+    }
+  }
+
+  if (!isPublicBucket && !allowedByOoToken) {
     const session = await auth();
     if (!session?.user) {
       return new NextResponse('Unauthorized', { status: 401 });
