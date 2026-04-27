@@ -6,23 +6,46 @@
 // Принципы:
 //   - На каждый WhatsappAccount (id) создаётся отдельный Client
 //   - Сессия сохраняется через LocalAuth в STORAGE_ROOT/wa-sessions/<id>
-//   - События (входящие, статусы) отправляются на CRM_WEBHOOK_URL
+//   - События (входящие, статусы) отправляются на CRM webhook
 //   - Управление через REST API на этом же процессе
+//
+// ENV (читаются из основного ../.env):
+//   WHATSAPP_WORKER_TOKEN — общий секрет для авторизации Next ↔ worker
+//   APP_PUBLIC_URL        — адрес CRM (для webhook), напр. http://92.205.228.90
+//   STORAGE_ROOT          — директория хранилища; сессии WA в STORAGE_ROOT/wa-sessions
+//   WHATSAPP_WORKER_PORT  — порт worker (дефолт 3100)
 
+import 'dotenv/config';
 import express from 'express';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import qrcode from 'qrcode';
 import fs from 'node:fs';
 import path from 'node:path';
+import dotenv from 'dotenv';
+
+// Подгружаем основной .env из корня репо (на уровень выше)
+dotenv.config({ path: path.resolve(process.cwd(), '..', '.env'), override: false });
 
 // ============ КОНФИГ ============
 
-const PORT             = parseInt(process.env.PORT ?? '3100', 10);
-const AUTH_TOKEN       = process.env.WORKER_AUTH_TOKEN ?? '';
-const CRM_WEBHOOK_URL  = process.env.CRM_WEBHOOK_URL ?? 'http://localhost:3000/api/whatsapp/webhook';
-const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(process.cwd(), '..', 'storage', 'wa-sessions');
+const PORT             = parseInt(process.env.WHATSAPP_WORKER_PORT ?? process.env.PORT ?? '3100', 10);
+const AUTH_TOKEN       = process.env.WHATSAPP_WORKER_TOKEN ?? process.env.WORKER_AUTH_TOKEN ?? '';
+const APP_PUBLIC_URL   = process.env.APP_PUBLIC_URL ?? process.env.AUTH_URL ?? 'http://localhost:3000';
+const CRM_WEBHOOK_URL  = process.env.CRM_WEBHOOK_URL ?? `${APP_PUBLIC_URL.replace(/\/$/, '')}/api/whatsapp/webhook`;
+const STORAGE_ROOT     = process.env.STORAGE_ROOT ?? path.resolve(process.cwd(), '..', 'storage');
+const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(STORAGE_ROOT, 'wa-sessions');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+
+if (!AUTH_TOKEN) {
+  console.warn('[worker] WHATSAPP_WORKER_TOKEN не задан — auth отключена');
+}
+
+console.log('[worker] config:');
+console.log('  PORT            =', PORT);
+console.log('  AUTH_TOKEN      =', AUTH_TOKEN ? '(set)' : '(not set)');
+console.log('  CRM_WEBHOOK_URL =', CRM_WEBHOOK_URL);
+console.log('  SESSIONS_DIR    =', SESSIONS_DIR);
 
 // ============ КЛИЕНТЫ В ПАМЯТИ ============
 
@@ -40,6 +63,8 @@ function getOrCreateClient(accountId) {
     }),
     puppeteer: {
       headless: true,
+      // Используем системный chromium из setup.sh (если установлен)
+      executablePath: process.env.CHROME_BIN ?? process.env.PUPPETEER_EXECUTABLE_PATH ?? undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -117,8 +142,6 @@ function bindEvents(accountId, client, entry) {
 
       let mediaUrl, mediaName, mediaSize;
       if (msg.hasMedia) {
-        // Скачиваем медиа и временно отдаём как data URL
-        // В продакшене — заливать в storage и отдавать ссылку
         try {
           const media = await msg.downloadMedia();
           if (media) {
@@ -201,6 +224,8 @@ app.use(express.json({ limit: '10mb' }));
 // Auth middleware
 app.use((req, res, next) => {
   if (!AUTH_TOKEN) return next();
+  // /health доступен без авторизации
+  if (req.path === '/health') return next();
   const auth = req.headers.authorization ?? '';
   if (auth !== `Bearer ${AUTH_TOKEN}`) {
     return res.status(401).json({ error: 'unauthorized' });
@@ -223,11 +248,14 @@ app.post('/accounts/:id/connect', async (req, res) => {
       return res.json({ status: 'qr', qr: entry.qr });
     }
 
-    // Запускаем initialize, ждём первого events
-    entry.client.initialize().catch((e) => {
-      console.error(`[${id}] initialize error:`, e);
-      entry.status = 'failed';
-    });
+    // Запускаем initialize (если ещё не запущен), ждём первого events
+    if (entry.status === 'disconnected' || entry.status === 'failed') {
+      entry.status = 'initializing';
+      entry.client.initialize().catch((e) => {
+        console.error(`[${id}] initialize error:`, e);
+        entry.status = 'failed';
+      });
+    }
 
     // Ждём до 30 сек QR или ready
     const start = Date.now();
@@ -311,7 +339,7 @@ app.listen(PORT, () => {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('shutting down...');
-  for (const [id, entry] of clients) {
+  for (const [, entry] of clients) {
     try { await entry.client.destroy(); } catch {}
   }
   process.exit(0);
