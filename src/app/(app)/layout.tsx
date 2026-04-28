@@ -4,6 +4,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { Sidebar } from '@/components/sidebar';
 import { Providers } from '@/components/providers';
+import { AutoRefresh } from '@/components/auto-refresh';
 import { leadVisibilityFilter, whatsappAccountFilter } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
@@ -114,6 +115,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <Providers>
+      {/* Глобальное автообновление каждые 5 сек на всех страницах CRM.
+          Сайдбар (счётчики), inbox, лиды, дашборд — всё подтягивается
+          в фоне без F5. Когда вкладка не в фокусе или юзер пишет —
+          ставится на паузу. */}
+      <AutoRefresh intervalMs={5000} />
       <div className="flex min-h-dvh">
         <Sidebar
           user={user}
