@@ -26,6 +26,7 @@ export default async function LeadPage({ params }: PageProps) {
       funnel:        { select: { id: true, name: true, color: true } },
       stage:         { select: { id: true, name: true, color: true, position: true } },
       city:          { select: { id: true, name: true } },
+      workCity:      { select: { id: true, name: true } },
       salesManager:  { select: { id: true, name: true, email: true } },
       legalManager:  { select: { id: true, name: true, email: true } },
       documents:     { orderBy: { position: 'asc' } },
@@ -54,22 +55,21 @@ export default async function LeadPage({ params }: PageProps) {
       },
       whatsappAccount: { select: { id: true, label: true, phoneNumber: true } },
       service: { select: { id: true, name: true } },
+      services: {
+        orderBy: { position: 'asc' },
+        include: { service: { select: { id: true, name: true } } },
+      },
     },
   });
 
   if (!lead) notFound();
+  if (!canViewLead(user, lead)) notFound();
 
-  if (!canViewLead(user, lead)) {
-    notFound(); // не показываем что лид существует, если нет прав
-  }
-
-  // Все этапы воронки лида (для прогресс-бара)
   const allStages = await db.stage.findMany({
     where: { funnelId: lead.funnelId },
     orderBy: { position: 'asc' },
   });
 
-  // Команда (для выпадашек переназначения менеджеров)
   const team = await db.user.findMany({
     where: { isActive: true, role: { in: ['SALES', 'LEGAL'] } },
     select: { id: true, name: true, email: true, role: true },
@@ -83,7 +83,20 @@ export default async function LeadPage({ params }: PageProps) {
     orderBy: [{ role: 'asc' }, { name: 'asc' }],
   });
 
-  // Все файлы клиента (общая папка, не привязано к лиду)
+  // Города (для селекта «город работы») и каталог услуг (для multi-service редактора)
+  const [cities, allServices] = await Promise.all([
+    db.city.findMany({
+      where: { isActive: true },
+      orderBy: { position: 'asc' },
+      select: { id: true, name: true },
+    }),
+    db.service.findMany({
+      where: { isActive: true },
+      orderBy: { position: 'asc' },
+      select: { id: true, name: true, basePrice: true },
+    }),
+  ]);
+
   const clientFiles = await db.clientFile.findMany({
     where: { clientId: lead.clientId },
     orderBy: { createdAt: 'desc' },
@@ -91,7 +104,6 @@ export default async function LeadPage({ params }: PageProps) {
     include: { uploadedBy: { select: { id: true, name: true } } },
   });
 
-  // Другие лиды этого клиента (для блока "другие дела клиента")
   const otherLeads = await db.lead.findMany({
     where: { clientId: lead.clientId, id: { not: lead.id } },
     select: {
@@ -105,7 +117,6 @@ export default async function LeadPage({ params }: PageProps) {
     take: 10,
   });
 
-  // Подсчёт финансов
   const paid = lead.payments.reduce((sum, p) => sum + Number(p.amount), 0);
   const total = Number(lead.totalAmount);
   const debt = Math.max(0, total - paid);
@@ -119,7 +130,6 @@ export default async function LeadPage({ params }: PageProps) {
           { label: lead.client.fullName },
         ]}
       />
-
       <LeadCardView
         currentUser={user}
         lead={{
@@ -131,6 +141,8 @@ export default async function LeadPage({ params }: PageProps) {
           source:       lead.source,
           attorney:     lead.attorney,
           serviceName:  lead.service?.name ?? null,
+          employerName: lead.employerName,
+          employerPhone: lead.employerPhone,
           totalAmount:  total,
           firstContactAt: lead.firstContactAt?.toISOString() ?? null,
           fingerprintDate: lead.fingerprintDate?.toISOString() ?? null,
@@ -155,6 +167,20 @@ export default async function LeadPage({ params }: PageProps) {
           addressHome: lead.client.addressHome,
         }}
         city={lead.city ? { id: lead.city.id, name: lead.city.name } : null}
+        workCity={lead.workCity ? { id: lead.workCity.id, name: lead.workCity.name } : null}
+        cities={cities}
+        allServices={allServices.map((s) => ({
+          id: s.id, name: s.name, basePrice: Number(s.basePrice),
+        }))}
+        leadServices={lead.services.map((ls) => ({
+          id:          ls.id,
+          serviceId:   ls.serviceId,
+          serviceName: ls.service.name,
+          amount:      Number(ls.amount),
+          qty:         ls.qty,
+          notes:       ls.notes,
+          position:    ls.position,
+        }))}
         salesManager={lead.salesManager}
         legalManager={lead.legalManager}
         whatsappAccount={lead.whatsappAccount}
