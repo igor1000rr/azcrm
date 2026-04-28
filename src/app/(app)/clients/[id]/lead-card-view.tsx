@@ -637,32 +637,50 @@ function FingerprintModal({ open, onClose, leadId, currentDate, currentLocation,
   );
 }
 
-/** Модалка для дополнительного вызвания. Их может быть несколько на лид. */
+/** Модалка доп. вызвания.
+ *  Две даты:
+ *    - notifiedAt — когда УВ прислал уведомление (дата вызвания)
+ *    - dueDate    — дедлайн донести запрошенные документы
+ *  Поле "Место" убрано (фактически не использовалось).
+ *  Поле "Запрос" — что именно затребовали (вместо общей "темы").
+ */
 function ExtraCallModal({ open, onClose, leadId, onSaved }: { open: boolean; onClose: () => void; leadId: string; onSaved: () => void }) {
-  const [date, setDate] = useState('');
-  const [loc, setLoc] = useState('');
-  const [title, setTitle] = useState('');
+  const [notifiedAt, setNotifiedAt] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [request, setRequest] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function save() {
     setError(null);
-    if (!date) { setError('Укажите дату'); return; }
+    if (!notifiedAt) { setError('Укажите дату вызвания'); return; }
+    if (!dueDate)    { setError('Укажите срок донести документы'); return; }
     setBusy(true);
     try {
-      await addExtraCall({ leadId, date, location: loc || null, title: title || null });
-      setDate(''); setLoc(''); setTitle('');
+      await addExtraCall({
+        leadId,
+        notifiedAt,
+        dueDate,
+        title: request || null,
+      });
+      setNotifiedAt(''); setDueDate(''); setRequest('');
       onSaved();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   return (
     <Modal open={open} onClose={onClose} title="Доп. вызвание"
-      footer={<><Button onClick={onClose}>Закрыть</Button><Button variant="primary" onClick={save} disabled={busy || !date}>{busy ? 'Сохранение...' : 'Добавить'}</Button></>}>
+      footer={<><Button onClick={onClose}>Закрыть</Button><Button variant="primary" onClick={save} disabled={busy || !notifiedAt || !dueDate}>{busy ? 'Сохранение...' : 'Добавить'}</Button></>}>
       <div className="flex flex-col gap-3">
-        <FormField label="Дата и время" required><Input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} autoFocus /></FormField>
-        <FormField label="Место" hint="Куда нужно явиться"><Input value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="Адрес офиса/УВ" /></FormField>
-        <FormField label="Тема" hint="Если пусто — будет «Доп. вызвание: ФИО клиента»"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Например: дополнение документов" /></FormField>
+        <FormField label="Дата вызвания" required hint="Когда УВ прислал уведомление">
+          <Input type="date" value={notifiedAt} onChange={(e) => setNotifiedAt(e.target.value)} autoFocus />
+        </FormField>
+        <FormField label="Срок" required hint="Дедлайн — до какой даты нужно донести документы">
+          <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} min={notifiedAt || undefined} />
+        </FormField>
+        <FormField label="Запрос документов" hint="Какие документы затребовал УВ">
+          <Textarea value={request} onChange={(e) => setRequest(e.target.value)} rows={3} placeholder="Например: справка о доходах за последние 6 месяцев, копия договора аренды, выписка из банка" />
+        </FormField>
         {error && <div className="bg-danger-bg border border-danger/20 text-danger text-[12.5px] p-2.5 rounded-md">{error}</div>}
-        <p className="text-[11.5px] text-ink-4">Событие добавится в Google Calendar менеджера легализации с напоминаниями за сутки и за час. Клиенту тоже придёт WhatsApp-уведомление.</p>
+        <p className="text-[11.5px] text-ink-4">Срок попадёт в Google Calendar менеджера легализации с напоминаниями за сутки и за час. В истории сделки сохранятся обе даты.</p>
       </div>
     </Modal>
   );
