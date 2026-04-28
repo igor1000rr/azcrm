@@ -2,24 +2,10 @@
 //
 // Отдельный Node-процесс который держит WhatsApp Web сессии через puppeteer.
 // Не зависит от Next.js — общается через HTTP webhook'и.
-//
-// Принципы:
-//   - На каждый WhatsappAccount (id) создаётся отдельный Client
-//   - Сессия сохраняется через LocalAuth в STORAGE_ROOT/wa-sessions/<id>
-//   - События (входящие, статусы) отправляются на CRM webhook
-//   - Управление через REST API на этом же процессе
-//
-// ENV (читаются из основного ../.env):
-//   WHATSAPP_WORKER_TOKEN — общий секрет для авторизации Next ↔ worker
-//   APP_PUBLIC_URL        — адрес CRM (для webhook), напр. http://92.205.228.90
-//   STORAGE_ROOT          — директория хранилища; сессии WA в STORAGE_ROOT/wa-sessions
-//   WHATSAPP_WORKER_PORT  — порт worker (дефолт 3100)
 
 import express from 'express';
-// whatsapp-web.js — CommonJS, импортим через default
 import waPkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = waPkg;
-// qrcode тоже CJS
 import qrcodePkg from 'qrcode';
 const qrcode = qrcodePkg;
 import fs from 'node:fs';
@@ -27,9 +13,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 
-// Подгружаем основной .env из корня репо (на уровень выше)
 dotenv.config({ path: path.resolve(process.cwd(), '..', '.env'), override: false });
-// и локальный .env в whatsapp-worker если есть
 dotenv.config({ override: false });
 
 // ============ КОНФИГ ============
@@ -40,7 +24,6 @@ const APP_PUBLIC_URL   = process.env.APP_PUBLIC_URL ?? process.env.AUTH_URL ?? '
 const CRM_WEBHOOK_URL  = process.env.CRM_WEBHOOK_URL ?? `${APP_PUBLIC_URL.replace(/\/$/, '')}/api/whatsapp/webhook`;
 const STORAGE_ROOT     = process.env.STORAGE_ROOT ?? path.resolve(process.cwd(), '..', 'storage');
 const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(STORAGE_ROOT, 'wa-sessions');
-// Куда сохраняем входящие медиа из WhatsApp.
 const WA_MEDIA_DIR     = process.env.WA_MEDIA_DIR ?? path.join(STORAGE_ROOT, 'wa-media');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -59,6 +42,12 @@ console.log('  SESSIONS_DIR    =', SESSIONS_DIR);
 // ============ КЛИЕНТЫ В ПАМЯТИ ============
 
 const clients = new Map();
+// chatId последнего входящего сообщения для каждого аккаунта+номера —
+// чтобы при ответе из CRM использовать ИМЕННО тот идентификатор, с которого
+// пришло сообщение (он может быть @lid, не @c.us). Спасает для номеров типа
+// +39518530973712 которые не резолвятся через getNumberId.
+// key: `${accountId}:${cleanPhone}` → chatIdString
+const lastIncomingChat = new Map();
 
 function getOrCreateClient(accountId) {
   let entry = clients.get(accountId);
@@ -140,13 +129,14 @@ function bindEvents(accountId, client, entry) {
 
   client.on('message', async (msg) => {
     try {
-      // Игнорируем статусы и групповые сообщения
       if (msg.from === 'status@broadcast') return;
       if (msg.from.endsWith('@g.us')) return;
-      // Новый LID-формат — игнорируем, иначе fromPhone не является реальным номером
       if (msg.from.endsWith('@lid')) return;
 
       const fromPhone = msg.from.split('@')[0];
+      // Запоминаем оригинальный chatId — пригодится при ответе из CRM
+      lastIncomingChat.set(`${accountId}:${fromPhone}`, msg.from);
+
       const contact = await msg.getContact().catch(() => null);
 
       let mediaUrl, mediaName, mediaSize;
@@ -338,12 +328,18 @@ app.get('/accounts/:id/status', (req, res) => {
   });
 });
 
-// Отправка сообщения — резолвим правильный wid через getNumberId.
+// Отправка сообщения. Стратегия резолва chatId в порядке приоритета:
+//   1. Если в `to` уже есть `@` (chat ID типа `phone@c.us` или `phone@lid`) —
+//      используем как есть (CRM передаёт оригинальный msg.from).
+//   2. Если для этого номера есть запомненный last incoming chatId —
+//      используем его (правильный wid, в т.ч. для @lid).
+//   3. getNumberId — резолв через WhatsApp Web для обычных номеров.
+//   4. Fallback на raw `phone@c.us` — старая схема, иногда работает.
 //
-// Проблема «No LID for user» (вылетает на стороне WhatsApp Web): нельзя просто
-// собрать chatId вида `phone@c.us` и слать sendMessage — в новом протоколе
-// WA требует сначала разрешить номер в LID (linked-id) через внутренний запрос.
-// getNumberId делает это и возвращает валидный _serialized.
+// Раньше при null от getNumberId возвращался жёсткий 400 «Номер не зарегистрирован».
+// Это ломало ответы на номера которые WhatsApp видит, но getNumberId
+// почему-то не может разрешить (например LID-shadow, виртуальные номера).
+// Теперь на null — переходим к шагу 4 и пытаемся отправить.
 app.post('/accounts/:id/send', async (req, res) => {
   try {
     const id = req.params.id;
@@ -357,31 +353,64 @@ app.post('/accounts/:id/send', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'to and body required' });
     }
 
-    // Нормализуем номер — только цифры
-    const cleanPhone = String(to).replace(/[^\d]/g, '');
-    if (!cleanPhone || cleanPhone.length < 6) {
-      return res.status(400).json({ ok: false, error: 'Некорректный номер получателя' });
-    }
-
-    // Резолвим WID через WA Web — это фикс «No LID for user»
+    const toStr = String(to);
     let chatId;
-    try {
-      const numberId = await entry.client.getNumberId(cleanPhone);
-      if (!numberId) {
-        return res.status(400).json({
-          ok: false,
-          error: 'Номер не зарегистрирован в WhatsApp',
-        });
+
+    // 1. Полный chatId уже передан
+    if (toStr.includes('@')) {
+      chatId = toStr;
+    } else {
+      const cleanPhone = toStr.replace(/[^\d]/g, '');
+      if (!cleanPhone || cleanPhone.length < 6) {
+        return res.status(400).json({ ok: false, error: 'Некорректный номер получателя' });
       }
-      chatId = numberId._serialized;
-    } catch (e) {
-      console.error(`[${id}] getNumberId error:`, e);
-      // Fallback: вручную собираем chatId, сработает для старых контактов
-      chatId = `${cleanPhone}@c.us`;
+
+      // 2. Запомненный chatId от входящего
+      const cached = lastIncomingChat.get(`${id}:${cleanPhone}`);
+      if (cached) {
+        chatId = cached;
+      } else {
+        // 3. getNumberId
+        try {
+          const numberId = await entry.client.getNumberId(cleanPhone);
+          if (numberId) {
+            chatId = numberId._serialized;
+          }
+        } catch (e) {
+          console.error(`[${id}] getNumberId error:`, e.message);
+        }
+
+        // 4. Fallback на raw
+        if (!chatId) {
+          chatId = `${cleanPhone}@c.us`;
+        }
+      }
     }
 
-    const msg = await entry.client.sendMessage(chatId, body);
-    res.json({ ok: true, messageId: msg.id._serialized });
+    try {
+      const msg = await entry.client.sendMessage(chatId, body);
+      return res.json({ ok: true, messageId: msg.id._serialized });
+    } catch (sendErr) {
+      // Если sendMessage упал на @c.us — попробуем @lid (новый формат)
+      const errStr = String(sendErr?.message || sendErr);
+      console.error(`[${id}] sendMessage to ${chatId} failed:`, errStr.slice(0, 200));
+
+      if (chatId.endsWith('@c.us') && /no lid for user/i.test(errStr)) {
+        const lidChatId = chatId.replace('@c.us', '@lid');
+        try {
+          const msg = await entry.client.sendMessage(lidChatId, body);
+          return res.json({ ok: true, messageId: msg.id._serialized, note: 'sent via @lid fallback' });
+        } catch (lidErr) {
+          console.error(`[${id}] sendMessage @lid fallback also failed:`, lidErr.message);
+          return res.status(500).json({
+            ok: false,
+            error: 'Не удалось отправить (ни через @c.us, ни через @lid). Возможно номер не в WhatsApp или это служебный аккаунт.',
+          });
+        }
+      }
+
+      throw sendErr;
+    }
   } catch (e) {
     console.error('send error:', e);
     res.status(500).json({ ok: false, error: e.message });
