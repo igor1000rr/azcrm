@@ -22,16 +22,17 @@ const mockDb = {
   client:           { findUnique: vi.fn() as AnyFn },
   leadEvent:        { create: vi.fn() as AnyFn },
 };
-const mockCheckCronAuth   = vi.fn();
-const mockWorkerSendMessage = vi.fn(async () => ({ ok: true }));
-const mockListGoogleEvents = vi.fn(async () => []);
-const mockNotify           = vi.fn();
+const mockCheckCronAuth     = vi.fn();
+const mockWorkerSendMessage = vi.fn() as AnyFn;
+const mockListGoogleEvents  = vi.fn() as AnyFn;
+const mockNotify            = vi.fn();
 
-// Telephony provider — фабрика возвращает объект
+// Telephony provider — фабрика возвращает объект.
+// vi.fn() без типизации, вызовы mockResolvedValue/mockReturnValue работают через AnyFn.
 const mockTelephonyProvider = {
-  isConfigured:    vi.fn(() => true),
-  fetchCalls:      vi.fn(async () => [] as Array<Record<string, unknown>>),
-  downloadRecord:  vi.fn(async () => null),
+  isConfigured:    vi.fn() as AnyFn,
+  fetchCalls:      vi.fn() as AnyFn,
+  downloadRecord:  vi.fn() as AnyFn,
 };
 const mockGetTelephonyProvider = vi.fn(() => mockTelephonyProvider);
 
@@ -54,6 +55,13 @@ function makeReq(headers: Record<string, string> = {}) {
   } as unknown as Request;
 }
 
+// Хелпер для type-safe приведения возврата route handlers к нашему MockResponse.
+// Реальный возврат — Promise<NextResponse<unknown>>; mock в next/server даёт MockResponse.
+// TS не видит этой связи, поэтому через unknown.
+function asMockRes(v: unknown): MockResponse {
+  return v as MockResponse;
+}
+
 beforeEach(() => {
   Object.values(mockDb).forEach((entity) => Object.values(entity).forEach((fn) => (fn as AnyFn).mockReset()));
   mockCheckCronAuth.mockReset();
@@ -62,8 +70,11 @@ beforeEach(() => {
   mockListGoogleEvents.mockReset();
   mockListGoogleEvents.mockResolvedValue([]);
   mockNotify.mockReset();
+  mockTelephonyProvider.isConfigured.mockReset();
   mockTelephonyProvider.isConfigured.mockReturnValue(true);
+  mockTelephonyProvider.fetchCalls.mockReset();
   mockTelephonyProvider.fetchCalls.mockResolvedValue([]);
+  mockTelephonyProvider.downloadRecord.mockReset();
   mockTelephonyProvider.downloadRecord.mockResolvedValue(null);
 });
 
@@ -71,7 +82,7 @@ describe('POST /api/cron/reminders', () => {
   it('checkCronAuth вернул 401 → выходим без работы', async () => {
     mockCheckCronAuth.mockReturnValue({ status: 401, json: async () => ({ error: 'unauthorized' }) });
     const { POST } = await import('@/app/api/cron/reminders/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect(res.status).toBe(401);
     expect(mockDb.calendarEvent.findMany).not.toHaveBeenCalled();
   });
@@ -79,7 +90,7 @@ describe('POST /api/cron/reminders', () => {
     mockCheckCronAuth.mockReturnValue(null);
     mockDb.calendarEvent.findMany.mockResolvedValue([]);
     const { POST } = await import('@/app/api/cron/reminders/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect(res.status).toBe(200);
     expect(mockWorkerSendMessage).not.toHaveBeenCalled();
   });
@@ -94,7 +105,7 @@ describe('POST /api/cron/reminders', () => {
           whatsappAccount: { id: 'wa-1', isConnected: false },
         },
       },
-    ]).mockResolvedValueOnce([]); // 1d пусто
+    ]).mockResolvedValueOnce([]);
     const { POST } = await import('@/app/api/cron/reminders/route');
     await POST(makeReq() as never);
     expect(mockWorkerSendMessage).not.toHaveBeenCalled();
@@ -124,7 +135,7 @@ describe('POST /api/cron/sync-calendar', () => {
   it('checkCronAuth вернул 401 → выходим', async () => {
     mockCheckCronAuth.mockReturnValue({ status: 401, json: async () => ({}) });
     const { POST } = await import('@/app/api/cron/sync-calendar/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect(res.status).toBe(401);
     expect(mockListGoogleEvents).not.toHaveBeenCalled();
   });
@@ -132,7 +143,7 @@ describe('POST /api/cron/sync-calendar', () => {
     mockCheckCronAuth.mockReturnValue(null);
     mockDb.user.findMany.mockResolvedValue([]);
     const { POST } = await import('@/app/api/cron/sync-calendar/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect(res.status).toBe(200);
     expect((res.data as { added: number }).added).toBe(0);
     expect(mockListGoogleEvents).not.toHaveBeenCalled();
@@ -147,9 +158,9 @@ describe('POST /api/cron/sync-calendar', () => {
         end:   { dateTime: '2026-05-01T11:00:00Z' },
       },
     ]);
-    mockDb.calendarEvent.findMany.mockResolvedValue([]); // пусто в CRM
+    mockDb.calendarEvent.findMany.mockResolvedValue([]);
     const { POST } = await import('@/app/api/cron/sync-calendar/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect(res.status).toBe(200);
     expect((res.data as { added: number }).added).toBe(1);
     expect(mockDb.calendarEvent.create).toHaveBeenCalledWith(
@@ -168,7 +179,7 @@ describe('POST /api/cron/sync-calendar', () => {
     ]);
     mockDb.calendarEvent.findMany.mockResolvedValue([]);
     const { POST } = await import('@/app/api/cron/sync-calendar/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect((res.data as { added: number }).added).toBe(0);
     expect(mockDb.calendarEvent.create).not.toHaveBeenCalled();
   });
@@ -187,7 +198,6 @@ describe('POST /api/cron/sync-calendar', () => {
     ]);
     const { POST } = await import('@/app/api/cron/sync-calendar/route');
     await POST(makeReq() as never);
-    // Не обновил и не удалил
     expect(mockDb.calendarEvent.update).not.toHaveBeenCalled();
     expect(mockDb.calendarEvent.delete).not.toHaveBeenCalled();
   });
@@ -197,7 +207,7 @@ describe('POST /api/cron/sync-calls', () => {
   it('checkCronAuth 401 → выход', async () => {
     mockCheckCronAuth.mockReturnValue({ status: 401, json: async () => ({}) });
     const { POST } = await import('@/app/api/cron/sync-calls/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect(res.status).toBe(401);
     expect(mockTelephonyProvider.fetchCalls).not.toHaveBeenCalled();
   });
@@ -205,7 +215,7 @@ describe('POST /api/cron/sync-calls', () => {
     mockCheckCronAuth.mockReturnValue(null);
     mockTelephonyProvider.isConfigured.mockReturnValue(false);
     const { POST } = await import('@/app/api/cron/sync-calls/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect((res.data as { ok: boolean }).ok).toBe(false);
     expect(mockTelephonyProvider.fetchCalls).not.toHaveBeenCalled();
   });
@@ -213,7 +223,7 @@ describe('POST /api/cron/sync-calls', () => {
     mockCheckCronAuth.mockReturnValue(null);
     mockTelephonyProvider.fetchCalls.mockResolvedValue([]);
     const { POST } = await import('@/app/api/cron/sync-calls/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect((res.data as { imported: number }).imported).toBe(0);
   });
   it('новый звонок + клиент найден → call.create + leadEvent CALL_LOGGED', async () => {
@@ -231,7 +241,7 @@ describe('POST /api/cron/sync-calls', () => {
       leads: [{ id: 'l-1', salesManagerId: 'u-1' }],
     });
     const { POST } = await import('@/app/api/cron/sync-calls/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect((res.data as { imported: number; attached: number }).imported).toBe(1);
     expect((res.data as { attached: number }).attached).toBe(1);
     expect(mockDb.call.create).toHaveBeenCalled();
@@ -247,7 +257,7 @@ describe('POST /api/cron/sync-calls', () => {
     ]);
     mockDb.call.findUnique.mockResolvedValue({ id: 'existing' });
     const { POST } = await import('@/app/api/cron/sync-calls/route');
-    const res = await POST(makeReq() as never) as MockResponse;
+    const res = asMockRes(await POST(makeReq() as never));
     expect((res.data as { skipped: number }).skipped).toBe(1);
     expect(mockDb.call.create).not.toHaveBeenCalled();
   });
