@@ -1,7 +1,6 @@
 'use client';
 
 // Sidebar — основная навигация
-// Адаптив: на >900px фиксирован слева, на ≤900px — drawer с overlay
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
@@ -46,7 +45,7 @@ interface SidebarProps {
     label:       string;
     phoneNumber: string;
     unread?:     number;
-    isOwn?:      boolean; // true если это личный канал юзера или общий
+    isOwn?:      boolean;
   }>;
 }
 
@@ -95,7 +94,6 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
 
   return (
     <>
-      {/* Кнопка меню в мобиле — отдельно показываем в layout */}
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -105,7 +103,6 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
         <Menu size={16} />
       </button>
 
-      {/* Overlay в мобиле */}
       {open && (
         <div
           className="md:hidden fixed inset-0 z-[90] bg-black/40 backdrop-blur-[2px]"
@@ -113,19 +110,17 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
         />
       )}
 
-      {/* Сам сайдбар */}
       <aside
         className={cn(
           'bg-paper border-r border-line py-4 sticky top-0 h-dvh',
           'flex flex-col overflow-y-auto thin-scroll',
           'w-[232px] shrink-0',
-          // Mobile drawer
           'max-md:fixed max-md:left-0 max-md:top-0 max-md:z-[100] max-md:w-[280px] max-md:max-w-[85vw]',
           'max-md:shadow-lg max-md:transition-transform max-md:duration-200',
           open ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
         )}
       >
-        {/* Бренд — тонкая золотая полоска снизу для премиум-акцента */}
+        {/* Бренд + золотая полоска снизу */}
         <div className="px-4 pb-4 mb-3 flex items-center justify-between relative">
           <Link href="/" onClick={() => setOpen(false)}>
             <Logo size="sm" />
@@ -138,13 +133,11 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           >
             <X size={14} />
           </button>
-          {/* Тонкая декоративная полоска: серая фон + золотая первая треть */}
           <div className="absolute bottom-0 left-4 right-4 h-px bg-line">
-            <div className="absolute left-0 top-0 h-full w-1/3 bg-gold/60" />
+            <div className="absolute left-0 top-0 h-full w-1/3 bg-gold" />
           </div>
         </div>
 
-        {/* Навигация */}
         <NavLabel>Главное</NavLabel>
         {visibleItems.map((item) => (
           <NavLink
@@ -155,7 +148,6 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           />
         ))}
 
-        {/* Каналы (только для не-админов? Нет, всем — но видят только свои) */}
         {whatsappAccounts.length > 0 && (
           <>
             <NavLabel>Каналы WhatsApp</NavLabel>
@@ -166,7 +158,7 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
                 onClick={() => setOpen(false)}
                 className={cn(
                   'flex items-center gap-2 px-4 py-1.5 text-[12px] text-ink-2',
-                  'hover:bg-navy/[0.04] hover:text-navy transition-colors',
+                  'hover:bg-navy-tint hover:text-navy transition-colors',
                   wa.unread && 'font-semibold',
                 )}
               >
@@ -180,7 +172,6 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           </>
         )}
 
-        {/* Финансы — раздел с премиями, ЗП, расходами */}
         {visibleFinance.length > 0 && (
           <>
             <NavLabel>Финансы</NavLabel>
@@ -195,7 +186,6 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           </>
         )}
 
-        {/* Настройки (только для админа) */}
         {visibleSettings.length > 0 && (
           <>
             <NavLabel>Настройки</NavLabel>
@@ -210,16 +200,16 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           </>
         )}
 
-        {/* Карточка юзера снизу — небольшой navy фон */}
-        <div className="mt-auto mx-3 mt-3 px-3 py-2.5 rounded-lg border border-navy/10 bg-navy/[0.03] flex items-center gap-2.5">
+        {/* Карточка юзера — navy фон и рамка */}
+        <div className="mt-auto mx-3 mt-3 px-3 py-2.5 rounded-lg border border-navy-medium/30 bg-navy-tint flex items-center gap-2.5">
           <Avatar name={user.name} size="md" status="online" variant="navy" />
           <div className="flex-1 min-w-0">
-            <div className="text-[12px] font-semibold text-ink truncate">{user.name}</div>
-            <div className="text-[10.5px] text-navy/70 font-medium">{roleLabel(user.role)}</div>
+            <div className="text-[12px] font-bold text-navy truncate">{user.name}</div>
+            <div className="text-[10.5px] text-navy-medium font-semibold">{roleLabel(user.role)}</div>
           </div>
           <Link
             href="/settings/profile"
-            className="text-ink-4 hover:text-navy p-1 transition-colors"
+            className="text-navy-medium hover:text-navy p-1 transition-colors"
             aria-label="Настройки"
           >
             <Settings size={14} />
@@ -233,9 +223,9 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
 // ====================== ВСПОМОГАТЕЛЬНЫЕ ======================
 
 function NavLabel({ children }: { children: React.ReactNode }) {
-  // Заголовки разделов навигации — лёгкий navy для брендового акцента
+  // Заголовки разделов — явный navy-medium #2D4373, видимо синий
   return (
-    <div className="text-[10px] tracking-[0.12em] text-navy/60 font-bold uppercase px-4 mt-3 mb-1">
+    <div className="text-[10px] tracking-[0.12em] text-navy-medium font-bold uppercase px-4 mt-3 mb-1">
       {children}
     </div>
   );
@@ -257,9 +247,9 @@ function NavLink({
         'flex items-center gap-2.5 px-4 py-1.5 text-[13px] font-medium transition-colors relative',
         'border-l-[3px]',
         active
-          // Активный пункт: лёгкий синеватый фон + navy левый бордер + золотая точка-маркер
-          ? 'bg-navy/[0.06] text-navy border-l-navy font-semibold'
-          : 'text-ink-2 border-l-transparent hover:bg-navy/[0.03] hover:text-navy hover:border-l-navy/30',
+          // Активный пункт: явный синий фон navy-tint + нави бордер
+          ? 'bg-navy-tint text-navy border-l-navy font-bold'
+          : 'text-ink-2 border-l-transparent hover:bg-navy-tint hover:text-navy hover:border-l-navy-medium',
       )}
     >
       <Icon size={15} className={cn('shrink-0', active ? 'text-navy' : 'opacity-65')} />
@@ -271,7 +261,7 @@ function NavLink({
             item.pulse
               ? 'bg-danger text-white border-danger pulse-dot'
               : active
-                ? 'bg-gold text-navy border-gold/60'   // активный бейдж — gold для контраста
+                ? 'bg-gold text-navy border-gold'
                 : 'bg-paper text-ink-3 border-line',
           )}
         >

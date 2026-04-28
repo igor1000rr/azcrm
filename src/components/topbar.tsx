@@ -13,35 +13,31 @@ interface TopbarProps {
 
 export function Topbar({ breadcrumbs, rightSlot }: TopbarProps) {
   return (
-    // Премиум-акцент: тонкая золотая декоративная полоса снизу под header
-    // (под основным border-line), отображается только в десктопе.
+    // Жёлтая полоска под границей + navy-tint фон всего topbar для различия
     <header className="bg-paper border-b border-line h-[52px] flex items-center gap-3 px-4 md:px-5 sticky top-0 z-50 relative
-      after:hidden md:after:block after:absolute after:bottom-[-1px] after:left-0 after:w-32 after:h-px after:bg-gold/70">
-      {/* Отступ под мобильную кнопку меню */}
+      after:hidden md:after:block after:absolute after:bottom-[-1px] after:left-0 after:w-32 after:h-[2px] after:bg-gold">
       <div className="md:hidden w-9 shrink-0" />
 
-      {/* Крошки */}
       <nav className="flex items-center gap-1.5 text-[13px] min-w-0">
         {breadcrumbs.map((crumb, i) => {
           const isLast = i === breadcrumbs.length - 1;
           return (
             <div key={i} className="flex items-center gap-1.5 min-w-0">
-              {i > 0 && <span className="text-navy/30 shrink-0">/</span>}
+              {i > 0 && <span className="text-navy-light shrink-0">/</span>}
               {isLast ? (
                 <strong className="text-navy font-bold tracking-tight truncate">{crumb.label}</strong>
               ) : crumb.href ? (
-                <a href={crumb.href} className="text-ink-3 hover:text-navy transition-colors truncate">
+                <a href={crumb.href} className="text-navy-medium hover:text-navy transition-colors truncate font-semibold">
                   {crumb.label}
                 </a>
               ) : (
-                <span className="text-ink-4 truncate">{crumb.label}</span>
+                <span className="text-navy-medium truncate font-semibold">{crumb.label}</span>
               )}
             </div>
           );
         })}
       </nav>
 
-      {/* Правая часть */}
       <div className="ml-auto flex items-center gap-1.5 shrink-0">
         {rightSlot}
 
