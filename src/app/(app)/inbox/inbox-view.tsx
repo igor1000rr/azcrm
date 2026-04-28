@@ -102,13 +102,14 @@ export function InboxView({
 
   return (
     // 100svh (small viewport height) надёжнее 100dvh в Safari — не пляшет
-    // вместе с URL-bar. min-h-0 нужен чтобы flex-children (треды, чат)
+    // вместе с URL-bar. min-h-0 нужно чтобы flex-children (треды, чат)
     // могли скроллиться внутри, а не выпирать наружу формой ввода.
     <div className="flex-1 flex h-[calc(100svh-52px)] min-h-0 overflow-hidden">
       {/* Левая колонка — каналы */}
       <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0 min-h-0">
         <div className="px-4 py-3 border-b border-line">
-          <h2 className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-2">
+          {/* Заголовок "КАНАЛЫ" — navy брендовый */}
+          <h2 className="text-[11px] font-bold uppercase tracking-[0.06em] text-navy">
             Каналы
           </h2>
         </div>
@@ -118,7 +119,7 @@ export function InboxView({
             href="/inbox"
             className={cn(
               'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px]',
-              'hover:bg-bg transition-colors',
+              'hover:bg-navy/[0.04] hover:text-navy transition-colors',
             )}
           >
             <MessageSquare size={13} className="text-ink-3" />
@@ -130,7 +131,7 @@ export function InboxView({
               href={`/inbox?channel=${a.id}`}
               className={cn(
                 'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px]',
-                'hover:bg-bg transition-colors',
+                'hover:bg-navy/[0.04] hover:text-navy transition-colors',
               )}
             >
               <span className={cn(
@@ -161,11 +162,11 @@ export function InboxView({
       )}>
         <div className="px-3 py-2.5 border-b border-line shrink-0">
           <div className="relative">
-            <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
+            <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-navy/40" />
             <input
               type="text"
               placeholder="Поиск..."
-              className="w-full pl-8 pr-3 py-1.5 text-[12.5px] bg-bg border border-transparent rounded-md focus:bg-paper focus:border-line focus:outline-none"
+              className="w-full pl-8 pr-3 py-1.5 text-[12.5px] bg-bg border border-transparent rounded-md focus:bg-paper focus:border-navy focus:outline-none"
             />
           </div>
         </div>
@@ -182,7 +183,10 @@ export function InboxView({
                 href={`/inbox?thread=${t.id}`}
                 className={cn(
                   'flex gap-2.5 px-3 py-2.5 border-b border-line-2 transition-colors',
-                  activeThreadId === t.id ? 'bg-bg-alt' : 'hover:bg-bg',
+                  // Активный тред — лёгкий navy фон + navy левый бордер
+                  activeThreadId === t.id
+                    ? 'bg-navy/[0.06] border-l-[3px] border-l-navy pl-[9px]'
+                    : 'hover:bg-navy/[0.02]',
                 )}
               >
                 <Avatar name={t.clientName} size="md" />
@@ -190,7 +194,11 @@ export function InboxView({
                   <div className="flex items-baseline justify-between gap-2 mb-0.5">
                     <span className={cn(
                       'text-[13px] truncate',
-                      t.unreadCount > 0 ? 'font-bold text-ink' : 'font-semibold text-ink-2',
+                      t.unreadCount > 0
+                        ? 'font-bold text-navy'
+                        : activeThreadId === t.id
+                          ? 'font-bold text-navy'
+                          : 'font-semibold text-ink-2',
                     )}>
                       {t.clientName}
                     </span>
@@ -219,7 +227,7 @@ export function InboxView({
                   {(t.accountLabel || t.funnelName) && (
                     <div className="flex items-center gap-1.5 mt-1">
                       {t.accountLabel && (
-                        <span className="text-[9.5px] px-1 py-px bg-bg text-ink-4 rounded font-medium">
+                        <span className="text-[9.5px] px-1 py-px bg-navy/[0.06] text-navy/70 rounded font-semibold border border-navy/10">
                           {t.accountLabel}
                         </span>
                       )}
@@ -245,8 +253,8 @@ export function InboxView({
         {!activeThread ? (
           <div className="flex-1 grid place-items-center text-center p-6">
             <div>
-              <MessageSquare size={36} className="mx-auto text-ink-5 mb-3" />
-              <p className="text-[13px] text-ink-3">Выберите чат для просмотра</p>
+              <MessageSquare size={36} className="mx-auto text-navy/30 mb-3" />
+              <p className="text-[13px] text-navy/60">Выберите чат для просмотра</p>
             </div>
           </div>
         ) : (
@@ -332,17 +340,17 @@ function ChatPane({
 
   return (
     <>
-      {/* Шапка чата */}
+      {/* Шапка чата — имя клиента navy брендовый */}
       <div className="bg-paper border-b border-line h-12 flex items-center gap-3 px-3 shrink-0">
         <Link
           href="/inbox"
-          className="sm:hidden w-8 h-8 rounded-md grid place-items-center text-ink-3 hover:text-ink hover:bg-bg"
+          className="sm:hidden w-8 h-8 rounded-md grid place-items-center text-ink-3 hover:text-navy hover:bg-navy/[0.04]"
         >
           <ChevronLeft size={16} />
         </Link>
         <Avatar name={thread.clientName} size="sm" />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-semibold text-ink truncate">{thread.clientName}</div>
+          <div className="text-[13px] font-bold text-navy truncate">{thread.clientName}</div>
           <div className="text-[11px] text-ink-4 font-mono">
             {formatPhone(thread.clientPhone)}
           </div>
@@ -364,7 +372,7 @@ function ChatPane({
           grouped.map((g) => (
             <div key={g.date}>
               <div className="text-center my-3">
-                <span className="text-[10.5px] px-2.5 py-0.5 bg-paper border border-line rounded-full text-ink-3 font-medium">
+                <span className="text-[10.5px] px-2.5 py-0.5 bg-paper border border-navy/15 rounded-full text-navy/70 font-semibold">
                   {formatDateLabel(g.date)}
                 </span>
               </div>
@@ -390,7 +398,7 @@ function ChatPane({
           </button>
           <button
             type="button"
-            className="w-9 h-9 rounded-md text-ink-4 hover:text-ink-2 grid place-items-center"
+            className="w-9 h-9 rounded-md text-ink-4 hover:text-navy grid place-items-center transition-colors"
             title="Прикрепить"
           >
             <Paperclip size={15} />
@@ -406,7 +414,7 @@ function ChatPane({
             }}
             rows={1}
             placeholder="Напишите сообщение..."
-            className="flex-1 resize-none px-3 py-2 text-[13px] bg-bg border border-transparent rounded-md focus:bg-paper focus:border-line focus:outline-none max-h-[120px]"
+            className="flex-1 resize-none px-3 py-2 text-[13px] bg-bg border border-transparent rounded-md focus:bg-paper focus:border-navy focus:outline-none max-h-[120px]"
           />
           <button
             type="submit"
@@ -476,7 +484,7 @@ function TemplatesModal({
         <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto thin-scroll">
           {Object.entries(grouped).map(([cat, items]) => (
             <div key={cat}>
-              <h3 className="text-[10.5px] font-bold uppercase tracking-[0.06em] text-ink-3 mb-1.5 px-1">
+              <h3 className="text-[10.5px] font-bold uppercase tracking-[0.06em] text-navy/70 mb-1.5 px-1">
                 {cat}
               </h3>
               <div className="flex flex-col gap-1">
@@ -485,9 +493,9 @@ function TemplatesModal({
                     key={t.id}
                     type="button"
                     onClick={() => onPick(t.id)}
-                    className="text-left p-2.5 rounded-md border border-line hover:border-ink-5 hover:bg-bg transition-colors"
+                    className="text-left p-2.5 rounded-md border border-line hover:border-navy/40 hover:bg-navy/[0.02] transition-colors"
                   >
-                    <div className="text-[13px] font-semibold text-ink mb-0.5">{t.name}</div>
+                    <div className="text-[13px] font-semibold text-navy mb-0.5">{t.name}</div>
                     <div className="text-[11.5px] text-ink-3 line-clamp-2 whitespace-pre-wrap">
                       {t.body.length > 140 ? t.body.slice(0, 140) + '...' : t.body}
                     </div>

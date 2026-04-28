@@ -76,17 +76,17 @@ export default async function ClientsPage({ searchParams }: PageProps) {
         {/* Toolbar */}
         <div className="bg-paper border border-line rounded-lg mb-3 p-3 flex items-center gap-3 flex-wrap">
           <form action="/clients" method="get" className="flex-1 min-w-[240px] max-w-[420px] relative">
-            <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
+            <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-navy/40" />
             <input
               type="text"
               name="q"
               defaultValue={q}
               placeholder="Поиск по ФИО, телефону, email..."
-              className="w-full pl-8 pr-3 py-1.5 text-12 bg-paper border border-line rounded-md focus:border-ink-5 focus:outline-none"
+              className="w-full pl-8 pr-3 py-1.5 text-12 bg-paper border border-line rounded-md focus:border-navy focus:outline-none"
             />
           </form>
           <div className="text-[12px] text-ink-3">
-            Найдено: <strong className="text-ink">{total}</strong>
+            Найдено: <strong className="text-navy">{total}</strong>
           </div>
           <Link href="/clients/new" className="ml-auto">
             <Button variant="primary">
@@ -100,7 +100,8 @@ export default async function ClientsPage({ searchParams }: PageProps) {
           <div className="overflow-x-auto thin-scroll">
             <table className="w-full text-[12.5px]">
               <thead>
-                <tr className="bg-bg border-b border-line">
+                {/* Шапка таблицы в лёгком navy фоне + брендовых заголовках */}
+                <tr className="bg-navy/[0.04] border-b border-navy/10">
                   <Th>Клиент</Th>
                   <Th>Телефон</Th>
                   <Th>Город</Th>
@@ -120,12 +121,13 @@ export default async function ClientsPage({ searchParams }: PageProps) {
                   const debt = Math.max(0, totalAmount - totalPaid);
 
                   return (
-                    <tr key={c.id} className="border-b border-line-2 last:border-0 hover:bg-bg">
+                    <tr key={c.id} className="border-b border-line-2 last:border-0 hover:bg-navy/[0.02] transition-colors">
                       <td className="px-4 py-2.5">
                         <Link href={c.leads[0] ? `/clients/${c.leads[0].id}` : '#'} className="flex items-center gap-2.5">
                           <Avatar name={c.fullName} size="sm" />
                           <div>
-                            <div className="font-semibold text-ink">{c.fullName}</div>
+                            {/* Имя клиента — navy брендовое */}
+                            <div className="font-semibold text-navy">{c.fullName}</div>
                             {c.email && <div className="text-[11px] text-ink-4">{c.email}</div>}
                           </div>
                         </Link>
@@ -154,7 +156,7 @@ export default async function ClientsPage({ searchParams }: PageProps) {
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-right font-mono font-semibold text-ink whitespace-nowrap">
+                      <td className="px-4 py-2.5 text-right font-mono font-semibold text-navy whitespace-nowrap">
                         {totalAmount > 0 ? `${formatMoney(totalAmount)} zł` : '—'}
                       </td>
                       <td className={`px-4 py-2.5 text-right font-mono whitespace-nowrap ${debt > 0 ? 'text-danger font-semibold' : 'text-ink-4'}`}>
@@ -184,18 +186,18 @@ export default async function ClientsPage({ searchParams }: PageProps) {
             {page > 1 && (
               <Link
                 href={`/clients?${new URLSearchParams({ ...(q && { q }), page: String(page - 1) })}`}
-                className="px-3 py-1.5 text-[12px] bg-paper border border-line rounded-md text-ink-2 hover:border-ink-5"
+                className="px-3 py-1.5 text-[12px] bg-paper border border-line rounded-md text-ink-2 hover:border-navy/40 hover:text-navy transition-colors"
               >
                 ← Назад
               </Link>
             )}
             <span className="text-[12px] text-ink-3">
-              Страница <strong className="text-ink">{page}</strong> из {totalPages}
+              Страница <strong className="text-navy">{page}</strong> из {totalPages}
             </span>
             {page < totalPages && (
               <Link
                 href={`/clients?${new URLSearchParams({ ...(q && { q }), page: String(page + 1) })}`}
-                className="px-3 py-1.5 text-[12px] bg-paper border border-line rounded-md text-ink-2 hover:border-ink-5"
+                className="px-3 py-1.5 text-[12px] bg-paper border border-line rounded-md text-ink-2 hover:border-navy/40 hover:text-navy transition-colors"
               >
                 Вперёд →
               </Link>
@@ -210,8 +212,9 @@ export default async function ClientsPage({ searchParams }: PageProps) {
 function Th({
   children, align,
 }: { children: React.ReactNode; align?: 'right' | 'left' }) {
+  // Брендовые заголовки таблицы — navy/70 вместо серого ink-4
   return (
-    <th className={`px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold ${align === 'right' ? 'text-right' : 'text-left'}`}>
+    <th className={`px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-navy/70 font-bold ${align === 'right' ? 'text-right' : 'text-left'}`}>
       {children}
     </th>
   );
