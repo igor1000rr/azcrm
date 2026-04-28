@@ -101,16 +101,19 @@ export function InboxView({
   }, [router]);
 
   return (
-    <div className="flex-1 flex h-[calc(100dvh-52px)] overflow-hidden">
+    // 100svh (small viewport height) надёжнее 100dvh в Safari — не пляшет
+    // вместе с URL-bar. min-h-0 нужен чтобы flex-children (треды, чат)
+    // могли скроллиться внутри, а не выпирать наружу формой ввода.
+    <div className="flex-1 flex h-[calc(100svh-52px)] min-h-0 overflow-hidden">
       {/* Левая колонка — каналы */}
-      <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0">
+      <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0 min-h-0">
         <div className="px-4 py-3 border-b border-line">
           <h2 className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-2">
             Каналы
           </h2>
         </div>
 
-        <div className="flex-1 overflow-y-auto thin-scroll p-2">
+        <div className="flex-1 overflow-y-auto thin-scroll p-2 min-h-0">
           <Link
             href="/inbox"
             className={cn(
@@ -152,11 +155,11 @@ export function InboxView({
 
       {/* Средняя колонка — список тредов */}
       <div className={cn(
-        'border-r border-line bg-paper flex flex-col shrink-0',
+        'border-r border-line bg-paper flex flex-col shrink-0 min-h-0',
         'w-full sm:w-[320px]',
         activeThread && 'hidden sm:flex',
       )}>
-        <div className="px-3 py-2.5 border-b border-line">
+        <div className="px-3 py-2.5 border-b border-line shrink-0">
           <div className="relative">
             <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
             <input
@@ -167,7 +170,7 @@ export function InboxView({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto thin-scroll">
+        <div className="flex-1 overflow-y-auto thin-scroll min-h-0">
           {threads.length === 0 ? (
             <div className="text-center p-8 text-[13px] text-ink-4">
               Переписок пока нет
@@ -236,7 +239,7 @@ export function InboxView({
 
       {/* Правая колонка — сообщения */}
       <div className={cn(
-        'flex-1 bg-bg flex flex-col min-w-0',
+        'flex-1 bg-bg flex flex-col min-w-0 min-h-0',
         !activeThread && 'hidden sm:flex',
       )}>
         {!activeThread ? (
@@ -351,8 +354,8 @@ function ChatPane({
         )}
       </div>
 
-      {/* Сообщения */}
-      <div className="flex-1 overflow-y-auto thin-scroll px-3 py-3">
+      {/* Сообщения — flex-1 + min-h-0, чтобы скроллились внутри а не выпихивали форму вниз */}
+      <div className="flex-1 overflow-y-auto thin-scroll px-3 py-3 min-h-0">
         {grouped.length === 0 ? (
           <div className="text-center text-[13px] text-ink-4 py-12">
             Сообщений пока нет
@@ -374,8 +377,8 @@ function ChatPane({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Композер */}
-      <form onSubmit={send} className="bg-paper border-t border-line px-3 py-2.5 shrink-0">
+      {/* Композер — shrink-0 + sticky bottom-0 как страховка если родитель плывёт */}
+      <form onSubmit={send} className="bg-paper border-t border-line px-3 py-2.5 shrink-0 sticky bottom-0 z-10">
         <div className="flex items-end gap-2">
           <button
             type="button"
