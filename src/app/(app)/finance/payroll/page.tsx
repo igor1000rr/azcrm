@@ -32,7 +32,7 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     orderBy: { name: 'asc' },
   });
 
-  // Комиссии за период по каждому
+  // Премии (комиссии в БД) за период по каждому
   const commissions = await db.commission.findMany({
     where: { createdAt: { gte: from, lte: to } },
     select: { userId: true, amount: true, paidOut: true },
@@ -105,8 +105,8 @@ export default async function PayrollPage({ searchParams }: PageProps) {
         {/* Сводные KPI */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <KpiCard label="Часов отработано" value={`${totals.hours.toFixed(1)} ч`} />
-          <KpiCard label="Комиссий начислено" value={`${formatMoney(totals.commissions)} zł`} highlight="success" />
-          <KpiCard label="К выплате (комиссии)" value={`${formatMoney(totals.pending)} zł`} highlight={totals.pending > 0 ? 'warn' : 'default'} />
+          <KpiCard label="Премий начислено" value={`${formatMoney(totals.commissions)} zł`} highlight="success" />
+          <KpiCard label="К выплате (премии)" value={`${formatMoney(totals.pending)} zł`} highlight={totals.pending > 0 ? 'warn' : 'default'} />
           <KpiCard label="Чистый ФОТ" value={`${formatMoney(totals.net)} zł`} subtitle={`Грязный ${formatMoney(totals.gross)} − налоги ${formatMoney(totals.tax)}`} />
         </div>
 
