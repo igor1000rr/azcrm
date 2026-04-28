@@ -6,14 +6,27 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { audit } from '@/lib/audit';
+import { parseNumericOr, parsePercent } from '@/lib/finance/parse-numeric';
+
+// Кастомный preprocessor — принимает строки/числа и нормализует.
+// Поддерживает запятую как десятичный разделитель ('5,5' → 5.5).
+const numericFromInput = z.preprocess(
+  (v) => parseNumericOr(v, 0),
+  z.number().min(0),
+);
+
+const percentFromInput = z.preprocess(
+  (v) => parsePercent(v) ?? 0,
+  z.number().min(0).max(100),
+);
 
 const serviceSchema = z.object({
   id:                     z.string().optional(),
   name:                   z.string().min(2, 'Укажите название услуги'),
   description:            z.string().optional(),
-  basePrice:              z.coerce.number().min(0).default(0),
-  salesCommissionPercent: z.coerce.number().min(0).max(100).default(5),
-  legalCommissionPercent: z.coerce.number().min(0).max(100).default(5),
+  basePrice:              numericFromInput.default(0),
+  salesCommissionPercent: percentFromInput.default(5),
+  legalCommissionPercent: percentFromInput.default(5),
   funnelId:               z.string().optional(),
   position:               z.coerce.number().int().default(0),
   isActive:               z.boolean().default(true),
