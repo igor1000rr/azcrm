@@ -1,4 +1,4 @@
-// Финансы → Комиссии: таблица премий по приведённым клиентам.
+// Финансы → Премии: таблица премий по приведённым клиентам.
 // ADMIN видит всех, менеджер — только свои (без сводок чужих).
 import Link from 'next/link';
 import { Topbar } from '@/components/topbar';
@@ -95,7 +95,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
 
   return (
     <>
-      <Topbar breadcrumbs={[{ label: 'Финансы' }, { label: 'Комиссии' }]} />
+      <Topbar breadcrumbs={[{ label: 'Финансы' }, { label: 'Премии менеджеров' }]} />
 
       <div className="p-4 md:p-5 max-w-[1400px] w-full">
         {/* Фильтры */}
@@ -141,7 +141,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
                     <Th>Менеджер</Th>
                     <Th>Роль</Th>
                     <Th align="right">Привод. сумма</Th>
-                    <Th align="right">Комиссия всего</Th>
+                    <Th align="right">Премия всего</Th>
                     <Th align="right">Выплачено</Th>
                     <Th align="right">К выплате</Th>
                     <Th align="right">Платежей</Th>
@@ -190,7 +190,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
                   <Th>Роль</Th>
                   <Th align="right">Платёж</Th>
                   <Th align="right">%</Th>
-                  <Th align="right">Комиссия</Th>
+                  <Th align="right">Премия</Th>
                   <Th>Статус</Th>
                   {canMarkCommissionPaid(user) && <Th />}
                 </tr>
@@ -243,7 +243,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
                 {commissions.length === 0 && (
                   <tr>
                     <td colSpan={canMarkCommissionPaid(user) ? 10 : 9} className="px-4 py-12 text-center text-ink-4">
-                      Комиссий за выбранный период нет
+                      Премий за выбранный период нет
                     </td>
                   </tr>
                 )}
