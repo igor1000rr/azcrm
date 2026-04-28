@@ -1,6 +1,11 @@
 'use client';
 
-// Сводная таблица ЗП с редактируемыми полями ставка/налог/фикс
+// Сводная таблица ЗП с редактируемыми полями: ставка/час, ZUS, PIT.
+// Структура (Anna 28.04.2026):
+//   Часы | Ставка/час | Ставка × часы | Премия | ZUS | PIT | Грязными свои | Зп чистая
+//
+// Зп чистая   = ставка × часы + премия       (получает на руки)
+// Грязными св = зп чистая + ZUS + PIT        (полная стоимость для компании)
 import { useState, useTransition } from 'react';
 import { Avatar } from '@/components/ui/avatar';
 import { Pencil, Save, X } from 'lucide-react';
@@ -13,8 +18,8 @@ interface Row {
   name: string;
   role: UserRole;
   hourlyRate: number;
-  fixedSalary: number;
-  taxAmount: number;
+  zus: number;
+  pit: number;
   totalHours: number;
   ratePart: number;
   totalCommission: number;
@@ -40,18 +45,20 @@ export function PayrollView({ rows }: { rows: Row[] }) {
           <thead>
             <tr className="bg-bg border-b border-line">
               <Th>Менеджер</Th>
-              <Th align="right">Часы</Th>
-              <Th align="right">Ставка/час</Th>
-              <Th align="right">Ставка × часы</Th>
-              <Th align="right" tooltip="Фиксированная часть зарплаты в злотых за месяц — не зависит от часов и сделок. Можно оставить 0.">
-                Фикс. часть
-              </Th>
+              <Th align="right" tooltip="Сумма часов из табеля рабочего времени за выбранный период.">Часы</Th>
+              <Th align="right" tooltip="Ставка за час работы. Задаётся индивидуально по каждому менеджеру.">Ставка/час</Th>
+              <Th align="right" tooltip="Ставка × часы — рассчитывается автоматически.">Ставка × часы</Th>
               <Th align="right" tooltip="Премия с приведённых клиентов: % от платежей по правилам роли (продажи — с предоплаты, легализация — со 2-го платежа).">
                 Премия
               </Th>
-              <Th align="right">Налог</Th>
-              <Th align="right" tooltip="Грязный = ставка × часы + фикс. часть + премии">Грязный итог</Th>
-              <Th align="right" tooltip="Чистый = грязный − налог">Чистый итог</Th>
+              <Th align="right" tooltip="ZUS — польский соцстрах. Anna вводит сумму вручную.">ZUS</Th>
+              <Th align="right" tooltip="PIT — польский подоходный налог. Anna вводит сумму вручную.">PIT</Th>
+              <Th align="right" tooltip="Грязными свои = ставка × часы + премия + ZUS + PIT. Полная стоимость менеджера для компании.">
+                Грязными свои
+              </Th>
+              <Th align="right" tooltip="Зп чистая = ставка × часы + премия. Что менеджер получает на руки.">
+                Зп чистая
+              </Th>
               <Th />
             </tr>
           </thead>
@@ -73,14 +80,14 @@ export function PayrollView({ rows }: { rows: Row[] }) {
                   <td className="px-4 py-2.5 text-right font-mono">{r.totalHours.toFixed(1)}</td>
                   <td className="px-4 py-2.5 text-right font-mono">{formatMoney(r.hourlyRate)} zł</td>
                   <td className="px-4 py-2.5 text-right font-mono">{formatMoney(r.ratePart)} zł</td>
-                  <td className="px-4 py-2.5 text-right font-mono">{formatMoney(r.fixedSalary)} zł</td>
                   <td className="px-4 py-2.5 text-right font-mono text-success font-semibold">
                     {formatMoney(r.totalCommission)} zł
                     {r.pending > 0 && (
                       <span className="block text-[10px] text-warn">к выплате {formatMoney(r.pending)} zł</span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-danger">−{formatMoney(r.taxAmount)} zł</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(r.zus)} zł</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(r.pit)} zł</td>
                   <td className="px-4 py-2.5 text-right font-mono">{formatMoney(r.grossTotal)} zł</td>
                   <td className="px-4 py-2.5 text-right font-mono font-bold text-success">{formatMoney(r.netTotal)} zł</td>
                   <td className="px-4 py-2.5 text-right">
@@ -88,7 +95,7 @@ export function PayrollView({ rows }: { rows: Row[] }) {
                       onClick={() => setEditing(r.id)}
                       className="p-1.5 text-ink-3 hover:text-ink hover:bg-bg rounded"
                       aria-label="Изменить ставки"
-                      title={r.hasConfig ? 'Изменить' : 'Настроить'}
+                      title={r.hasConfig ? 'Изменить ставку, ZUS, PIT' : 'Настроить'}
                     >
                       <Pencil size={13} />
                     </button>
@@ -112,18 +119,26 @@ export function PayrollView({ rows }: { rows: Row[] }) {
 
 function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; onSave: () => void }) {
   const [hourly, setHourly] = useState(String(row.hourlyRate));
-  const [fixed, setFixed] = useState(String(row.fixedSalary));
-  const [tax, setTax] = useState(String(row.taxAmount));
+  const [zus, setZus] = useState(String(row.zus));
+  const [pit, setPit] = useState(String(row.pit));
   const [pending, startTransition] = useTransition();
+
+  // Live-расчёт прямо в строке редактирования
+  const hRate = Number(hourly) || 0;
+  const zusN  = Number(zus) || 0;
+  const pitN  = Number(pit) || 0;
+  const ratePart = hRate * row.totalHours;
+  const netLive  = ratePart + row.totalCommission;
+  const grossLive = netLive + zusN + pitN;
 
   const save = () => {
     startTransition(async () => {
       try {
         await upsertPayrollConfig({
-          userId: row.id,
-          hourlyRate: Number(hourly) || 0,
-          fixedSalary: Number(fixed) || 0,
-          taxAmount: Number(tax) || 0,
+          userId:     row.id,
+          hourlyRate: hRate,
+          zus:        zusN,
+          pit:        pitN,
         });
         onSave();
         location.reload();
@@ -144,22 +159,25 @@ function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; on
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">{row.totalHours.toFixed(1)}</td>
       <td className="px-4 py-2.5">
         <input type="number" min={0} step={1} value={hourly} onChange={(e) => setHourly(e.target.value)}
+          title="Ставка за час работы (zł)"
           className="w-24 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
       </td>
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">
-        {formatMoney((Number(hourly) || 0) * row.totalHours)} zł
-      </td>
-      <td className="px-4 py-2.5">
-        <input type="number" min={0} step={50} value={fixed} onChange={(e) => setFixed(e.target.value)}
-          title="Фиксированная часть зарплаты за месяц — не зависит от часов и премий. Можно оставить 0."
-          className="w-28 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
+        {formatMoney(ratePart)} zł
       </td>
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(row.totalCommission)} zł</td>
       <td className="px-4 py-2.5">
-        <input type="number" min={0} step={50} value={tax} onChange={(e) => setTax(e.target.value)}
+        <input type="number" min={0} step={50} value={zus} onChange={(e) => setZus(e.target.value)}
+          title="ZUS — польский соцстрах. Введите сумму в злотых."
           className="w-24 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
       </td>
-      <td className="px-4 py-2.5" colSpan={2}></td>
+      <td className="px-4 py-2.5">
+        <input type="number" min={0} step={50} value={pit} onChange={(e) => setPit(e.target.value)}
+          title="PIT — польский подоходный налог. Введите сумму в злотых."
+          className="w-24 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
+      </td>
+      <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(grossLive)} zł</td>
+      <td className="px-4 py-2.5 text-right font-mono font-bold text-success">{formatMoney(netLive)} zł</td>
       <td className="px-4 py-2.5 text-right whitespace-nowrap">
         <button onClick={save} disabled={pending}
           className="p-1.5 text-success hover:bg-bg rounded mr-1 disabled:opacity-50" aria-label="Сохранить">
