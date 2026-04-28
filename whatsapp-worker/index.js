@@ -41,6 +41,22 @@ const clients = new Map();
 // chatId последнего входящего сообщения (для ответа CRM используем его как есть)
 const lastIncomingChat = new Map();
 
+// Типы WhatsApp-событий, которые шлём в CRM как реальные сообщения.
+// Всё остальное (e2e_notification, notification_template, gp2, revoked, ciphertext
+// и пр.) — служебка от WhatsApp, в чате её показывать не нужно: иначе на каждый
+// "Тест" в чате появляется 3 пустых пузыря (одно сообщение + 2 системных события).
+const CONTENT_MESSAGE_TYPES = new Set([
+  'chat',        // обычный текст
+  'image',
+  'document',
+  'video',
+  'audio',
+  'ptt',         // голосовое
+  'location',
+  'vcard',
+  'sticker',
+]);
+
 function getOrCreateClient(accountId) {
   let entry = clients.get(accountId);
   if (entry) return entry;
@@ -129,6 +145,15 @@ function bindEvents(accountId, client, entry) {
       if (msg.from.endsWith('@g.us')) return;
       if (msg.from.endsWith('@newsletter')) return;
 
+      // Фильтр служебных событий: e2e_notification, notification_template, gp2,
+      // ciphertext, revoked и т.д. — это технические уведомления WhatsApp, не
+      // сообщения от пользователя. Без этого фильтра CRM засоряется пустыми
+      // пузырями (3 события на каждое реальное сообщение).
+      if (!CONTENT_MESSAGE_TYPES.has(msg.type)) {
+        console.log(`[${accountId}] skip system event type=${msg.type}`);
+        return;
+      }
+
       // Резолвим реальный номер. Для @c.us берём как есть, для @lid идём в contact.
       const contact = await msg.getContact().catch((e) => {
         console.error(`[${accountId}] getContact error:`, e.message);
@@ -215,6 +240,7 @@ function mapMessageType(waType) {
   if (waType === 'ptt' || waType === 'audio') return 'audio';
   if (waType === 'location') return 'location';
   if (waType === 'vcard') return 'contact';
+  if (waType === 'sticker') return 'image';
   return 'text';
 }
 
