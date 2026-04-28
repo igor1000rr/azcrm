@@ -98,7 +98,7 @@ async function callWA(action: string, body: unknown) {
   return POST(
     makeReq({ body }) as never,
     { params: Promise.resolve({ action }) } as never,
-  ) as Promise<MockResponse>;
+  ) as unknown as Promise<MockResponse>;
 }
 
 describe('POST /api/whatsapp/[action]', () => {
@@ -194,27 +194,27 @@ describe('POST /api/files/upload', () => {
 
   it('file или clientId отсутствует → 400', async () => {
     const { POST } = await import('@/app/api/files/upload/route');
-    const res = await POST(makeReq({ formData: makeForm({}) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({}) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('file > 50 МБ → 413', async () => {
     const big = new File([new Uint8Array(51 * 1024 * 1024)], 'big.pdf', { type: 'application/pdf' });
     const { POST } = await import('@/app/api/files/upload/route');
-    const res = await POST(makeReq({ formData: makeForm({ file: big, clientId: 'cl-1' }) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({ file: big, clientId: 'cl-1' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(413);
   });
   it('isAllowedFile вернул ok=false → 415', async () => {
     mockIsAllowedFile.mockReturnValue({ ok: false, reason: 'Исполняемые файлы запрещены' });
     const file = makeFile('x.exe', 'application/octet-stream');
     const { POST } = await import('@/app/api/files/upload/route');
-    const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-1' }) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-1' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(415);
   });
   it('клиент не виден (clientVisibilityFilter) → 403', async () => {
     mockDb.client.findFirst.mockResolvedValue(null);
     const file = makeFile('x.pdf', 'application/pdf');
     const { POST } = await import('@/app/api/files/upload/route');
-    const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-x' }) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-x' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(403);
   });
   it('успех → saveBuffer + clientFile.create + revalidate', async () => {
@@ -224,7 +224,7 @@ describe('POST /api/files/upload', () => {
     });
     const file = makeFile('x.pdf', 'application/pdf');
     const { POST } = await import('@/app/api/files/upload/route');
-    const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-1', category: 'PASSPORT' }) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-1', category: 'PASSPORT' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockSaveBuffer).toHaveBeenCalled();
     expect(mockDb.clientFile.create).toHaveBeenCalledWith(
@@ -247,19 +247,19 @@ describe('POST /api/files/upload-generic', () => {
 
   it('нет file → 400', async () => {
     const { POST } = await import('@/app/api/files/upload-generic/route');
-    const res = await POST(makeReq({ formData: makeForm({}) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({}) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('invalid bucket → 400', async () => {
     const file = makeFile('x.pdf', 'application/pdf');
     const { POST } = await import('@/app/api/files/upload-generic/route');
-    const res = await POST(makeReq({ formData: makeForm({ file, bucket: 'docs' }) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({ file, bucket: 'docs' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('bucket=expenses + файл → saveBuffer + 200', async () => {
     const file = makeFile('receipt.jpg', 'image/jpeg');
     const { POST } = await import('@/app/api/files/upload-generic/route');
-    const res = await POST(makeReq({ formData: makeForm({ file, bucket: 'expenses' }) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({ file, bucket: 'expenses' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockSaveBuffer).toHaveBeenCalledWith('expenses', expect.anything(), 'receipt.jpg');
   });
@@ -270,7 +270,7 @@ describe('POST /api/files/upload-generic', () => {
     });
     const file = makeFile('x.pdf', 'application/pdf');
     const { POST } = await import('@/app/api/files/upload-generic/route');
-    const res = await POST(makeReq({ formData: makeForm({ file, bucket: 'expenses' }) }) as never) as MockResponse;
+    const res = await POST(makeReq({ formData: makeForm({ file, bucket: 'expenses' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(403);
     expect(mockSaveBuffer).not.toHaveBeenCalled();
   });
@@ -283,7 +283,7 @@ describe('DELETE /api/files/delete/[id]', () => {
     const res = await DELETE(
       makeReq() as never,
       { params: Promise.resolve({ id: 'f-x' }) } as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     expect(res.status).toBe(404);
   });
   it('нет прав (canViewLead=false на всех лидах) → 403', async () => {
@@ -296,7 +296,7 @@ describe('DELETE /api/files/delete/[id]', () => {
     const res = await DELETE(
       makeReq() as never,
       { params: Promise.resolve({ id: 'f-1' }) } as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     expect(res.status).toBe(403);
   });
   it('uploads-файл → removeFile + clientFile.delete', async () => {
@@ -336,7 +336,7 @@ describe('DELETE /api/files/delete/[id]', () => {
     const res = await DELETE(
       makeReq() as never,
       { params: Promise.resolve({ id: 'f-1' }) } as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockDb.clientFile.delete).toHaveBeenCalled();
   });
