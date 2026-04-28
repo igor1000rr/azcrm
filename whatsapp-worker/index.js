@@ -16,8 +16,6 @@ import dotenv from 'dotenv';
 dotenv.config({ path: path.resolve(process.cwd(), '..', '.env'), override: false });
 dotenv.config({ override: false });
 
-// ============ КОНФИГ ============
-
 const PORT             = parseInt(process.env.WHATSAPP_WORKER_PORT ?? process.env.PORT ?? '3100', 10);
 const AUTH_TOKEN       = process.env.WHATSAPP_WORKER_TOKEN ?? process.env.WORKER_AUTH_TOKEN ?? '';
 const APP_PUBLIC_URL   = process.env.APP_PUBLIC_URL ?? process.env.AUTH_URL ?? 'http://localhost:3000';
@@ -39,14 +37,8 @@ console.log('  AUTH_TOKEN      =', AUTH_TOKEN ? '(set)' : '(not set)');
 console.log('  CRM_WEBHOOK_URL =', CRM_WEBHOOK_URL);
 console.log('  SESSIONS_DIR    =', SESSIONS_DIR);
 
-// ============ КЛИЕНТЫ В ПАМЯТИ ============
-
 const clients = new Map();
-// chatId последнего входящего сообщения для каждого аккаунта+номера —
-// чтобы при ответе из CRM использовать ИМЕННО тот идентификатор, с которого
-// пришло сообщение (он может быть @lid, не @c.us). Спасает для номеров типа
-// +39518530973712 которые не резолвятся через getNumberId.
-// key: `${accountId}:${cleanPhone}` → chatIdString
+// chatId последнего входящего сообщения (для ответа CRM используем его как есть)
 const lastIncomingChat = new Map();
 
 function getOrCreateClient(accountId) {
@@ -129,15 +121,36 @@ function bindEvents(accountId, client, entry) {
 
   client.on('message', async (msg) => {
     try {
+      console.log(`[${accountId}] msg from=${msg.from} type=${msg.type} body="${(msg.body || '').slice(0, 50)}"`);
+
+      // Игнорируем только статусы и группы. @lid НЕ игнорим — это новые
+      // юзеры WhatsApp. Из contact достанем реальный номер если возможно.
       if (msg.from === 'status@broadcast') return;
       if (msg.from.endsWith('@g.us')) return;
-      if (msg.from.endsWith('@lid')) return;
+      if (msg.from.endsWith('@newsletter')) return;
 
-      const fromPhone = msg.from.split('@')[0];
+      // Резолвим реальный номер. Для @c.us берём как есть, для @lid идём в contact.
+      const contact = await msg.getContact().catch((e) => {
+        console.error(`[${accountId}] getContact error:`, e.message);
+        return null;
+      });
+
+      let realPhone;
+      if (msg.from.endsWith('@c.us')) {
+        realPhone = msg.from.split('@')[0];
+      } else if (contact?.id?.user && /^\d+$/.test(contact.id.user)) {
+        // contact.id.user — реальный номер даже если msg.from = @lid
+        realPhone = contact.id.user;
+      } else if (contact?.number) {
+        realPhone = String(contact.number).replace(/^\+/, '');
+      } else {
+        // Не смогли вычислить номер — используем то что есть в msg.from до @
+        realPhone = msg.from.split('@')[0];
+        console.warn(`[${accountId}] не смог резолвить реальный номер для ${msg.from}, использую raw`);
+      }
+
       // Запоминаем оригинальный chatId — пригодится при ответе из CRM
-      lastIncomingChat.set(`${accountId}:${fromPhone}`, msg.from);
-
-      const contact = await msg.getContact().catch(() => null);
+      lastIncomingChat.set(`${accountId}:${realPhone}`, msg.from);
 
       let mediaUrl, mediaName, mediaSize;
       if (msg.hasMedia) {
@@ -162,7 +175,7 @@ function bindEvents(accountId, client, entry) {
         kind:       'message.in',
         accountId,
         externalId: msg.id._serialized,
-        fromPhone:  '+' + fromPhone,
+        fromPhone:  '+' + realPhone,
         fromName:   contact?.pushname || contact?.name || undefined,
         type:       mapMessageType(msg.type),
         body:       msg.body || undefined,
@@ -171,6 +184,7 @@ function bindEvents(accountId, client, entry) {
         mediaSize,
         timestamp:  msg.timestamp * 1000,
       });
+      console.log(`[${accountId}] webhook отправлен для msg от +${realPhone}`);
     } catch (e) {
       console.error(`[${accountId}] message handler error:`, e);
     }
@@ -230,7 +244,7 @@ function guessExt(mimetype) {
 
 async function sendWebhook(payload) {
   try {
-    await fetch(CRM_WEBHOOK_URL, {
+    const res = await fetch(CRM_WEBHOOK_URL, {
       method: 'POST',
       headers: {
         'Content-Type':  'application/json',
@@ -238,6 +252,9 @@ async function sendWebhook(payload) {
       },
       body: JSON.stringify(payload),
     });
+    if (!res.ok) {
+      console.error(`webhook HTTP ${res.status} for ${payload.kind}`);
+    }
   } catch (e) {
     console.error('webhook error:', e.message);
   }
@@ -328,18 +345,29 @@ app.get('/accounts/:id/status', (req, res) => {
   });
 });
 
-// Отправка сообщения. Стратегия резолва chatId в порядке приоритета:
-//   1. Если в `to` уже есть `@` (chat ID типа `phone@c.us` или `phone@lid`) —
-//      используем как есть (CRM передаёт оригинальный msg.from).
-//   2. Если для этого номера есть запомненный last incoming chatId —
-//      используем его (правильный wid, в т.ч. для @lid).
-//   3. getNumberId — резолв через WhatsApp Web для обычных номеров.
-//   4. Fallback на raw `phone@c.us` — старая схема, иногда работает.
-//
-// Раньше при null от getNumberId возвращался жёсткий 400 «Номер не зарегистрирован».
-// Это ломало ответы на номера которые WhatsApp видит, но getNumberId
-// почему-то не может разрешить (например LID-shadow, виртуальные номера).
-// Теперь на null — переходим к шагу 4 и пытаемся отправить.
+// Важно — connect должен подниматься АВТОМАТИЧЕСКИ при старте worker'а если
+// есть сохранённая сессия, иначе после рестарта PM2 worker не подхватит сессию
+// до первого ручного клика «Подключить» в UI. Сейчас connect триггерится только
+// HTTP-запросом — добавим автоинициализацию по списку папок в SESSIONS_DIR.
+function autoRestoreSessions() {
+  try {
+    const entries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory() || !e.name.startsWith('session-')) continue;
+      const accountId = e.name.replace(/^session-/, '');
+      console.log(`[worker] auto-restore session for ${accountId}`);
+      const entry = getOrCreateClient(accountId);
+      entry.status = 'initializing';
+      entry.client.initialize().catch((err) => {
+        console.error(`[${accountId}] auto-restore initialize error:`, err.message);
+        entry.status = 'failed';
+      });
+    }
+  } catch (e) {
+    console.error('autoRestoreSessions error:', e.message);
+  }
+}
+
 app.post('/accounts/:id/send', async (req, res) => {
   try {
     const id = req.params.id;
@@ -356,7 +384,6 @@ app.post('/accounts/:id/send', async (req, res) => {
     const toStr = String(to);
     let chatId;
 
-    // 1. Полный chatId уже передан
     if (toStr.includes('@')) {
       chatId = toStr;
     } else {
@@ -365,12 +392,10 @@ app.post('/accounts/:id/send', async (req, res) => {
         return res.status(400).json({ ok: false, error: 'Некорректный номер получателя' });
       }
 
-      // 2. Запомненный chatId от входящего
       const cached = lastIncomingChat.get(`${id}:${cleanPhone}`);
       if (cached) {
         chatId = cached;
       } else {
-        // 3. getNumberId
         try {
           const numberId = await entry.client.getNumberId(cleanPhone);
           if (numberId) {
@@ -380,18 +405,18 @@ app.post('/accounts/:id/send', async (req, res) => {
           console.error(`[${id}] getNumberId error:`, e.message);
         }
 
-        // 4. Fallback на raw
         if (!chatId) {
           chatId = `${cleanPhone}@c.us`;
         }
       }
     }
 
+    console.log(`[${id}] sending to chatId=${chatId}`);
+
     try {
       const msg = await entry.client.sendMessage(chatId, body);
       return res.json({ ok: true, messageId: msg.id._serialized });
     } catch (sendErr) {
-      // Если sendMessage упал на @c.us — попробуем @lid (новый формат)
       const errStr = String(sendErr?.message || sendErr);
       console.error(`[${id}] sendMessage to ${chatId} failed:`, errStr.slice(0, 200));
 
@@ -420,6 +445,8 @@ app.post('/accounts/:id/send', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`whatsapp-worker listening on :${PORT}`);
   console.log(`webhook URL: ${CRM_WEBHOOK_URL}`);
+  // Поднимаем сохранённые сессии после старта worker'а
+  setTimeout(autoRestoreSessions, 1000);
 });
 
 process.on('SIGTERM', async () => {
