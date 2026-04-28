@@ -1,10 +1,11 @@
 // Интеграционный тест server action addPayment.
 // Prisma client замокан — проверяем именно бизнес-логику + side effects.
 //
-// Адаптирован под новый addPayment (db.$transaction(callback) + payment.aggregate
-// вместо payment.count). $transaction в моке просто вызывает callback с тем же
-// mockDb в качестве tx — этого достаточно чтобы проверить что нужные методы
-// вызываются с правильными аргументами.
+// Новая логика премий (Anna 28.04.2026):
+//   - sequence=1 → SALES (менеджер продаж получает свой %)
+//   - sequence=2 → LEGAL (менеджер легализации получает свой %)
+//   - sequence>=3 → никаких премий
+// % берётся в порядке: User.commissionPercent → Service.*CommissionPercent → 5%
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type AnyFn = ReturnType<typeof vi.fn>;
@@ -12,11 +13,10 @@ type AnyFn = ReturnType<typeof vi.fn>;
 const mockDb = {
   lead:       { findUnique: vi.fn() as AnyFn },
   payment:    { aggregate:  vi.fn() as AnyFn, create: vi.fn() as AnyFn },
-  setting:    { findUnique: vi.fn() as AnyFn },
-  commission: { createMany: vi.fn() as AnyFn },
+  commission: { create:     vi.fn() as AnyFn },
   leadEvent:  { create:     vi.fn() as AnyFn },
   // $transaction в проде принимает callback и передаёт tx-объект (сам по себе
-  // тот же PrismaClient). В моке возвращаем mockDb — вызовы tx.payment.create учтутся.
+  // тот же PrismaClient). В моке возвращаем mockDb — вызовы tx.* учтутся.
   $transaction: vi.fn(async (cb: (tx: typeof mockDb) => Promise<unknown>) => cb(mockDb)) as AnyFn,
 };
 
@@ -26,6 +26,13 @@ vi.mock('@/lib/auth', () => ({
     id: 'u-admin', email: 'a@a', name: 'A', role: 'ADMIN',
   })),
 }));
+vi.mock('@/lib/permissions', () => ({
+  canEditLead:           () => true,
+  canTransferLead:       () => true,
+  canAssignLegalManager: () => true,
+  canDeletePayment:      () => true,
+  assert:                (_: boolean) => {},
+}));
 
 const { addPayment } = await import('@/app/(app)/actions');
 
@@ -33,8 +40,7 @@ beforeEach(() => {
   mockDb.lead.findUnique.mockReset();
   mockDb.payment.aggregate.mockReset();
   mockDb.payment.create.mockReset();
-  mockDb.setting.findUnique.mockReset();
-  mockDb.commission.createMany.mockReset();
+  mockDb.commission.create.mockReset();
   mockDb.leadEvent.create.mockReset();
   mockDb.$transaction.mockReset();
   // Дефолтная реализация $transaction — просто выполнить callback с mockDb в качестве tx
@@ -48,12 +54,16 @@ describe('addPayment', () => {
     salesManagerId: string | null;
     legalManagerId: string | null;
     service: { salesCommissionPercent: number; legalCommissionPercent: number } | null;
+    salesManager: { commissionPercent: number | null } | null;
+    legalManager: { commissionPercent: number | null } | null;
   }> = {}) {
     mockDb.lead.findUnique.mockResolvedValue({
       id: 'lead-1',
       salesManagerId: 'u-s',
       legalManagerId: 'u-l',
-      service: { salesCommissionPercent: 5, legalCommissionPercent: 3 },
+      service:      { salesCommissionPercent: 5, legalCommissionPercent: 3 },
+      salesManager: { commissionPercent: null },
+      legalManager: { commissionPercent: null },
       ...overrides,
     });
     mockDb.payment.create.mockResolvedValue({ id: 'pay-1' });
@@ -66,71 +76,87 @@ describe('addPayment', () => {
     });
   }
 
-  it('1-й платёж — без комиссий (по дефолту startFrom=2)', async () => {
+  it('1-й платёж — премия SALES (5% по умолчанию из услуги)', async () => {
     setupLead();
     setPrevPaymentsCount(0);
-    mockDb.setting.findUnique.mockResolvedValue(null);
 
     await addPayment({ leadId: 'lead-1', amount: 1000, method: 'CASH' });
 
     expect(mockDb.payment.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ sequence: 1 }) }),
     );
-    expect(mockDb.commission.createMany).not.toHaveBeenCalled();
+    expect(mockDb.commission.create).toHaveBeenCalledTimes(1);
+    const arg = mockDb.commission.create.mock.calls[0][0];
+    expect(arg.data).toMatchObject({ role: 'SALES', userId: 'u-s', percent: 5, amount: 50 });
   });
 
-  it('2-й платёж — начисление обоим менеджерам', async () => {
+  it('2-й платёж — премия LEGAL (3% из услуги)', async () => {
     setupLead();
     setPrevPaymentsCount(1);
-    mockDb.setting.findUnique.mockResolvedValue(null);
 
     await addPayment({ leadId: 'lead-1', amount: 1000, method: 'TRANSFER' });
 
-    expect(mockDb.commission.createMany).toHaveBeenCalledTimes(1);
-    const arg = mockDb.commission.createMany.mock.calls[0][0];
-    expect(arg.data).toHaveLength(2);
-    expect(arg.data[0]).toMatchObject({ role: 'SALES', amount: 50, userId: 'u-s' });
-    expect(arg.data[1]).toMatchObject({ role: 'LEGAL', amount: 30, userId: 'u-l' });
+    expect(mockDb.payment.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ sequence: 2 }) }),
+    );
+    expect(mockDb.commission.create).toHaveBeenCalledTimes(1);
+    const arg = mockDb.commission.create.mock.calls[0][0];
+    expect(arg.data).toMatchObject({ role: 'LEGAL', userId: 'u-l', percent: 3, amount: 30 });
   });
 
-  it('startFrom=1 → 1-й платёж тоже с комиссиями', async () => {
+  it('3-й платёж — без премий (sequence>=3)', async () => {
     setupLead();
+    setPrevPaymentsCount(2);
+
+    await addPayment({ leadId: 'lead-1', amount: 1000, method: 'CASH' });
+
+    expect(mockDb.payment.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ sequence: 3 }) }),
+    );
+    expect(mockDb.commission.create).not.toHaveBeenCalled();
+  });
+
+  it('персональный % менеджера перебивает % услуги', async () => {
+    setupLead({ salesManager: { commissionPercent: 10 } });
     setPrevPaymentsCount(0);
-    mockDb.setting.findUnique.mockResolvedValue({ value: '1' });
 
     await addPayment({ leadId: 'lead-1', amount: 1000, method: 'CASH' });
 
-    expect(mockDb.commission.createMany).toHaveBeenCalled();
+    const arg = mockDb.commission.create.mock.calls[0][0];
+    expect(arg.data).toMatchObject({ role: 'SALES', percent: 10, amount: 100 });
   });
 
-  it('нет менеджера легализации — только SALES комиссия', async () => {
+  it('1-й платёж без SALES менеджера — премии нет', async () => {
+    setupLead({ salesManagerId: null });
+    setPrevPaymentsCount(0);
+
+    await addPayment({ leadId: 'lead-1', amount: 1000, method: 'CASH' });
+
+    expect(mockDb.commission.create).not.toHaveBeenCalled();
+  });
+
+  it('2-й платёж без LEGAL менеджера — премии нет', async () => {
     setupLead({ legalManagerId: null });
-    setPrevPaymentsCount(2);
-    mockDb.setting.findUnique.mockResolvedValue(null);
+    setPrevPaymentsCount(1);
 
     await addPayment({ leadId: 'lead-1', amount: 1000, method: 'CASH' });
 
-    const arg = mockDb.commission.createMany.mock.calls[0][0];
-    expect(arg.data).toHaveLength(1);
-    expect(arg.data[0].role).toBe('SALES');
+    expect(mockDb.commission.create).not.toHaveBeenCalled();
   });
 
-  it('услуга не задана — дефолтные 5/5%', async () => {
+  it('услуга не задана — fallback 5% по умолчанию', async () => {
     setupLead({ service: null });
-    setPrevPaymentsCount(2);
-    mockDb.setting.findUnique.mockResolvedValue(null);
+    setPrevPaymentsCount(0);
 
     await addPayment({ leadId: 'lead-1', amount: 1000, method: 'CASH' });
 
-    const arg = mockDb.commission.createMany.mock.calls[0][0];
-    expect(arg.data[0].percent).toBe(5);
-    expect(arg.data[1].percent).toBe(5);
+    const arg = mockDb.commission.create.mock.calls[0][0];
+    expect(arg.data).toMatchObject({ role: 'SALES', percent: 5, amount: 50 });
   });
 
   it('LeadEvent PAYMENT_ADDED создаётся всегда', async () => {
     setupLead();
     setPrevPaymentsCount(0);
-    mockDb.setting.findUnique.mockResolvedValue(null);
 
     await addPayment({ leadId: 'lead-1', amount: 500, method: 'CARD' });
 
@@ -155,7 +181,6 @@ describe('addPayment', () => {
   it('retry на P2002: при race condition повторяет транзакцию и в итоге успевает', async () => {
     setupLead();
     setPrevPaymentsCount(0);
-    mockDb.setting.findUnique.mockResolvedValue(null);
 
     // Первый вызов транзакции кидает P2002, второй — проходит
     let call = 0;
