@@ -5,7 +5,12 @@ import { Topbar } from '@/components/topbar';
 import { FunnelView } from './funnel-view';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { leadVisibilityFilter } from '@/lib/permissions';
+import {
+  buildPrismaLeadFilter,
+  applySearchFilter,
+  applyDebtFilter,
+  calculateKPI,
+} from '@/lib/funnel-filter';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,25 +60,15 @@ export default async function FunnelPage({ searchParams }: PageProps) {
     orderBy: { position: 'asc' },
   });
 
-  // 3. Лиды текущей воронки с учётом прав и фильтров
-  const leadFilter = {
-    funnelId:   currentFunnel.id,
-    isArchived: false,
-    ...(params.city ? { cityId: params.city } : {}),
-    ...(params.mgr  ? {
-      OR: [
-        { salesManagerId: params.mgr },
-        { legalManagerId: params.mgr },
-      ],
-    } : {}),
-    ...(params.q ? {
-      OR: [
-        { client: { fullName: { contains: params.q, mode: 'insensitive' as const } } },
-        { client: { phone:    { contains: params.q } } },
-      ],
-    } : {}),
-    ...leadVisibilityFilter(user),
-  };
+  // 3. Лиды текущей воронки. Фильтр через pure-функцию (city,mgr,visibility).
+  // Поиск и debt применяются JS-фильтром после загрузки — для нормализации
+  // телефонов (см. tests/unit/funnel-filter.test.ts).
+  const leadFilter = buildPrismaLeadFilter({
+    funnelId: currentFunnel.id,
+    cityId:   params.city || undefined,
+    mgrId:    params.mgr  || undefined,
+    user,
+  });
 
   const leads = await db.lead.findMany({
     where:   leadFilter,
@@ -93,24 +88,24 @@ export default async function FunnelPage({ searchParams }: PageProps) {
     },
   });
 
-  // Фильтр "Только долги" — на стороне сервера после подсчёта
-  const leadsWithDebt = leads.map((l) => {
-    const paid = l.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+  // 4. JS-фильтры (поиск + долги) и расчёт долга/оплат на каждом лиде
+  const withSearch = applySearchFilter(leads, params.q);
+  const filtered = applyDebtFilter(withSearch, params.debt === '1');
+
+  // Расчёт _paid и _debt для UI (отдельно, чтобы передать в FunnelView)
+  const enriched = filtered.map((l) => {
+    const paid = l.payments.reduce((s, p) => s + Number(p.amount), 0);
     const total = Number(l.totalAmount);
     return { ...l, _paid: paid, _debt: Math.max(0, total - paid) };
   });
 
-  const filtered = params.debt === '1'
-    ? leadsWithDebt.filter((l) => l._debt > 0)
-    : leadsWithDebt;
-
-  // 4. Города (для фильтра)
+  // 5. Города (для фильтра)
   const cities = await db.city.findMany({
     where:   { isActive: true },
     orderBy: { position: 'asc' },
   });
 
-  // 5. Менеджеры (для фильтра)
+  // 6. Менеджеры (для фильтра, только админ видит селект)
   const managers = user.role === 'ADMIN'
     ? await db.user.findMany({
         where: { isActive: true, role: { in: ['SALES', 'LEGAL'] } },
@@ -119,15 +114,9 @@ export default async function FunnelPage({ searchParams }: PageProps) {
       })
     : [];
 
-  // 6. KPI — суммы по текущей воронке
-  const totalAmount = filtered.reduce((s, l) => s + Number(l.totalAmount), 0);
-  const totalPaid   = filtered.reduce((s, l) => s + l._paid, 0);
-  const totalDebt   = filtered.reduce((s, l) => s + l._debt, 0);
+  // 7. KPI — через pure-функцию calculateKPI
   const decisionStageIds = stages.filter((s) => s.isFinal && !s.isLost).map((s) => s.id);
-  const decisionCount = filtered.filter((l) => decisionStageIds.includes(l.stage.id)).length;
-  const conversion = filtered.length > 0
-    ? Math.round((decisionCount / filtered.length) * 100)
-    : 0;
+  const kpi = calculateKPI(enriched, decisionStageIds);
 
   return (
     <>
@@ -143,7 +132,7 @@ export default async function FunnelPage({ searchParams }: PageProps) {
           id: s.id, name: s.name, color: s.color, position: s.position,
           isFinal: s.isFinal, isLost: s.isLost,
         }))}
-        leads={filtered.map((l) => ({
+        leads={enriched.map((l) => ({
           id:        l.id,
           stageId:   l.stage.id,
           clientName: l.client.fullName,
@@ -162,15 +151,7 @@ export default async function FunnelPage({ searchParams }: PageProps) {
         }))}
         cities={cities.map((c) => ({ id: c.id, name: c.name }))}
         managers={managers}
-        kpi={{
-          leadsCount: filtered.length,
-          totalAmount,
-          totalPaid,
-          totalDebt,
-          conversion,
-          decisionCount,
-          debtorsCount: filtered.filter((l) => l._debt > 0).length,
-        }}
+        kpi={kpi}
         currentFilters={{
           city: params.city ?? '',
           mgr:  params.mgr ?? '',
