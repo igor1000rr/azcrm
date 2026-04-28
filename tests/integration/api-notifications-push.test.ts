@@ -72,12 +72,11 @@ describe('GET /api/notifications/list', () => {
     mockDb.notification.count.mockResolvedValue(1);
 
     const { GET } = await import('@/app/api/notifications/list/route');
-    const res = await GET() as MockResponse;
+    const res = await GET() as unknown as MockResponse;
     expect(res.status).toBe(200);
     const data = await res.json() as { items: unknown[]; unreadCount: number };
     expect(data.items).toHaveLength(2);
     expect(data.unreadCount).toBe(1);
-    // фильтр по userId
     expect(mockDb.notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { userId: 'u-1' }, take: 30 }),
     );
@@ -88,7 +87,7 @@ describe('GET /api/notifications/list', () => {
       e.statusCode = 401; throw e;
     });
     const { GET } = await import('@/app/api/notifications/list/route');
-    const res = await GET() as MockResponse;
+    const res = await GET() as unknown as MockResponse;
     expect(res.status).toBe(401);
   });
 });
@@ -96,7 +95,7 @@ describe('GET /api/notifications/list', () => {
 describe('POST /api/notifications/read-all', () => {
   it('updateMany isRead=true для userId', async () => {
     const { POST } = await import('@/app/api/notifications/read-all/route');
-    const res = await POST() as MockResponse;
+    const res = await POST() as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockDb.notification.updateMany).toHaveBeenCalledWith({
       where: { userId: 'u-1', isRead: false },
@@ -108,14 +107,14 @@ describe('POST /api/notifications/read-all', () => {
 describe('GET /api/push/vapid', () => {
   it('ключ есть → 200', async () => {
     const { GET } = await import('@/app/api/push/vapid/route');
-    const res = await GET() as MockResponse;
+    const res = await GET() as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect((res.data as { key: string }).key).toBe('BPUBLICKEY123');
   });
   it('push не настроен → 503', async () => {
     mockGetVapidPublicKey.mockReturnValue(null as never);
     const { GET } = await import('@/app/api/push/vapid/route');
-    const res = await GET() as MockResponse;
+    const res = await GET() as unknown as MockResponse;
     expect(res.status).toBe(503);
   });
 });
@@ -127,7 +126,7 @@ describe('POST /api/push/subscribe', () => {
       body: { endpoint: 'https://fcm.example/abc', keys: { p256dh: 'PK', auth: 'AK' } },
       headers: { 'user-agent': 'Mozilla/Test' },
     });
-    const res = await POST(req as never) as MockResponse;
+    const res = await POST(req as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockDb.pushSubscription.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -142,14 +141,14 @@ describe('POST /api/push/subscribe', () => {
   it('нет endpoint → 400', async () => {
     const { POST } = await import('@/app/api/push/subscribe/route');
     const req = makeReq({ body: { keys: { p256dh: 'X', auth: 'Y' } } });
-    const res = await POST(req as never) as MockResponse;
+    const res = await POST(req as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
     expect(mockDb.pushSubscription.upsert).not.toHaveBeenCalled();
   });
   it('нет keys.p256dh → 400', async () => {
     const { POST } = await import('@/app/api/push/subscribe/route');
     const req = makeReq({ body: { endpoint: 'X', keys: { auth: 'Y' } } });
-    const res = await POST(req as never) as MockResponse;
+    const res = await POST(req as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
 });
@@ -158,7 +157,7 @@ describe('POST /api/push/unsubscribe', () => {
   it('deleteMany по endpoint+userId', async () => {
     const { POST } = await import('@/app/api/push/unsubscribe/route');
     const req = makeReq({ body: { endpoint: 'https://fcm.example/abc' } });
-    const res = await POST(req as never) as MockResponse;
+    const res = await POST(req as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockDb.pushSubscription.deleteMany).toHaveBeenCalledWith({
       where: { endpoint: 'https://fcm.example/abc', userId: 'u-1' },
@@ -167,7 +166,7 @@ describe('POST /api/push/unsubscribe', () => {
   it('нет endpoint → 400', async () => {
     const { POST } = await import('@/app/api/push/unsubscribe/route');
     const req = makeReq({ body: {} });
-    const res = await POST(req as never) as MockResponse;
+    const res = await POST(req as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
 });
@@ -178,7 +177,7 @@ describe('GET /api/chat-templates', () => {
       { id: 't-1', name: 'X', body: 'Y', category: 'A' },
     ]);
     const { GET } = await import('@/app/api/chat-templates/route');
-    const res = await GET() as MockResponse;
+    const res = await GET() as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockDb.chatTemplate.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { isActive: true } }),
@@ -189,7 +188,7 @@ describe('GET /api/chat-templates', () => {
 describe('POST /api/chat-templates/render', () => {
   it('templateId отсутствует → 400', async () => {
     const { POST } = await import('@/app/api/chat-templates/render/route');
-    const res = await POST(makeReq({ body: { threadId: 'th-1' } }) as never) as MockResponse;
+    const res = await POST(makeReq({ body: { threadId: 'th-1' } }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('шаблон не найден → 404', async () => {
@@ -197,7 +196,7 @@ describe('POST /api/chat-templates/render', () => {
     const { POST } = await import('@/app/api/chat-templates/render/route');
     const res = await POST(
       makeReq({ body: { templateId: 't-x', threadId: 'th-1' } }) as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     expect(res.status).toBe(404);
   });
   it('тред не найден/нет доступа → 404', async () => {
@@ -206,7 +205,7 @@ describe('POST /api/chat-templates/render', () => {
     const { POST } = await import('@/app/api/chat-templates/render/route');
     const res = await POST(
       makeReq({ body: { templateId: 't-1', threadId: 'th-x' } }) as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     expect(res.status).toBe(404);
   });
   it('подстановка {client.fullName} + {user.name}', async () => {
@@ -221,7 +220,7 @@ describe('POST /api/chat-templates/render', () => {
     const { POST } = await import('@/app/api/chat-templates/render/route');
     const res = await POST(
       makeReq({ body: { templateId: 't-1', threadId: 'th-1' } }) as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     expect(res.status).toBe(200);
     const data = await res.json() as { body: string };
     expect(data.body).toBe('Здравствуйте Пётр! С вами Ivan.');
@@ -235,9 +234,9 @@ describe('POST /api/chat-templates/render', () => {
     const { POST } = await import('@/app/api/chat-templates/render/route');
     const res = await POST(
       makeReq({ body: { templateId: 't-1', threadId: 'th-1' } }) as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     const data = await res.json() as { body: string };
-    expect(data.body).toBe('Hi {something.weird}'); // плейсхолдер не разрешён — остался
+    expect(data.body).toBe('Hi {something.weird}');
   });
   it('расчёт lead.debt = totalAmount - sum(payments)', async () => {
     mockDb.chatTemplate.findUnique.mockResolvedValue({ body: 'Долг: {lead.debt}' });
@@ -252,9 +251,8 @@ describe('POST /api/chat-templates/render', () => {
     const { POST } = await import('@/app/api/chat-templates/render/route');
     const res = await POST(
       makeReq({ body: { templateId: 't-1', threadId: 'th-1' } }) as never,
-    ) as MockResponse;
+    ) as unknown as MockResponse;
     const data = await res.json() as { body: string };
-    // formatMoney(500) — проверяем что вывелась цифра 500 (без точного формата)
     expect(data.body).toMatch(/500/);
   });
 });
@@ -265,7 +263,7 @@ describe('GET /api/blueprints', () => {
       { id: 'b-1', name: 'Договор', description: '...', format: 'docx', placeholders: [] },
     ]);
     const { GET } = await import('@/app/api/blueprints/route');
-    const res = await GET() as MockResponse;
+    const res = await GET() as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockDb.documentBlueprint.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { isActive: true }, orderBy: { name: 'asc' } }),
@@ -277,7 +275,7 @@ describe('GET /api/blueprints', () => {
       e.statusCode = 401; throw e;
     });
     const { GET } = await import('@/app/api/blueprints/route');
-    const res = await GET() as MockResponse;
+    const res = await GET() as unknown as MockResponse;
     expect(res.status).toBe(401);
   });
 });
