@@ -163,7 +163,10 @@ describe('applySearchFilter', () => {
 
   it('поиск по части имени', () => {
     expect(applySearchFilter(leads, 'Пет').map((l) => l.id)).toEqual(['l2']);
-    expect(applySearchFilter(leads, 'ров').map((l) => l.id)).toEqual(['l1', 'l2', 'l3']);
+    // 'ров' (кириллица) — только в 'Петров'. В 'Иванов' нет, в 'Sidorov' — латиница.
+    expect(applySearchFilter(leads, 'ров').map((l) => l.id)).toEqual(['l2']);
+    // А 'нов' — в 'Иванов'.
+    expect(applySearchFilter(leads, 'нов').map((l) => l.id)).toEqual(['l1']);
   });
 
   it('ФИКС: поиск по телефону игнорирует пробелы и +/дефисы (БАГ Anna)', () => {
