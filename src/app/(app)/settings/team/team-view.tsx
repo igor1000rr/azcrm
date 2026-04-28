@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
 import { Input, Select, FormField } from '@/components/ui/input';
+import { Hint } from '@/components/ui/hint';
 import { formatRelative } from '@/lib/utils';
 import {
   upsertUser, toggleUserActive, resetUserPassword,
@@ -110,14 +111,22 @@ function RoleGroup({
   const label = role === 'ADMIN' ? 'Администраторы' :
                 role === 'SALES' ? 'Менеджеры продаж' : 'Менеджеры легализации';
 
+  // Подсказка про роль рядом с заголовком группы
+  const roleHint = role === 'ADMIN'
+    ? 'Полный доступ ко всем разделам CRM. Видит все лиды, финансы, может менять любые настройки.'
+    : role === 'SALES'
+    ? 'Менеджер продаж — приводит клиентов и ведёт их до закрытия сделки. Получает премию с 1-го платежа клиента.'
+    : 'Менеджер легализации — оформляет документы для клиента. Получает премию со 2-го платежа клиента.';
+
   // ADMIN не получает комиссий → поле % не показываем
   const showCommission = role !== 'ADMIN';
 
   return (
     <div className="bg-paper border border-line rounded-lg overflow-hidden">
       <div className="px-4 py-2.5 border-b border-line bg-bg">
-        <h3 className="text-[12px] font-bold uppercase tracking-[0.05em] text-ink-2">
+        <h3 className="text-[12px] font-bold uppercase tracking-[0.05em] text-ink-2 inline-flex items-center gap-1.5">
           {label} ({users.length})
+          <Hint width={260}>{roleHint}</Hint>
         </h3>
       </div>
 
@@ -143,7 +152,7 @@ function RoleGroup({
               <CommissionInput
                 userId={u.id}
                 value={u.commissionPercent}
-                roleLabel={role === 'SALES' ? '1-й платёж' : '2-й платёж'}
+                role={role as 'SALES' | 'LEGAL'}
               />
             )}
 
@@ -170,14 +179,18 @@ function RoleGroup({
  * плейсхолдер «авто» и подсказывает что используется дефолт услуги.
  */
 function CommissionInput({
-  userId, value, roleLabel,
-}: { userId: string; value: number | null; roleLabel: string }) {
+  userId, value, role,
+}: { userId: string; value: number | null; role: 'SALES' | 'LEGAL' }) {
   const router = useRouter();
   const [val, setVal] = useState<string>(value != null ? String(value) : '');
   const [busy, setBusy] = useState(false);
 
+  const hintText = role === 'SALES'
+    ? 'Персональный % премии этого менеджера от 1-го платежа клиента. Пусто = брать % из услуги.'
+    : 'Персональный % премии этого менеджера от 2-го платежа клиента. Пусто = брать % из услуги.';
+
   async function save() {
-    const trimmed = val.trim();
+    const trimmed = val.trim().replace(',', '.');
     const num = trimmed === '' ? null : Number(trimmed);
     if (num !== null && (isNaN(num) || num < 0 || num > 100)) {
       alert('% должен быть от 0 до 100');
@@ -197,13 +210,11 @@ function CommissionInput({
   }
 
   return (
-    <div className="flex items-center gap-1 shrink-0" title={`Премия за ${roleLabel}`}>
+    <div className="flex items-center gap-1 shrink-0">
       <Percent size={11} className="text-ink-4" />
       <input
-        type="number"
-        min="0"
-        max="100"
-        step="0.5"
+        type="text"
+        inputMode="decimal"
         value={val}
         onChange={(e) => setVal(e.target.value)}
         onBlur={save}
@@ -212,6 +223,7 @@ function CommissionInput({
         placeholder="авто"
         className="w-14 px-1.5 py-1 text-[12px] font-mono text-center bg-paper border border-line rounded-md focus:border-navy focus:outline-none"
       />
+      <Hint size={11} side="left">{hintText}</Hint>
     </div>
   );
 }
@@ -238,7 +250,7 @@ function UserFormModal({
     setErr(null);
     setBusy(true);
     try {
-      const cpTrimmed = commissionPercent.trim();
+      const cpTrimmed = commissionPercent.trim().replace(',', '.');
       const cp = cpTrimmed === '' ? null : Number(cpTrimmed);
       if (cp !== null && (isNaN(cp) || cp < 0 || cp > 100)) {
         throw new Error('Комиссия должна быть от 0 до 100');
@@ -297,14 +309,12 @@ function UserFormModal({
           <FormField
             label="Комиссия %"
             hint={role === 'SALES'
-              ? 'Получает с 1-го платежа клиента (предоплата). Пусто = брать % из услуги.'
-              : 'Получает со 2-го платежа клиента (после закрытия). Пусто = брать % из услуги.'}
+              ? 'Получает с 1-го платежа клиента (предоплата). Пусто = брать % из услуги. Можно с запятой: 5,5'
+              : 'Получает со 2-го платежа клиента (после закрытия). Пусто = брать % из услуги. Можно с запятой: 5,5'}
           >
             <Input
-              type="number"
-              min="0"
-              max="100"
-              step="0.5"
+              type="text"
+              inputMode="decimal"
               value={commissionPercent}
               onChange={(e) => setCommissionPercent(e.target.value)}
               placeholder="например 5"
