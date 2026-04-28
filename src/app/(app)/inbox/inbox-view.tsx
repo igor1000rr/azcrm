@@ -56,6 +56,50 @@ interface InboxViewProps {
 export function InboxView({
   accounts, threads, activeThreadId, activeMessages, activeThread,
 }: InboxViewProps) {
+  const router = useRouter();
+
+  // Авто-обновление: раз в 5 секунд тихо перезапрашиваем server-state
+  // через router.refresh() — это RSC-friendly, без full page reload.
+  // Когда вкладка не в фокусе — пауза (Page Visibility API), чтобы не
+  // долбить сервер открытыми вкладками. При возврате фокуса — мгновенный
+  // refresh + возобновление интервала.
+  useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const start = () => {
+      if (intervalId) return;
+      intervalId = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          router.refresh();
+        }
+      }, 5000);
+    };
+
+    const stop = () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        router.refresh(); // мгновенный апдейт при возврате во вкладку
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (document.visibilityState === 'visible') start();
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [router]);
+
   return (
     <div className="flex-1 flex h-[calc(100dvh-52px)] overflow-hidden">
       {/* Левая колонка — каналы */}
