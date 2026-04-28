@@ -16,6 +16,8 @@ const userSchema = z.object({
   phone:    z.string().optional().nullable(),
   password: z.string().optional(),
   isActive: z.boolean().default(true),
+  // Персональный % комиссии. null = использовать дефолт услуги.
+  commissionPercent: z.coerce.number().min(0).max(100).optional().nullable(),
 });
 
 export async function upsertUser(input: z.infer<typeof userSchema>) {
@@ -30,6 +32,7 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
       role:     data.role,
       phone:    data.phone || null,
       isActive: data.isActive,
+      commissionPercent: data.commissionPercent ?? null,
     };
     if (data.password && data.password.length >= 6) {
       updateData.passwordHash = await bcrypt.hash(data.password, 10);
@@ -41,7 +44,7 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
       action:     'user.update',
       entityType: 'User',
       entityId:   data.id,
-      after:      { email: data.email, role: data.role, isActive: data.isActive },
+      after:      { email: data.email, role: data.role, isActive: data.isActive, commissionPercent: data.commissionPercent },
     });
   } else {
     // Создание
@@ -56,6 +59,7 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
         phone:        data.phone || null,
         isActive:     data.isActive,
         passwordHash: await bcrypt.hash(data.password, 10),
+        commissionPercent: data.commissionPercent ?? null,
       },
     });
     await audit({
@@ -63,7 +67,7 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
       action:     'user.create',
       entityType: 'User',
       entityId:   created.id,
-      after:      { email: data.email, role: data.role },
+      after:      { email: data.email, role: data.role, commissionPercent: data.commissionPercent },
     });
   }
 
@@ -112,5 +116,34 @@ export async function resetUserPassword(id: string, newPassword: string) {
     entityId:   id,
   });
 
+  return { ok: true };
+}
+
+/**
+ * Обновить только commissionPercent — отдельный action для inline-редактирования
+ * прямо в списке команды без открытия модалки.
+ */
+export async function setUserCommissionPercent(id: string, percent: number | null) {
+  const admin = await requireAdmin();
+  if (percent !== null && (percent < 0 || percent > 100)) {
+    throw new Error('% должен быть от 0 до 100');
+  }
+
+  await db.user.update({
+    where: { id },
+    data:  { commissionPercent: percent },
+  });
+
+  await audit({
+    userId:     admin.id,
+    action:     'user.set_commission',
+    entityType: 'User',
+    entityId:   id,
+    after:      { commissionPercent: percent },
+  });
+
+  revalidatePath('/settings/team');
+  revalidatePath('/finance/commissions');
+  revalidatePath('/finance/payroll');
   return { ok: true };
 }
