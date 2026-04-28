@@ -2,6 +2,16 @@
 // AZ Group CRM — схема БД
 // Миграционная юридическая фирма в Польше
 // ============================================================
+// Архитектура:
+//  - Client (физ. лицо) <-1:N-> Lead (конкретное дело)
+//  - Funnel/Stage — кастомизируется админом
+//  - WhatsApp/Telegram каналы привязаны к менеджерам (общий + личные)
+//  - Звонки из Play импортируются и привязываются к Client
+//  - Документы: чек-лист (галочки) + внутренние через OnlyOffice
+//  - Календарь: Google Calendar OAuth для каждого менеджера
+//  - Несколько услуг на одном лиде: через LeadService (M:N)
+//  - Работодатель и город работы — для karta praca
+// ============================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -17,9 +27,9 @@ datasource db {
 // ============================================================
 
 enum UserRole {
-  ADMIN
-  SALES
-  LEGAL
+  ADMIN  // Anna — полный доступ
+  SALES  // менеджер продаж
+  LEGAL  // менеджер легализации
 }
 
 enum UserStatus {
@@ -37,14 +47,15 @@ model User {
   status       UserStatus @default(OFFLINE)
   avatar       String?
   isActive     Boolean    @default(true)
-  // Флаг: при следующем входе юзер обязан сменить пароль.
-  // Ставится true при seed (дефолтный пароль) и при сбросе админом.
-  mustChangePassword Boolean @default(false)
   phone        String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   lastSeenAt   DateTime?
 
+  // Принудительная смена пароля при следующем входе (первый вход / ресет админом)
+  mustChangePassword Boolean @default(false)
+
+  // OAuth для Google Calendar
   googleAccessToken           String?   @db.Text
   googleAccessTokenExpiresAt  DateTime?
   googleRefreshToken          String?   @db.Text
@@ -56,6 +67,7 @@ model User {
   ownedClients   Client[]          @relation("ClientOwner")
 
   whatsappAccounts WhatsappAccount[]
+  telegramAccounts TelegramAccount[]
 
   notes          Note[]
   payments       Payment[]
@@ -74,6 +86,7 @@ model User {
   teamChatMessages  TeamChatMessage[]
   pushSubscriptions PushSubscription[]
 
+  // Финансы и учёт
   commissions     Commission[]
   workLogs        WorkLog[]
   expenses        Expense[]
@@ -105,13 +118,10 @@ model City {
   position  Int     @default(0)
   isActive  Boolean @default(true)
 
-  clients   Client[]
-  leads     Lead[]
-  // Лиды где этот город указан как "город работы" (для karta praca).
-  // Отличается от города обращения (cityId): клиент может жить в Лодзи
-  // и подаваться на работу в Катовицах.
-  workLeads Lead[]   @relation("WorkCity")
-  expenses  Expense[]
+  clients     Client[]
+  leads       Lead[]                          // город обращения лида
+  workLeads   Lead[]   @relation("LeadWorkCity") // город работы (для karta praca)
+  expenses    Expense[]
 }
 
 model Funnel {
@@ -156,6 +166,7 @@ model Client {
   birthDate     DateTime?
   nationality   String?
   phone         String   @unique
+  // Дополнительные телефоны клиента (всего до 4 номеров: основной + 3 доп)
   altPhone      String?
   altPhone2     String?
   altPhone3     String?
@@ -197,32 +208,37 @@ model Lead {
   stageId       String
   stage         Stage    @relation(fields: [stageId], references: [id])
 
+  // Город обращения (где клиент пришёл)
   cityId        String?
   city          City?    @relation(fields: [cityId], references: [id])
-  // "Город работы" — для karta praca это может отличаться от города обращения.
+
+  // Город работы (для karta praca — может отличаться от города обращения)
   workCityId    String?
-  workCity      City?    @relation("WorkCity", fields: [workCityId], references: [id])
+  workCity      City?    @relation("LeadWorkCity", fields: [workCityId], references: [id])
 
   salesManagerId String?
   salesManager   User?   @relation("SalesManager", fields: [salesManagerId], references: [id])
   legalManagerId String?
   legalManager   User?   @relation("LegalManager", fields: [legalManagerId], references: [id])
 
-  attorney      String?
+  attorney      String?  // Pelnomocnik
 
-  // Работодатель — менеджер вводит руками (название фирмы + телефон HR/контакта).
+  // Работодатель (ручной ввод, для karta praca)
   employerName  String?
   employerPhone String?
 
-  source        String?
-  sourceKind    LeadSource?
+  source        String?      // детальное описание источника ("WhatsApp: Yuliia")
+  sourceKind    LeadSource?  // enum для аналитики (WHATSAPP/PHONE/TELEGRAM/MANUAL/...)
   whatsappAccountId String?
   whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
+  telegramAccountId String?
+  telegramAccount   TelegramAccount? @relation(fields: [telegramAccountId], references: [id])
 
-  // Основная услуга (для обратной совместимости и расчёта % комиссии).
-  // Доп. услуги идут через LeadService.
+  // Основная услуга (legacy + быстрая фильтрация). Полный список — в services[].
   serviceId     String?
   service       Service? @relation(fields: [serviceId], references: [id])
+
+  // Все услуги лида (М:N через LeadService). Сумма totalAmount = sum(amount * qty).
   services      LeadService[]
 
   totalAmount   Decimal  @default(0) @db.Decimal(10, 2)
@@ -261,11 +277,35 @@ model Lead {
 }
 
 // ============================================================
+// УСЛУГИ НА ЛИДЕ (M:N — несколько услуг)
+// ============================================================
+// Анна: «возможность добавить несколько услуг на лид» — напр. karta praca + открытие бизнеса.
+// amount хранится персонально по лиду (можно дать скидку относительно basePrice).
+
+model LeadService {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  serviceId String
+  service   Service  @relation(fields: [serviceId], references: [id])
+
+  amount    Decimal  @db.Decimal(10, 2)  // фактическая цена для этого лида
+  qty       Int      @default(1)
+  notes     String?  @db.Text
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([leadId])
+  @@index([serviceId])
+}
+
+// ============================================================
 // ДОКУМЕНТЫ ЛИДА — чек-лист
 // ============================================================
+// Шаблоны привязываются либо к Funnel (старый подход), либо к Service — БОЛЕЕ ГИБКО:
+// разные услуги имеют разные требования к документам. При создании лида берём шаблоны
+// из выбранной услуги (если есть) или из воронки (как fallback).
 
-// Шаблоны чек-листов: по воронке (общий набор для типа дела)
-// ИЛИ по услуге (более точный набор, перекрывает воронку если задан).
 model DocumentTemplate {
   id        String   @id @default(cuid())
   funnelId  String?
@@ -405,6 +445,8 @@ model Payment {
   method    PaymentMethod @default(CASH)
   paidAt    DateTime      @default(now())
   notes     String?       @db.Text
+  // Порядковый номер платежа в рамках лида (1 — предоплата, 2+ — последующие)
+  // Используется для расчёта комиссий: с какого номера начинать начислять
   sequence  Int           @default(1)
   createdById String?
   createdBy   User?       @relation(fields: [createdById], references: [id])
@@ -549,6 +591,33 @@ model WhatsappAccount {
   @@index([ownerId])
 }
 
+// ============================================================
+// TELEGRAM КАНАЛ
+// ============================================================
+// Отдельный бот через grammy/Bot API. Аналогично WhatsApp — бот принимает
+// сообщения, пересылает в CRM webhook, CRM создаёт лида из нового чата.
+
+model TelegramAccount {
+  id          String   @id @default(cuid())
+  botToken    String   // BotFather token, хранится в ОТКРЫТОМ виде (в БД, доступно только админу)
+  botUsername String   @unique  // @azgroup_bot
+  label       String   // имя канала для UI
+  ownerId     String?
+  owner       User?    @relation(fields: [ownerId], references: [id])
+  isConnected Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  webhookUrl  String?  // URL установленного webhook'а (с подписью)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime?
+
+  threads     ChatThread[]
+  leads       Lead[]
+  messages    ChatMessage[]
+
+  @@index([ownerId])
+}
+
 model ChatThread {
   id          String   @id @default(cuid())
   channel     ChannelKind
@@ -558,6 +627,8 @@ model ChatThread {
   lead        Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
   whatsappAccountId String?
   whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
+  telegramAccountId String?
+  telegramAccount   TelegramAccount? @relation(fields: [telegramAccountId], references: [id])
   externalId  String?
   externalPhoneNumber String?
   externalUserName    String?
@@ -600,6 +671,8 @@ model ChatMessage {
   thread      ChatThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
   whatsappAccountId String?
   whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
+  telegramAccountId String?
+  telegramAccount   TelegramAccount? @relation(fields: [telegramAccountId], references: [id])
   direction   MessageDirection
   type        MessageType      @default(TEXT)
   body        String?          @db.Text
@@ -629,7 +702,7 @@ model ChatTemplate {
 }
 
 // ============================================================
-// ЗВОНКИ
+// ЗВОНКИ — импорт из Play
 // ============================================================
 
 enum CallDirection {
@@ -779,7 +852,6 @@ enum NotificationKind {
   PAYMENT_RECEIVED
   NEW_MESSAGE
   FINGERPRINT_REMINDER
-  EXTRA_CALL_REMINDER
   CUSTOM
 }
 
@@ -796,6 +868,10 @@ model Notification {
 
   @@index([userId, isRead, createdAt])
 }
+
+// ============================================================
+// PUSH-УВЕДОМЛЕНИЯ
+// ============================================================
 
 model PushSubscription {
   id          String   @id @default(cuid())
@@ -844,7 +920,7 @@ model Setting {
 }
 
 // ============================================================
-// ИСТОЧНИК ЛИДА
+// ИСТОЧНИК ЛИДА (для аналитики по каналам)
 // ============================================================
 
 enum LeadSource {
@@ -863,6 +939,9 @@ enum LeadSource {
 // ============================================================
 // УСЛУГИ (прайс-лист)
 // ============================================================
+// Анна как админ управляет ценами и % комиссии.
+// При создании лида менеджер может выбрать одну или НЕСКОЛЬКО услуг.
+// Чек-лист документов берётся из DocumentTemplate связанных с услугой.
 
 model Service {
   id          String   @id @default(cuid())
@@ -870,9 +949,11 @@ model Service {
   description String?  @db.Text
   basePrice   Decimal  @default(0) @db.Decimal(10, 2)
 
+  // % комиссии менеджеру при оплате
   salesCommissionPercent Decimal @default(5) @db.Decimal(5, 2)
   legalCommissionPercent Decimal @default(5) @db.Decimal(5, 2)
 
+  // Опциональная привязка к воронке (для авто-выбора услуг при создании лида)
   funnelId    String?
   funnel      Funnel?  @relation(fields: [funnelId], references: [id])
 
@@ -881,41 +962,16 @@ model Service {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  leads             Lead[]
-  // Привязанные лиды через LeadService (несколько услуг на лид).
-  leadServices      LeadService[]
-  // Шаблоны чек-листов документов по услуге.
-  documentTemplates DocumentTemplate[]
+  leads        Lead[]
+  leadServices LeadService[]
+  docTemplates DocumentTemplate[]
 
   @@index([funnelId])
   @@index([isActive, position])
 }
 
 // ============================================================
-// НЕСКОЛЬКО УСЛУГ НА ЛИДЕ (many-to-many)
-// ============================================================
-// Анна: «возможность добавить несколько услуг на лид». Например
-// karta praca + открытие JDG в одном деле.
-model LeadService {
-  id            String   @id @default(cuid())
-  leadId        String
-  lead          Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  serviceId     String
-  service       Service  @relation(fields: [serviceId], references: [id])
-  // Своя цена если отличается от basePrice (скидки и т.д.). null = брать basePrice.
-  customAmount  Decimal? @db.Decimal(10, 2)
-  quantity      Int      @default(1)
-  notes         String?  @db.Text
-  position      Int      @default(0)
-  createdAt     DateTime @default(now())
-
-  @@unique([leadId, serviceId])
-  @@index([leadId])
-  @@index([serviceId])
-}
-
-// ============================================================
-// КОМИССИИ МЕНЕДЖЕРАМ
+// КОМИССИИ МЕНЕДЖЕРАМ (авторасчёт при оплате)
 // ============================================================
 
 model Commission {
@@ -927,7 +983,7 @@ model Commission {
   userId        String
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  role          UserRole
+  role          UserRole // SALES или LEGAL — для какой роли начислено
   basePayment   Decimal  @db.Decimal(10, 2)
   percent       Decimal  @db.Decimal(5, 2)
   amount        Decimal  @db.Decimal(10, 2)
@@ -967,7 +1023,7 @@ model WorkLog {
 }
 
 // ============================================================
-// РАСХОДЫ
+// РАСХОДЫ (только админ)
 // ============================================================
 
 model Expense {
@@ -996,7 +1052,7 @@ model Expense {
 }
 
 // ============================================================
-// КОНФИГ ЗАРПЛАТЫ
+// КОНФИГ ЗАРПЛАТЫ МЕНЕДЖЕРА
 // ============================================================
 
 model PayrollConfig {

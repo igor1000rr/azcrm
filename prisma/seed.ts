@@ -4,6 +4,7 @@
 
 import { PrismaClient, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 
 const prisma = new PrismaClient();
 
@@ -11,22 +12,33 @@ async function hashPassword(password: string) {
   return bcrypt.hash(password, 10);
 }
 
+/**
+ * Генерирует случайный пароль для первого входа. Админ обязан сменить при первом входе.
+ * Переопределяется через ENV SEED_ADMIN_PASSWORD если нужно фиксированное.
+ */
+function generateInitialPassword(): string {
+  if (process.env.SEED_ADMIN_PASSWORD) return process.env.SEED_ADMIN_PASSWORD;
+  // 12 символов без неоднозначных: легко продиктовать, но непредсказуемо
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  return Array.from({ length: 12 }, () =>
+    alphabet[crypto.randomInt(0, alphabet.length)],
+  ).join('');
+}
+
 async function main() {
   console.log('🌱 Засеваем БД...\n');
 
   // ==================== ПОЛЬЗОВАТЕЛИ ====================
   // По данным от Anna: 1 админ + 4 продаж + 3 легализации = 8 человек
-  const defaultPassword = await hashPassword('AZGroup2026!');
+  const initialPassword = generateInitialPassword();
+  const passwordHash = await hashPassword(initialPassword);
 
   const team = [
-    // Администратор
     { email: 'anna@azgroup.pl',     name: 'Anna',              role: UserRole.ADMIN },
-    // Продажи
     { email: 'yuliia.h@azgroup.pl', name: 'Yuliia Hura',       role: UserRole.SALES },
     { email: 'yuliia.k@azgroup.pl', name: 'Yullia Kravchenko', role: UserRole.SALES },
     { email: 'rasim@azgroup.pl',    name: 'Rizayev Rasim',     role: UserRole.SALES },
     { email: 'sales4@azgroup.pl',   name: 'Менеджер продаж 4', role: UserRole.SALES },
-    // Легализация
     { email: 'semen@azgroup.pl',    name: 'Semen Shevchenko',  role: UserRole.LEGAL },
     { email: 'pavel@azgroup.pl',    name: 'Patia Pavel',       role: UserRole.LEGAL },
     { email: 'legal3@azgroup.pl',   name: 'Менеджер легализации 3', role: UserRole.LEGAL },
@@ -39,10 +51,12 @@ async function main() {
       update: {},
       create: {
         email: member.email,
-        passwordHash: defaultPassword,
+        passwordHash,
         name: member.name,
         role: member.role,
         isActive: true,
+        // Все созданные сидом юзеры обязаны сменить пароль при первом входе
+        mustChangePassword: true,
       },
     });
     users[member.email] = u.id;
@@ -68,7 +82,6 @@ async function main() {
   console.log(`\n  ✓ Городов: ${cities.length}`);
 
   // ==================== ВОРОНКИ И ЭТАПЫ ====================
-  // Дефолтные этапы как в ТЗ — Anna потом сама добавит/уберёт
   const defaultStages = [
     { name: 'Новый',          color: '#2563EB', position: 1, isFinal: false, isLost: false },
     { name: 'Подан',          color: '#0A1A35', position: 2, isFinal: false, isLost: false },
@@ -146,6 +159,7 @@ async function main() {
     },
   ];
 
+  const funnelByName: Record<string, string> = {};
   for (const fd of funnelDefs) {
     let f = await prisma.funnel.findFirst({ where: { name: fd.name } });
     if (!f) {
@@ -158,6 +172,7 @@ async function main() {
         },
       });
     }
+    funnelByName[fd.name] = f.id;
 
     // Этапы
     for (const st of defaultStages) {
@@ -168,11 +183,11 @@ async function main() {
       });
     }
 
-    // Шаблоны документов
+    // Шаблоны документов по воронке (legacy fallback)
     for (let i = 0; i < fd.docs.length; i++) {
       const docName = fd.docs[i];
       const exists = await prisma.documentTemplate.findFirst({
-        where: { funnelId: f.id, name: docName },
+        where: { funnelId: f.id, name: docName, serviceId: null },
       });
       if (!exists) {
         await prisma.documentTemplate.create({
@@ -185,19 +200,17 @@ async function main() {
   }
 
   // ==================== WHATSAPP АККАУНТЫ ====================
-  // Anna указала: общий +48 731 006 935, личные пока без точных номеров
   const waAccounts = [
     {
       phoneNumber: '+48731006935',
       label: 'Общий',
-      ownerEmail: null, // видят все
+      ownerEmail: null,
     },
     {
       phoneNumber: '+48731006203',
       label: 'Yuliia Hura',
       ownerEmail: 'yuliia.h@azgroup.pl',
     },
-    // Остальные 2 номера — Anna пришлёт, добавим через UI
   ];
 
   for (const wa of waAccounts) {
@@ -274,37 +287,95 @@ async function main() {
   }
 
   // ==================== УСЛУГИ (прайс-лист) ====================
-  // Базовый прайс — Анна потом отредактирует через UI (Финансы → Услуги).
-  // % комиссии менеджеру при оплате (по дефолту со 2-го платежа).
-  const allFunnels = await prisma.funnel.findMany({ select: { id: true, name: true } });
-  const funnelByName = (n: string) =>
-    allFunnels.find((f) => f.name.toLowerCase().includes(n.toLowerCase()))?.id ?? null;
-
+  // Связь с воронкой по имени. Шаблоны документов привяжем ниже к каждой услуге.
   const services = [
-    { name: 'Karta pobytu (praca)', basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 1, fkey: 'praca' },
-    { name: 'Karta pobytu (inne)',  basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 2, fkey: 'inne' },
-    { name: 'Смена децизии',        basePrice: 1200, salesPct: 5,  legalPct: 5, pos: 3, fkey: 'смена' },
-    { name: 'Консультация',         basePrice: 200,  salesPct: 10, legalPct: 0, pos: 4, fkey: 'консультация' },
-    { name: 'Открытие бизнеса',     basePrice: 3000, salesPct: 5,  legalPct: 5, pos: 5, fkey: 'бизнес' },
+    { name: 'Karta pobytu (praca)', basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 1, funnelName: 'Karta pobytu (praca)' },
+    { name: 'Karta pobytu (inne)',  basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 2, funnelName: 'Karta pobytu (inne)' },
+    { name: 'Смена децизии',        basePrice: 1200, salesPct: 5,  legalPct: 5, pos: 3, funnelName: 'Смена децизии' },
+    { name: 'Консультация',         basePrice: 200,  salesPct: 10, legalPct: 0, pos: 4, funnelName: 'Консультация' },
+    { name: 'Открытие бизнеса',     basePrice: 3000, salesPct: 5,  legalPct: 5, pos: 5, funnelName: 'Открытие бизнеса' },
   ];
 
+  const serviceByName: Record<string, string> = {};
   for (const s of services) {
     const existing = await prisma.service.findUnique({ where: { name: s.name } });
-    if (!existing) {
-      await prisma.service.create({
-        data: {
-          name: s.name,
-          basePrice: s.basePrice,
-          salesCommissionPercent: s.salesPct,
-          legalCommissionPercent: s.legalPct,
-          position: s.pos,
-          funnelId: funnelByName(s.fkey),
-          isActive: true,
-        },
+    if (existing) {
+      serviceByName[s.name] = existing.id;
+      continue;
+    }
+    const created = await prisma.service.create({
+      data: {
+        name: s.name,
+        basePrice: s.basePrice,
+        salesCommissionPercent: s.salesPct,
+        legalCommissionPercent: s.legalPct,
+        position: s.pos,
+        funnelId: funnelByName[s.funnelName] ?? null,
+        isActive: true,
+      },
+    });
+    serviceByName[s.name] = created.id;
+    console.log(`  ✓ Услуга: ${s.name} — ${s.basePrice} zł (sales ${s.salesPct}%, legal ${s.legalPct}%)`);
+  }
+
+  // ==================== ШАБЛОНЫ ЧЕК-ЛИСТА ПО УСЛУГАМ ====================
+  // Анна: «Шаблоны чек-листов по услугам». Для каждой услуги свой список.
+  const docTemplatesByService: Record<string, string[]> = {
+    'Karta pobytu (praca)': [
+      'Загранпаспорт',
+      'Внутренний паспорт',
+      'Трудовой договор (umowa o pracę)',
+      'Справка о регистрации (zameldowanie)',
+      'Фотографии 3.5×4.5 (4 шт.)',
+      'Договор аренды жилья',
+      'Справка о несудимости',
+      'Заявление на карту (wniosek)',
+      'Załącznik nr 1 (от работодателя)',
+    ],
+    'Karta pobytu (inne)': [
+      'Загранпаспорт',
+      'Внутренний паспорт',
+      'Документ-основание (резидент/сталый/брак)',
+      'Справка о регистрации',
+      'Фотографии 3.5×4.5 (4 шт.)',
+      'Подтверждение проживания',
+      'Справка о доходах',
+      'Заявление на карту',
+    ],
+    'Смена децизии': [
+      'Текст отказной децизии',
+      'Доверенность на представление',
+      'Дополнительные документы',
+      'Объяснительная клиента',
+      'Апелляция (odwołanie)',
+    ],
+    'Консультация': [],
+    'Открытие бизнеса': [
+      'Загранпаспорт',
+      'Карта побыту / виза',
+      'Адрес регистрации фирмы',
+      'PESEL',
+      'Заявление CEIDG / KRS',
+      'Проект устава (для Sp. z o.o.)',
+    ],
+  };
+
+  for (const [serviceName, docs] of Object.entries(docTemplatesByService)) {
+    const serviceId = serviceByName[serviceName];
+    if (!serviceId) continue;
+    for (let i = 0; i < docs.length; i++) {
+      const docName = docs[i];
+      const exists = await prisma.documentTemplate.findFirst({
+        where: { serviceId, name: docName },
       });
-      console.log(`  ✓ Услуга: ${s.name} — ${s.basePrice} zł (sales ${s.salesPct}%, legal ${s.legalPct}%)`);
+      if (!exists) {
+        await prisma.documentTemplate.create({
+          data: { serviceId, name: docName, position: i + 1, isRequired: true },
+        });
+      }
     }
   }
+  console.log(`\n  ✓ Шаблоны чек-листа привязаны к услугам`);
 
   // ==================== АВТОМАТИЗАЦИИ ====================
   const automations = [
@@ -313,6 +384,13 @@ async function main() {
       trigger: 'NEW_WA_MESSAGE_FROM_UNKNOWN',
       action: 'CREATE_LEAD',
       actionParams: { autoAssignByChannel: true },
+      isActive: true,
+    },
+    {
+      name: 'Новое сообщение в Telegram → создать лида',
+      trigger: 'NEW_TG_MESSAGE_FROM_UNKNOWN',
+      action: 'CREATE_LEAD',
+      actionParams: {},
       isActive: true,
     },
     {
@@ -356,7 +434,7 @@ async function main() {
       trigger: 'PAYMENT_RECEIVED',
       action: 'SEND_WA_TEMPLATE',
       actionParams: { templateName: 'Благодарность за оплату' },
-      isActive: false, // выкл по умолчанию (Anna включит сама если нужно)
+      isActive: false,
     },
     {
       name: 'Долг просрочен 3+ дней → задача менеджеру + напоминание',
@@ -385,8 +463,6 @@ async function main() {
     { key: 'reminders.fingerprint.days', value: [7, 1] },
     { key: 'leads.assignByWhatsappNumber', value: true },
     { key: 'leads.deduplicateByPhone', value: true },
-    // С какого по счёту платежа в лиде начислять комиссию менеджеру
-    // 1 — с первого, 2 — со второго (по умолчанию, как просила Анна)
     { key: 'commission.startFromPaymentNumber', value: 2 },
   ];
 
@@ -397,13 +473,16 @@ async function main() {
       create: { key: s.key, value: s.value as never },
     });
   }
-  console.log(`\n  ✓ Настройки: ${settings.length}`);
+  console.log(`\n  ✓ Настроек: ${settings.length}`);
 
   console.log('\n✅ Готово!');
-  console.log('\nПервый вход:');
+  console.log('\n=========================================================');
+  console.log('  Первый вход:');
   console.log('  Email:    anna@azgroup.pl');
-  console.log('  Пароль:   AZGroup2026!');
-  console.log('  При первом входе — обязательно сменить пароль.\n');
+  console.log(`  Пароль:   ${initialPassword}`);
+  console.log('  При первом входе — ОБЯЗАТЕЛЬНО сменить пароль.');
+  console.log('  (этот пароль больше нигде не показывается — сохрани или выдай Anna).');
+  console.log('=========================================================\n');
 }
 
 main()
