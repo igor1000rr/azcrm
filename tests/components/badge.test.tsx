@@ -9,10 +9,13 @@ describe('Badge', () => {
     expect(screen.getByText('Новый')).toBeInTheDocument();
   });
 
-  it('default variant — нейтральные классы', () => {
+  it('default variant — лёгкий navy (фирменный)', () => {
+    // Дефолтная плашка использует navy/[0.04] фон + navy текст —
+    // частая плашка во всём UI (источник, статус, имя воронки).
     const { container } = render(<Badge>X</Badge>);
     const span = container.querySelector('span');
-    expect(span?.className).toContain('bg-bg');
+    expect(span?.className).toContain('text-navy');
+    expect(span?.className).toContain('border-navy');
   });
 
   it('variant=danger — красный', () => {
@@ -25,9 +28,12 @@ describe('Badge', () => {
     expect(container.querySelector('span')?.className).toContain('text-success');
   });
 
-  it('variant=navy — фирменный темный', () => {
+  it('variant=navy — насыщенный синий (сплошная заливка)', () => {
+    // navy variant — самый яркий, для важных акцентов (бренд, активный)
     const { container } = render(<Badge variant="navy">N</Badge>);
-    expect(container.querySelector('span')?.className).toContain('text-navy');
+    const cls = container.querySelector('span')?.className ?? '';
+    expect(cls).toContain('bg-navy');
+    expect(cls).toContain('text-white');
   });
 
   it('variant=gold — золотистый', () => {
