@@ -16,19 +16,16 @@
 //   WHATSAPP_WORKER_PORT  — порт worker (дефолт 3100)
 
 import express from 'express';
-// whatsapp-web.js — CommonJS, импортим через default
 import waPkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = waPkg;
-// qrcode тоже CJS
 import qrcodePkg from 'qrcode';
 const qrcode = qrcodePkg;
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 
-// Подгружаем основной .env из корня репо (на уровень выше)
 dotenv.config({ path: path.resolve(process.cwd(), '..', '.env'), override: false });
-// и локальный .env в whatsapp-worker если есть
 dotenv.config({ override: false });
 
 // ============ КОНФИГ ============
@@ -39,9 +36,9 @@ const APP_PUBLIC_URL   = process.env.APP_PUBLIC_URL ?? process.env.AUTH_URL ?? '
 const CRM_WEBHOOK_URL  = process.env.CRM_WEBHOOK_URL ?? `${APP_PUBLIC_URL.replace(/\/$/, '')}/api/whatsapp/webhook`;
 const STORAGE_ROOT     = process.env.STORAGE_ROOT ?? path.resolve(process.cwd(), '..', 'storage');
 const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(STORAGE_ROOT, 'wa-sessions');
-// Куда сохраняем входящие медиа из WhatsApp. Эта папка должна быть смонтирована
-// одним volume и в worker, и в CRM-app — CRM раздаёт из неё файлы по
-// /api/files/wa-media/<filename> через bucket=wa-media (публичный).
+// Куда сохраняем входящие медиа. Эта папка смонтирована одним volume
+// и в worker, и в CRM-app — CRM раздаёт из неё файлы по /api/files/wa-media/<filename>.
+// Имена — 32-байтный hex (~256 бит энтропии), файлы приватны (auth-only).
 const WA_MEDIA_DIR     = process.env.WA_MEDIA_DIR ?? path.join(STORAGE_ROOT, 'wa-media');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -72,7 +69,6 @@ function getOrCreateClient(accountId) {
     }),
     puppeteer: {
       headless: true,
-      // Используем системный chromium из setup.sh (если установлен)
       executablePath: process.env.CHROME_BIN ?? process.env.PUPPETEER_EXECUTABLE_PATH ?? undefined,
       args: [
         '--no-sandbox',
@@ -142,7 +138,6 @@ function bindEvents(accountId, client, entry) {
 
   client.on('message', async (msg) => {
     try {
-      // Игнорируем статусы и групповые сообщения
       if (msg.from === 'status@broadcast') return;
       if (msg.from.endsWith('@g.us')) return;
 
@@ -157,12 +152,13 @@ function bindEvents(accountId, client, entry) {
             const buf = Buffer.from(media.data, 'base64');
             mediaName = sanitizeFilename(media.filename || `media.${guessExt(media.mimetype)}`);
             mediaSize = buf.length;
-            // Уникальное имя файла: timestamp + random + safe-расширение
+            // Криптостойкое имя — 32-байтный hex (~256 бит энтропии).
+            // Раньше было Date.now() + Math.random().slice(2,10) — ~36 бит энтропии,
+            // URL предсказуемы и сливают фото паспортов в публичный wa-media bucket.
             const ext = path.extname(mediaName) || `.${guessExt(media.mimetype)}`;
-            const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
+            const storedName = `${crypto.randomBytes(32).toString('hex')}${ext}`;
             const fullPath = path.join(WA_MEDIA_DIR, storedName);
             fs.writeFileSync(fullPath, buf);
-            // CRM раздаёт по bucket=wa-media (публичный), без auth
             mediaUrl = `/api/files/wa-media/${storedName}`;
           }
         } catch (e) {
@@ -189,7 +185,6 @@ function bindEvents(accountId, client, entry) {
   });
 
   client.on('message_ack', (msg, ack) => {
-    // ack: -1=error, 0=pending, 1=sent, 2=delivered, 3=read, 4=played
     let status;
     if (ack === 1) status = 'sent';
     else if (ack === 2) status = 'delivered';
@@ -217,15 +212,13 @@ function mapMessageType(waType) {
   return 'text';
 }
 
-// Уборка имени файла от path traversal и спецсимволов FS
 function sanitizeFilename(name) {
   return String(name || 'file')
-    .replace(/[\/\\\x00-\x1f]/g, '_')   // убираем разделители путей и control-chars
-    .replace(/^\.+/, '')                 // никаких ведущих точек
+    .replace(/[\/\\\x00-\x1f]/g, '_')
+    .replace(/^\.+/, '')
     .slice(0, 200) || 'file';
 }
 
-// Угадать расширение по mime-типу WhatsApp
 function guessExt(mimetype) {
   const m = String(mimetype || '').toLowerCase();
   if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
@@ -239,7 +232,6 @@ function guessExt(mimetype) {
   if (m.includes('wav'))  return 'wav';
   if (m.includes('msword') || m.includes('officedocument.wordprocessingml')) return 'docx';
   if (m.includes('spreadsheetml') || m.includes('ms-excel')) return 'xlsx';
-  // fallback из mime/subtype
   const sub = m.split('/')[1] || 'bin';
   return sub.replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
 }
@@ -264,10 +256,8 @@ async function sendWebhook(payload) {
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-// Auth middleware
 app.use((req, res, next) => {
   if (!AUTH_TOKEN) return next();
-  // /health доступен без авторизации
   if (req.path === '/health') return next();
   const auth = req.headers.authorization ?? '';
   if (auth !== `Bearer ${AUTH_TOKEN}`) {
@@ -291,7 +281,6 @@ app.post('/accounts/:id/connect', async (req, res) => {
       return res.json({ status: 'qr', qr: entry.qr });
     }
 
-    // Запускаем initialize (если ещё не запущен), ждём первого events
     if (entry.status === 'disconnected' || entry.status === 'failed') {
       entry.status = 'initializing';
       entry.client.initialize().catch((e) => {
@@ -300,7 +289,6 @@ app.post('/accounts/:id/connect', async (req, res) => {
       });
     }
 
-    // Ждём до 30 сек QR или ready
     const start = Date.now();
     while (Date.now() - start < 30000) {
       await new Promise((r) => setTimeout(r, 500));
@@ -361,7 +349,6 @@ app.post('/accounts/:id/send', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'to and body required' });
     }
 
-    // Нормализуем номер для WhatsApp (убираем + и добавляем @c.us)
     const cleanPhone = to.replace(/[^\d]/g, '');
     const chatId = `${cleanPhone}@c.us`;
 
@@ -379,7 +366,6 @@ app.listen(PORT, () => {
   console.log(`webhook URL: ${CRM_WEBHOOK_URL}`);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('shutting down...');
   for (const [, entry] of clients) {
