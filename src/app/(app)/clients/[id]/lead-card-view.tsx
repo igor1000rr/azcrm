@@ -9,7 +9,7 @@ import {
   Plus, Check, AlertCircle, Calendar as CalendarIcon,
   FileText, Paperclip, X, Upload,
   CheckCircle, Trash2, Repeat, Activity, Clock,
-  ChevronRight, Briefcase, MapPin,
+  ChevronRight, Briefcase,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
 import { Input, Textarea, FormField, Select } from '@/components/ui/input';
 import { OnlyOfficeEditor } from '@/components/onlyoffice-editor';
+import { LeadChatPanel, type LeadChatMessage, type LeadChatAccount } from './lead-chat-panel';
 import {
   cn, formatMoney, formatDate, formatDateTime, formatRelative,
   formatPhone, formatFileSize, plural, daysUntil,
@@ -117,6 +118,10 @@ interface LeadCardViewProps {
   }>;
   team: Array<{ id: string; name: string; email: string; role: UserRole }>;
   attorneys: Array<{ id: string; name: string; role: UserRole }>;
+  // Объединённая переписка по клиенту (со всех каналов в которые юзер имеет доступ)
+  chatMessages: LeadChatMessage[];
+  // Доступные каналы для отправки (ADMIN — все, остальные — свои + общие)
+  availableChatAccounts: LeadChatAccount[];
 }
 
 export function LeadCardView(props: LeadCardViewProps) {
@@ -126,6 +131,12 @@ export function LeadCardView(props: LeadCardViewProps) {
         <ClientHeader {...props} />
         <ClientCard {...props} />
         <DealCard {...props} />
+        <LeadChatPanel
+          leadId={props.lead.id}
+          clientName={props.client.fullName}
+          messages={props.chatMessages}
+          availableAccounts={props.availableChatAccounts}
+        />
         <ServicesCard {...props} />
         <EmployerCard {...props} />
         <DocumentsCard {...props} />
