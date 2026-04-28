@@ -55,6 +55,7 @@ jobs:
     env:
       DATABASE_URL:           postgresql://crm:crm@localhost:5432/azgroup_crm
       AUTH_SECRET:            test-secret-min-32-chars-test-secret
+      AUTH_URL:               http://localhost:3000
       ONLYOFFICE_JWT_SECRET:  test-onlyoffice-jwt-secret-32ch
       WHATSAPP_WORKER_TOKEN:  test-wa-worker-token
       CRON_SECRET:            test-cron-secret
@@ -65,6 +66,11 @@ jobs:
       VAPID_SUBJECT:          mailto:test@local
       NEXTAUTH_URL:           http://localhost:3000
       E2E_BASE_URL:           http://localhost:3000
+      # Фиксированный пароль для Playwright — совпадает с tests/e2e/fixtures.ts
+      SEED_ADMIN_PASSWORD:    'AZGroup2026!'
+      # НЕ форсировать смену пароля — иначе логин редиректит на /change-password
+      # и fixture виснет на waitForURL(/dashboard|funnel|inbox/).
+      E2E_TEST_MODE:          '1'
 
     steps:
       - uses: actions/checkout@v4

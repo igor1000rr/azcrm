@@ -1,6 +1,12 @@
 // AZ Group CRM — наполнение начальными данными
 // Запуск: npm run db:seed
 // Идемпотентный: можно запускать повторно, не дублирует данные
+//
+// ENV-переключатели:
+//   SEED_ADMIN_PASSWORD  — явный пароль для всех seed-юзеров (иначе рандом)
+//   E2E_TEST_MODE=1      — НЕ форсировать смену пароля при первом входе
+//                          (mustChangePassword=false). Нужно для Playwright,
+//                          иначе fixture виснет на редиректе /change-password.
 
 import { PrismaClient, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
@@ -33,6 +39,10 @@ async function main() {
   const initialPassword = generateInitialPassword();
   const passwordHash = await hashPassword(initialPassword);
 
+  // E2E_TEST_MODE — в CI под Playwright. Не форсируем смену пароля, иначе
+  // login редиректит на /change-password и fixture висит на waitForURL.
+  const isE2E = process.env.E2E_TEST_MODE === '1';
+
   const team = [
     { email: 'anna@azgroup.pl',     name: 'Anna',              role: UserRole.ADMIN },
     { email: 'yuliia.h@azgroup.pl', name: 'Yuliia Hura',       role: UserRole.SALES },
@@ -55,8 +65,8 @@ async function main() {
         name: member.name,
         role: member.role,
         isActive: true,
-        // Все созданные сидом юзеры обязаны сменить пароль при первом входе
-        mustChangePassword: true,
+        // Все созданные сидом юзеры обязаны сменить пароль при первом входе (кроме E2E)
+        mustChangePassword: !isE2E,
       },
     });
     users[member.email] = u.id;
@@ -480,8 +490,12 @@ async function main() {
   console.log('  Первый вход:');
   console.log('  Email:    anna@azgroup.pl');
   console.log(`  Пароль:   ${initialPassword}`);
-  console.log('  При первом входе — ОБЯЗАТЕЛЬНО сменить пароль.');
-  console.log('  (этот пароль больше нигде не показывается — сохрани или выдай Anna).');
+  if (isE2E) {
+    console.log('  E2E_TEST_MODE=1 → mustChangePassword=false (для Playwright)');
+  } else {
+    console.log('  При первом входе — ОБЯЗАТЕЛЬНО сменить пароль.');
+    console.log('  (этот пароль больше нигде не показывается — сохрани или выдай Anna).');
+  }
   console.log('=========================================================\n');
 }
 
