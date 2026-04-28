@@ -2,14 +2,6 @@
 // AZ Group CRM — схема БД
 // Миграционная юридическая фирма в Польше
 // ============================================================
-// Архитектура:
-//  - Client (физ. лицо) <-1:N-> Lead (конкретное дело)
-//  - Funnel/Stage — кастомизируется админом
-//  - WhatsApp каналы привязаны к менеджерам (общий + личные)
-//  - Звонки из Play импортируются и привязываются к Client
-//  - Документы: чек-лист (галочки) + внутренние через OnlyOffice
-//  - Календарь: Google Calendar OAuth для каждого менеджера
-// ============================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -25,9 +17,9 @@ datasource db {
 // ============================================================
 
 enum UserRole {
-  ADMIN  // Anna — полный доступ
-  SALES  // менеджер продаж
-  LEGAL  // менеджер легализации
+  ADMIN
+  SALES
+  LEGAL
 }
 
 enum UserStatus {
@@ -45,12 +37,14 @@ model User {
   status       UserStatus @default(OFFLINE)
   avatar       String?
   isActive     Boolean    @default(true)
+  // Флаг: при следующем входе юзер обязан сменить пароль.
+  // Ставится true при seed (дефолтный пароль) и при сбросе админом.
+  mustChangePassword Boolean @default(false)
   phone        String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   lastSeenAt   DateTime?
 
-  // OAuth для Google Calendar
   googleAccessToken           String?   @db.Text
   googleAccessTokenExpiresAt  DateTime?
   googleRefreshToken          String?   @db.Text
@@ -80,7 +74,6 @@ model User {
   teamChatMessages  TeamChatMessage[]
   pushSubscriptions PushSubscription[]
 
-  // Финансы и учёт
   commissions     Commission[]
   workLogs        WorkLog[]
   expenses        Expense[]
@@ -114,6 +107,10 @@ model City {
 
   clients   Client[]
   leads     Lead[]
+  // Лиды где этот город указан как "город работы" (для karta praca).
+  // Отличается от города обращения (cityId): клиент может жить в Лодзи
+  // и подаваться на работу в Катовицах.
+  workLeads Lead[]   @relation("WorkCity")
   expenses  Expense[]
 }
 
@@ -159,7 +156,6 @@ model Client {
   birthDate     DateTime?
   nationality   String?
   phone         String   @unique
-  // Дополнительные телефоны клиента (всего до 4 номеров: основной + 3 доп)
   altPhone      String?
   altPhone2     String?
   altPhone3     String?
@@ -203,6 +199,9 @@ model Lead {
 
   cityId        String?
   city          City?    @relation(fields: [cityId], references: [id])
+  // "Город работы" — для karta praca это может отличаться от города обращения.
+  workCityId    String?
+  workCity      City?    @relation("WorkCity", fields: [workCityId], references: [id])
 
   salesManagerId String?
   salesManager   User?   @relation("SalesManager", fields: [salesManagerId], references: [id])
@@ -211,14 +210,20 @@ model Lead {
 
   attorney      String?
 
-  source        String?      // детальное описание источника ("WhatsApp: Yuliia")
-  sourceKind    LeadSource?  // enum для аналитики (WHATSAPP/PHONE/TELEGRAM/MANUAL/...)
+  // Работодатель — менеджер вводит руками (название фирмы + телефон HR/контакта).
+  employerName  String?
+  employerPhone String?
+
+  source        String?
+  sourceKind    LeadSource?
   whatsappAccountId String?
   whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
 
-  // Привязка к услуге из прайса (опционально — Анна может оставить пустым и писать сумму вручную)
+  // Основная услуга (для обратной совместимости и расчёта % комиссии).
+  // Доп. услуги идут через LeadService.
   serviceId     String?
   service       Service? @relation(fields: [serviceId], references: [id])
+  services      LeadService[]
 
   totalAmount   Decimal  @default(0) @db.Decimal(10, 2)
 
@@ -248,6 +253,7 @@ model Lead {
   @@index([salesManagerId])
   @@index([legalManagerId])
   @@index([cityId])
+  @@index([workCityId])
   @@index([serviceId])
   @@index([sourceKind, createdAt])
   @@index([fingerprintDate])
@@ -258,15 +264,20 @@ model Lead {
 // ДОКУМЕНТЫ ЛИДА — чек-лист
 // ============================================================
 
+// Шаблоны чек-листов: по воронке (общий набор для типа дела)
+// ИЛИ по услуге (более точный набор, перекрывает воронку если задан).
 model DocumentTemplate {
   id        String   @id @default(cuid())
-  funnelId  String
-  funnel    Funnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  funnelId  String?
+  funnel    Funnel?  @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  serviceId String?
+  service   Service? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   name      String
   position  Int      @default(0)
   isRequired Boolean @default(true)
 
   @@index([funnelId])
+  @@index([serviceId])
 }
 
 model LeadDocument {
@@ -394,8 +405,6 @@ model Payment {
   method    PaymentMethod @default(CASH)
   paidAt    DateTime      @default(now())
   notes     String?       @db.Text
-  // Порядковый номер платежа в рамках лида (1 — предоплата, 2+ — последующие)
-  // Используется для расчёта комиссий: с какого номера начинать начислять
   sequence  Int           @default(1)
   createdById String?
   createdBy   User?       @relation(fields: [createdById], references: [id])
@@ -620,7 +629,7 @@ model ChatTemplate {
 }
 
 // ============================================================
-// ЗВОНКИ — импорт из Play
+// ЗВОНКИ
 // ============================================================
 
 enum CallDirection {
@@ -770,6 +779,7 @@ enum NotificationKind {
   PAYMENT_RECEIVED
   NEW_MESSAGE
   FINGERPRINT_REMINDER
+  EXTRA_CALL_REMINDER
   CUSTOM
 }
 
@@ -786,10 +796,6 @@ model Notification {
 
   @@index([userId, isRead, createdAt])
 }
-
-// ============================================================
-// PUSH-УВЕДОМЛЕНИЯ
-// ============================================================
 
 model PushSubscription {
   id          String   @id @default(cuid())
@@ -838,7 +844,7 @@ model Setting {
 }
 
 // ============================================================
-// ИСТОЧНИК ЛИДА (для аналитики по каналам)
+// ИСТОЧНИК ЛИДА
 // ============================================================
 
 enum LeadSource {
@@ -857,9 +863,6 @@ enum LeadSource {
 // ============================================================
 // УСЛУГИ (прайс-лист)
 // ============================================================
-// Анна как админ управляет ценами и % комиссии.
-// При создании лида менеджер может выбрать услугу — цена подставится автоматически.
-// Можно оставить пустым и ввести индивидуальную сумму вручную (скидки и т.д.)
 
 model Service {
   id          String   @id @default(cuid())
@@ -867,11 +870,9 @@ model Service {
   description String?  @db.Text
   basePrice   Decimal  @default(0) @db.Decimal(10, 2)
 
-  // % комиссии менеджеру при оплате (разный для разных услуг)
   salesCommissionPercent Decimal @default(5) @db.Decimal(5, 2)
   legalCommissionPercent Decimal @default(5) @db.Decimal(5, 2)
 
-  // Опциональная привязка к воронке (для авто-выбора услуг при создании лида)
   funnelId    String?
   funnel      Funnel?  @relation(fields: [funnelId], references: [id])
 
@@ -880,19 +881,42 @@ model Service {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  leads       Lead[]
+  leads             Lead[]
+  // Привязанные лиды через LeadService (несколько услуг на лид).
+  leadServices      LeadService[]
+  // Шаблоны чек-листов документов по услуге.
+  documentTemplates DocumentTemplate[]
 
   @@index([funnelId])
   @@index([isActive, position])
 }
 
 // ============================================================
-// КОМИССИИ МЕНЕДЖЕРАМ (авторасчёт при оплате)
+// НЕСКОЛЬКО УСЛУГ НА ЛИДЕ (many-to-many)
 // ============================================================
-// Логика: при создании платежа (см. addPayment) проверяется его порядковый номер.
-// Если номер >= порога (Setting "commissionStartPayment", по дефолту 2 — со второго платежа),
-// то для salesManager и legalManager создаются записи Commission с
-// % из Service (или дефолтный 5% если услуга не задана).
+// Анна: «возможность добавить несколько услуг на лид». Например
+// karta praca + открытие JDG в одном деле.
+model LeadService {
+  id            String   @id @default(cuid())
+  leadId        String
+  lead          Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  serviceId     String
+  service       Service  @relation(fields: [serviceId], references: [id])
+  // Своя цена если отличается от basePrice (скидки и т.д.). null = брать basePrice.
+  customAmount  Decimal? @db.Decimal(10, 2)
+  quantity      Int      @default(1)
+  notes         String?  @db.Text
+  position      Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  @@unique([leadId, serviceId])
+  @@index([leadId])
+  @@index([serviceId])
+}
+
+// ============================================================
+// КОМИССИИ МЕНЕДЖЕРАМ
+// ============================================================
 
 model Commission {
   id            String   @id @default(cuid())
@@ -903,12 +927,11 @@ model Commission {
   userId        String
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  role          UserRole // SALES или LEGAL — для какой роли начислено
-  basePayment   Decimal  @db.Decimal(10, 2) // сумма платежа на момент расчёта
-  percent       Decimal  @db.Decimal(5, 2)  // применённый %
-  amount        Decimal  @db.Decimal(10, 2) // basePayment * percent / 100
+  role          UserRole
+  basePayment   Decimal  @db.Decimal(10, 2)
+  percent       Decimal  @db.Decimal(5, 2)
+  amount        Decimal  @db.Decimal(10, 2)
 
-  // Статус выплаты менеджеру
   paidOut       Boolean  @default(false)
   paidOutAt     DateTime?
   paidOutNotes  String?  @db.Text
@@ -923,8 +946,6 @@ model Commission {
 // ============================================================
 // УЧЁТ РАБОЧЕГО ВРЕМЕНИ
 // ============================================================
-// Каждый менеджер сам отмечает, в какие дни и с-по какое время был в офисе.
-// Используется для премиальной сводки (часы * ставка).
 
 model WorkLog {
   id        String   @id @default(cuid())
@@ -932,8 +953,8 @@ model WorkLog {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   date      DateTime @db.Date
-  startTime String   // "09:00"
-  endTime   String   // "18:00"
+  startTime String
+  endTime   String
   hours     Decimal  @db.Decimal(5, 2)
   notes     String?  @db.Text
 
@@ -946,10 +967,8 @@ model WorkLog {
 }
 
 // ============================================================
-// РАСХОДЫ (только админ)
+// РАСХОДЫ
 // ============================================================
-// Анна сканирует документы (счета, чеки, аренда) и заносит расходы построчно.
-// Фильтр по городу для сводного отчёта.
 
 model Expense {
   id          String   @id @default(cuid())
@@ -957,12 +976,11 @@ model Expense {
   cityId      String?
   city        City?    @relation(fields: [cityId], references: [id])
 
-  category    String   // "интернет", "аренда", "налог", "канцелярия" и т.д.
+  category    String
   amount      Decimal  @db.Decimal(10, 2)
   spentAt     DateTime
   description String?  @db.Text
 
-  // Прикреплённый скан/файл (опционально)
   fileUrl     String?
   fileName    String?
   fileSize    Int?
@@ -978,18 +996,17 @@ model Expense {
 }
 
 // ============================================================
-// КОНФИГ ЗАРПЛАТЫ МЕНЕДЖЕРА
+// КОНФИГ ЗАРПЛАТЫ
 // ============================================================
-// Используется в премиальной сводке: ставка/час, налог, фикс. часть.
 
 model PayrollConfig {
   id          String   @id @default(cuid())
   userId      String   @unique
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  hourlyRate  Decimal  @default(0) @db.Decimal(10, 2)  // часовая ставка zł
-  fixedSalary Decimal  @default(0) @db.Decimal(10, 2)  // фиксированная часть
-  taxAmount   Decimal  @default(0) @db.Decimal(10, 2)  // налог в zł (фикс.)
+  hourlyRate  Decimal  @default(0) @db.Decimal(10, 2)
+  fixedSalary Decimal  @default(0) @db.Decimal(10, 2)
+  taxAmount   Decimal  @default(0) @db.Decimal(10, 2)
   notes       String?  @db.Text
 
   updatedAt   DateTime @updatedAt
