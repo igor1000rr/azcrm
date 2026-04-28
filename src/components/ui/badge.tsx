@@ -17,10 +17,12 @@ interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
   withDot?: boolean;
 }
 
+// default теперь слегка синеватый вместо чисто серого — брендовый акцент
+// в самых распространённых плашках (воронка, источник, статусы).
 const variants: Record<BadgeVariant, string> = {
-  default: 'bg-bg text-ink-2 border-line',
-  navy:    'bg-navy/[0.04] text-navy border-navy/20',
-  gold:    'bg-gold-pale text-[#8A6E36] border-gold/30',
+  default: 'bg-navy/[0.04] text-navy/85 border-navy/15',
+  navy:    'bg-navy text-white border-navy',
+  gold:    'bg-gold-pale text-[#8A6E36] border-gold/40',
   success: 'bg-success-bg text-success border-success/20',
   danger:  'bg-danger-bg text-danger border-danger/20',
   warn:    'bg-warn-bg text-warn border-warn/20',

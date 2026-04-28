@@ -2,6 +2,8 @@
 
 // Подсказка-tooltip с иконкой `?`. Появляется при наведении или фокусе.
 // Используется по всему UI чтобы помочь Anna разобраться с терминами и формулами.
+//
+// Стилизация: иконка и всплывашка в фирменном navy вместо нейтрально-чёрного.
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { HelpCircle } from 'lucide-react';
 
@@ -46,12 +48,12 @@ export function Hint({
     right:  'left-full top-1/2 -translate-y-1/2 ml-1.5',
   }[side];
 
-  // Стрелочка-уголок указывает на иконку
+  // Стрелочка-уголок указывает на иконку (цвет navy под всплывашку)
   const arrowPos = {
-    top:    'top-full left-1/2 -translate-x-1/2 border-t-ink border-x-transparent border-b-transparent',
-    bottom: 'bottom-full left-1/2 -translate-x-1/2 border-b-ink border-x-transparent border-t-transparent',
-    left:   'left-full top-1/2 -translate-y-1/2 border-l-ink border-y-transparent border-r-transparent',
-    right:  'right-full top-1/2 -translate-y-1/2 border-r-ink border-y-transparent border-l-transparent',
+    top:    'top-full left-1/2 -translate-x-1/2 border-t-navy border-x-transparent border-b-transparent',
+    bottom: 'bottom-full left-1/2 -translate-x-1/2 border-b-navy border-x-transparent border-t-transparent',
+    left:   'left-full top-1/2 -translate-y-1/2 border-l-navy border-y-transparent border-r-transparent',
+    right:  'right-full top-1/2 -translate-y-1/2 border-r-navy border-y-transparent border-l-transparent',
   }[side];
 
   return (
@@ -68,7 +70,7 @@ export function Hint({
         onClick={(e) => { e.preventDefault(); setOpen((v) => !v); }}
         aria-label="Подсказка"
         aria-expanded={open}
-        className="inline-flex items-center justify-center text-ink-4 hover:text-ink-2 transition-colors cursor-help"
+        className="inline-flex items-center justify-center text-navy/40 hover:text-navy transition-colors cursor-help"
       >
         <HelpCircle size={size} />
       </button>
@@ -77,7 +79,7 @@ export function Hint({
         <span
           role="tooltip"
           style={{ width: `${width}px` }}
-          className={`absolute z-50 ${tooltipPos} px-2.5 py-1.5 bg-ink text-paper text-[11.5px] rounded-md shadow-lg leading-snug normal-case font-normal tracking-normal pointer-events-none`}
+          className={`absolute z-50 ${tooltipPos} px-2.5 py-1.5 bg-navy text-white text-[11.5px] rounded-md shadow-lg leading-snug normal-case font-normal tracking-normal pointer-events-none`}
         >
           {children}
           <span className={`absolute w-0 h-0 border-[5px] ${arrowPos}`} />
