@@ -32,7 +32,11 @@ const mockAuth                  = vi.fn(async () => ({ user: { id: 'u-1', role: 
 const mockRequireUser           = vi.fn(async () => ({ id: 'u-1', email: 'u@a', name: 'U', role: 'SALES' }));
 const mockVerifyFileAccessToken = vi.fn(() => false);
 const mockVerifyJwt             = vi.fn(() => null);
-const mockBuildEditorConfig     = vi.fn(() => ({ document: { key: 'doc-key' }, editorConfig: {} }));
+// Без implementation — иначе TS зафиксирует tuple вызовов calls как `[]`
+// (signature `() => {...}` без параметров) и `calls[0][0]` валится:
+// "Tuple type '[]' of length '0' has no element at index '0'".
+// Дефолт ставится в beforeEach.
+const mockBuildEditorConfig     = vi.fn() as AnyFn;
 const mockDownloadAndSave       = vi.fn(async () => ({ url: '/api/files/docs/saved.docx', size: 2048 }));
 const mockCanViewLead           = vi.fn(() => true);
 const mockFsStat = vi.fn();
