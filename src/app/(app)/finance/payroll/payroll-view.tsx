@@ -8,6 +8,7 @@
 // Грязными св = зп чистая + ZUS + PIT        (полная стоимость для компании)
 import { useState, useTransition } from 'react';
 import { Avatar } from '@/components/ui/avatar';
+import { Hint } from '@/components/ui/hint';
 import { Pencil, Save, X } from 'lucide-react';
 import { formatMoney } from '@/lib/utils';
 import { upsertPayrollConfig } from './actions';
@@ -45,18 +46,18 @@ export function PayrollView({ rows }: { rows: Row[] }) {
           <thead>
             <tr className="bg-bg border-b border-line">
               <Th>Менеджер</Th>
-              <Th align="right" tooltip="Сумма часов из табеля рабочего времени за выбранный период.">Часы</Th>
-              <Th align="right" tooltip="Ставка за час работы. Задаётся индивидуально по каждому менеджеру.">Ставка/час</Th>
-              <Th align="right" tooltip="Ставка × часы — рассчитывается автоматически.">Ставка × часы</Th>
-              <Th align="right" tooltip="Премия с приведённых клиентов: % от платежей по правилам роли (продажи — с предоплаты, легализация — со 2-го платежа).">
+              <Th align="right" hint="Сумма часов из табеля рабочего времени за выбранный период.">Часы</Th>
+              <Th align="right" hint="Ставка за час работы. Задаётся индивидуально по каждому менеджеру.">Ставка/час</Th>
+              <Th align="right" hint="Рассчитывается автоматически: ставка × часы.">Ставка × часы</Th>
+              <Th align="right" hint="Премия с приведённых клиентов: % от платежей по правилам роли. Продажи — с предоплаты, легализация — со 2-го платежа.">
                 Премия
               </Th>
-              <Th align="right" tooltip="ZUS — польский соцстрах. Anna вводит сумму вручную.">ZUS</Th>
-              <Th align="right" tooltip="PIT — польский подоходный налог. Anna вводит сумму вручную.">PIT</Th>
-              <Th align="right" tooltip="Грязными свои = ставка × часы + премия + ZUS + PIT. Полная стоимость менеджера для компании.">
+              <Th align="right" hint="ZUS — польский соцстрах. Вводится вручную.">ZUS</Th>
+              <Th align="right" hint="PIT — польский подоходный налог. Вводится вручную.">PIT</Th>
+              <Th align="right" hint="Грязными свои = ставка × часы + премия + ZUS + PIT. Сколько компания тратит на менеджера всего.">
                 Грязными свои
               </Th>
-              <Th align="right" tooltip="Зп чистая = ставка × часы + премия. Что менеджер получает на руки.">
+              <Th align="right" hint="Зп чистая = ставка × часы + премия. Что менеджер получает на руки.">
                 Зп чистая
               </Th>
               <Th />
@@ -123,10 +124,12 @@ function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; on
   const [pit, setPit] = useState(String(row.pit));
   const [pending, startTransition] = useTransition();
 
-  // Live-расчёт прямо в строке редактирования
-  const hRate = Number(hourly) || 0;
-  const zusN  = Number(zus) || 0;
-  const pitN  = Number(pit) || 0;
+  // Live-расчёт прямо в строке редактирования. Запятую парсим вручную тут
+  // чтобы превью показывало корректное число до отправки на сервер.
+  const parseLocal = (v: string) => Number(v.replace(',', '.')) || 0;
+  const hRate = parseLocal(hourly);
+  const zusN  = parseLocal(zus);
+  const pitN  = parseLocal(pit);
   const ratePart = hRate * row.totalHours;
   const netLive  = ratePart + row.totalCommission;
   const grossLive = netLive + zusN + pitN;
@@ -158,8 +161,8 @@ function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; on
       </td>
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">{row.totalHours.toFixed(1)}</td>
       <td className="px-4 py-2.5">
-        <input type="number" min={0} step={1} value={hourly} onChange={(e) => setHourly(e.target.value)}
-          title="Ставка за час работы (zł)"
+        <input type="text" inputMode="decimal" value={hourly} onChange={(e) => setHourly(e.target.value)}
+          placeholder="0"
           className="w-24 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
       </td>
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">
@@ -167,13 +170,13 @@ function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; on
       </td>
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(row.totalCommission)} zł</td>
       <td className="px-4 py-2.5">
-        <input type="number" min={0} step={50} value={zus} onChange={(e) => setZus(e.target.value)}
-          title="ZUS — польский соцстрах. Введите сумму в злотых."
+        <input type="text" inputMode="decimal" value={zus} onChange={(e) => setZus(e.target.value)}
+          placeholder="0"
           className="w-24 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
       </td>
       <td className="px-4 py-2.5">
-        <input type="number" min={0} step={50} value={pit} onChange={(e) => setPit(e.target.value)}
-          title="PIT — польский подоходный налог. Введите сумму в злотых."
+        <input type="text" inputMode="decimal" value={pit} onChange={(e) => setPit(e.target.value)}
+          placeholder="0"
           className="w-24 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
       </td>
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(grossLive)} zł</td>
@@ -191,14 +194,17 @@ function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; on
   );
 }
 
-function Th({ children, align, tooltip }: { children?: React.ReactNode; align?: 'right'; tooltip?: string }) {
+function Th({
+  children, align, hint,
+}: { children?: React.ReactNode; align?: 'right'; hint?: string }) {
   return (
     <th
-      className={`px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold ${align === 'right' ? 'text-right' : 'text-left'} ${tooltip ? 'cursor-help' : ''}`}
-      title={tooltip}
+      className={`px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold ${align === 'right' ? 'text-right' : 'text-left'}`}
     >
-      {children}
-      {tooltip && <span className="ml-1 text-ink-5 normal-case lowercase">ⓘ</span>}
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end w-full' : ''}`}>
+        {children}
+        {hint && <Hint size={11}>{hint}</Hint>}
+      </span>
     </th>
   );
 }
