@@ -43,11 +43,15 @@ export function PayrollView({ rows }: { rows: Row[] }) {
               <Th align="right">Часы</Th>
               <Th align="right">Ставка/час</Th>
               <Th align="right">Ставка × часы</Th>
-              <Th align="right">Фикс. часть</Th>
-              <Th align="right">Комиссии</Th>
+              <Th align="right" tooltip="Фиксированная часть зарплаты в злотых за месяц — не зависит от часов и сделок. Можно оставить 0.">
+                Фикс. часть
+              </Th>
+              <Th align="right" tooltip="Премия с приведённых клиентов: % от платежей по правилам роли (продажи — с предоплаты, легализация — со 2-го платежа).">
+                Премия
+              </Th>
               <Th align="right">Налог</Th>
-              <Th align="right">Грязный итог</Th>
-              <Th align="right">Чистый итог</Th>
+              <Th align="right" tooltip="Грязный = ставка × часы + фикс. часть + премии">Грязный итог</Th>
+              <Th align="right" tooltip="Чистый = грязный − налог">Чистый итог</Th>
               <Th />
             </tr>
           </thead>
@@ -147,6 +151,7 @@ function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; on
       </td>
       <td className="px-4 py-2.5">
         <input type="number" min={0} step={50} value={fixed} onChange={(e) => setFixed(e.target.value)}
+          title="Фиксированная часть зарплаты за месяц — не зависит от часов и премий. Можно оставить 0."
           className="w-28 text-right text-[12px] border border-line rounded px-2 py-1 bg-paper font-mono" />
       </td>
       <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(row.totalCommission)} zł</td>
@@ -168,10 +173,14 @@ function EditRow({ row, onCancel, onSave }: { row: Row; onCancel: () => void; on
   );
 }
 
-function Th({ children, align }: { children?: React.ReactNode; align?: 'right' }) {
+function Th({ children, align, tooltip }: { children?: React.ReactNode; align?: 'right'; tooltip?: string }) {
   return (
-    <th className={`px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold ${align === 'right' ? 'text-right' : 'text-left'}`}>
+    <th
+      className={`px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold ${align === 'right' ? 'text-right' : 'text-left'} ${tooltip ? 'cursor-help' : ''}`}
+      title={tooltip}
+    >
       {children}
+      {tooltip && <span className="ml-1 text-ink-5 normal-case lowercase">ⓘ</span>}
     </th>
   );
 }
