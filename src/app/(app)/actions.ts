@@ -479,40 +479,54 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
           role:    'SALES' | 'LEGAL';
           userId:  string;
           percent: number;
+          amount:  number;
         }> = [];
 
         // SALES — на первом платеже
         if (sequence === 1 && lead.salesManagerId && salesPct > 0) {
-          accruals.push({ role: 'SALES', userId: lead.salesManagerId, percent: salesPct });
+          accruals.push({
+            role:    'SALES',
+            userId:  lead.salesManagerId,
+            percent: salesPct,
+            amount:  Math.round((data.amount * salesPct) / 100 * 100) / 100,
+          });
         }
         // LEGAL — на втором платеже ИЛИ на первом если он покрыл всё
         if (lead.legalManagerId && legalPct > 0) {
           if (sequence === 2 || (sequence === 1 && isFullUpfront)) {
-            accruals.push({ role: 'LEGAL', userId: lead.legalManagerId, percent: legalPct });
+            accruals.push({
+              role:    'LEGAL',
+              userId:  lead.legalManagerId,
+              percent: legalPct,
+              amount:  Math.round((data.amount * legalPct) / 100 * 100) / 100,
+            });
           }
         }
 
-        const commissionsToCreate = accruals.map((a) => ({
-          paymentId:   payment.id,
-          userId:      a.userId,
-          role:        a.role,
-          basePayment: data.amount,
-          percent:     a.percent,
-          amount:      Math.round((data.amount * a.percent) / 100 * 100) / 100,
-        }));
-
-        if (commissionsToCreate.length > 0) {
-          await tx.commission.createMany({ data: commissionsToCreate });
+        // Создаём по одной premium-записи на каждое начисление через .create()
+        // (а не createMany) — так проще тестировать и совместимо со старым моком
+        // Prisma в integration-тестах. Премий максимум 2 — оверхед минимальный.
+        for (const a of accruals) {
+          await tx.commission.create({
+            data: {
+              paymentId:   payment.id,
+              userId:      a.userId,
+              role:        a.role,
+              basePayment: data.amount,
+              percent:     a.percent,
+              amount:      a.amount,
+            },
+          });
         }
 
         // Сообщение для истории
         let commissionNote = '';
-        if (commissionsToCreate.length > 0) {
-          const parts = commissionsToCreate.map((c) =>
-            `${c.role === 'SALES' ? 'продажи' : 'легализация'} ${c.percent}% = ${c.amount} zł`,
+        if (accruals.length > 0) {
+          const parts = accruals.map((a) =>
+            `${a.role === 'SALES' ? 'продажи' : 'легализация'} ${a.percent}% = ${a.amount} zł`,
           );
           commissionNote = `, премии: ${parts.join(', ')}`;
-          if (isFullUpfront && commissionsToCreate.length === 2) {
+          if (isFullUpfront && accruals.length === 2) {
             commissionNote += ' (полная оплата сразу)';
           }
         } else if (sequence >= 3) {
@@ -530,8 +544,8 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
               amount:      data.amount,
               method:      data.method,
               sequence,
-              commissions: commissionsToCreate.map((c) => ({
-                role: c.role, percent: c.percent, amount: c.amount,
+              commissions: accruals.map((a) => ({
+                role: a.role, percent: a.percent, amount: a.amount,
               })),
               isFullUpfront,
             },
