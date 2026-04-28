@@ -14,10 +14,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const user = session.user;
 
+  // Если юзер обязан сменить пароль — редирект на отдельный route /change-password
+  // (проверяем в БД, а не в JWT — флаг обновляется без перелогина).
+  const profile = await db.user.findUnique({
+    where: { id: user.id },
+    select: { mustChangePassword: true },
+  });
+  if (profile?.mustChangePassword) {
+    redirect('/change-password');
+  }
+
   // Параллельно: счётчики для бейджей в sidebar + WA-каналы
   const [
     leadsActive,
-    paymentsOverdue,
     tasksOpen,
     automationsActive,
     eventsToday,
@@ -31,15 +40,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         ...leadVisibilityFilter(user),
       },
     }),
-    // "просроченные" — для MVP считаем лидов с долгом, без напоминания
-    db.lead.count({
-      where: {
-        isArchived: false,
-        ...leadVisibilityFilter(user),
-        // у лида есть долг
-        // (упрощённо: totalAmount > sum(payments)) — точнее посчитаем на странице оплат
-      },
-    }).then(() => 0), // заглушка чтобы не считать тяжело на каждом запросе
     db.task.count({
       where: {
         status: 'OPEN',
@@ -92,11 +92,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     return c.lastMessageAt && (!lastRead || c.lastMessageAt > lastRead);
   }).length;
 
+  // Счётчик «просроченные оплаты» отдаём посчёт на страницу /payments —
+  // в сайдбаре бейдж отсутствует вместо фонового тяжёлого запроса.
   const counters = {
     inboxUnread,
     leadsActive,
     eventsToday,
-    paymentsOverdue,
+    paymentsOverdue: 0,
     tasksOpen,
     automationsActive,
     teamChatUnread,

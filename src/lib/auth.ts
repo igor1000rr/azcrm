@@ -13,15 +13,17 @@ declare module 'next-auth' {
       email: string;
       name:  string;
       role:  UserRole;
+      mustChangePassword?: boolean;
     };
   }
   interface User {
     role?: UserRole;
+    mustChangePassword?: boolean;
   }
 }
 
 // Лимит попыток логина: 10 за 15 минут на email. Достаточно для опечаток
-// и одновременно отбивает brute-force. После успешного входа счётчик сбрасывается.
+// и одновременно отбивает brute-force.
 const LOGIN_MAX        = 10;
 const LOGIN_WINDOW_MS  = 15 * 60 * 1000;
 
@@ -40,27 +42,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const password = String(credentials?.password ?? '');
         if (!email || !password) return null;
 
-        // Rate-limit по email — отбивает brute-force
         const rlKey = `login:${email}`;
         if (!checkRateLimit(rlKey, LOGIN_MAX, LOGIN_WINDOW_MS)) {
-          // Нарочно не различаем "много попыток" от "неверный пароль" в ответе
-          // чтобы атакующий не мог понять что email существует и просто залочен.
           console.warn(`[auth] rate-limit hit for ${email}`);
           return null;
         }
 
         const user = await db.user.findUnique({ where: { email } });
         if (!user) return null;
-        // Деактивированных не пускаем
         if (!user.isActive) return null;
 
         const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) return null;
 
-        // Сбрасываем счётчик попыток при успешном входе
         resetRateLimit(rlKey);
 
-        // Обновляем "последний вход"
         await db.user.update({
           where: { id: user.id },
           data:  { lastSeenAt: new Date(), status: 'ONLINE' },
@@ -71,23 +67,38 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email: user.email,
           name:  user.name,
           role:  user.role,
+          mustChangePassword: user.mustChangePassword,
         };
       },
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger }) {
       if (user) {
-        (token as Record<string, unknown>).uid  = user.id;
-        (token as Record<string, unknown>).role = (user as { role?: UserRole }).role;
+        const t = token as Record<string, unknown>;
+        t.uid  = user.id;
+        t.role = (user as { role?: UserRole }).role;
+        t.mustChangePassword = (user as { mustChangePassword?: boolean }).mustChangePassword ?? false;
+      }
+      // При вызове update() из клиента (после смены пароля) — перечитаем флаг из БД
+      if (trigger === 'update' && (token as { uid?: string }).uid) {
+        const fresh = await db.user.findUnique({
+          where: { id: (token as { uid: string }).uid },
+          select: { mustChangePassword: true, role: true },
+        });
+        if (fresh) {
+          (token as Record<string, unknown>).mustChangePassword = fresh.mustChangePassword;
+          (token as Record<string, unknown>).role = fresh.role;
+        }
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        const t = token as { uid?: string; role?: UserRole };
+        const t = token as { uid?: string; role?: UserRole; mustChangePassword?: boolean };
         session.user.id   = t.uid ?? '';
         session.user.role = (t.role ?? 'SALES') as UserRole;
+        session.user.mustChangePassword = t.mustChangePassword ?? false;
       }
       return session;
     },
