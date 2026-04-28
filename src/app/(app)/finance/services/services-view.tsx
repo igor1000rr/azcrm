@@ -5,6 +5,7 @@ import { useState, useTransition } from 'react';
 import { Plus, Pencil, Trash2, Save, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Hint } from '@/components/ui/hint';
 import { formatMoney } from '@/lib/utils';
 import { upsertService, deleteService, setCommissionStartPayment } from './actions';
 
@@ -38,7 +39,14 @@ export function ServicesView({ services, funnels, commissionStartFromN }: Props)
       <div className="bg-paper border border-line rounded-lg p-4 mb-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h3 className="text-[13px] font-bold text-ink mb-1">Когда начислять комиссии менеджерам</h3>
+            <h3 className="text-[13px] font-bold text-ink mb-1 flex items-center gap-1.5">
+              Когда начислять комиссии менеджерам
+              <Hint width={280}>
+                Управляет тем, с какого по счёту платежа в лиде менеджеры получают премии.
+                По умолчанию: SALES — с 1-го платежа, LEGAL — со 2-го. Если выбрать «С 1-го платежа»,
+                LEGAL тоже получит % сразу с предоплаты.
+              </Hint>
+            </h3>
             <p className="text-[11.5px] text-ink-3">
               Сейчас: с {commissionStartFromN === 1 ? '1-го' : '2-го'} платежа в лиде
             </p>
@@ -73,11 +81,21 @@ export function ServicesView({ services, funnels, commissionStartFromN }: Props)
             <thead>
               <tr className="bg-bg border-b border-line">
                 <Th>Название</Th>
-                <Th>Воронка</Th>
-                <Th align="right">Цена</Th>
-                <Th align="right">% продаж</Th>
-                <Th align="right">% легал.</Th>
-                <Th>Статус</Th>
+                <Th hint="Воронка, к которой относится услуга. При создании лида в этой воронке услуга будет предлагаться по умолчанию.">
+                  Воронка
+                </Th>
+                <Th align="right" hint="Базовая стоимость услуги в злотых. Для каждого лида можно потом задать индивидуальную цену (со скидкой и т.д.).">
+                  Цена
+                </Th>
+                <Th align="right" hint="% премии менеджера продаж от этой услуги. Перебивается персональным % из карточки сотрудника. Можно вводить с запятой: 5,5%.">
+                  % продаж
+                </Th>
+                <Th align="right" hint="% премии менеджера легализации от этой услуги. Перебивается персональным % из карточки сотрудника. Можно вводить с запятой.">
+                  % легал.
+                </Th>
+                <Th hint="Только активные услуги доступны при создании лида. Деактивированные сохраняются для истории.">
+                  Статус
+                </Th>
                 <Th />
               </tr>
             </thead>
@@ -178,9 +196,9 @@ function ServiceRow({
           id: service?.id,
           name: name.trim(),
           description: description.trim(),
-          basePrice: Number(basePrice) || 0,
-          salesCommissionPercent: Number(salesPct) || 0,
-          legalCommissionPercent: Number(legalPct) || 0,
+          basePrice,                       // строки — Zod нормализует через parseNumeric
+          salesCommissionPercent: salesPct,
+          legalCommissionPercent: legalPct,
           funnelId: funnelId || undefined,
           position: service?.position ?? 0,
           isActive,
@@ -224,33 +242,31 @@ function ServiceRow({
       </td>
       <td className="px-4 py-2.5">
         <input
-          type="number"
-          min={0}
-          step={50}
+          type="text"
+          inputMode="decimal"
           value={basePrice}
           onChange={(e) => setBasePrice(e.target.value)}
+          placeholder="0"
           className="w-24 text-right text-[12.5px] border border-line rounded px-2 py-1 bg-paper font-mono"
         />
       </td>
       <td className="px-4 py-2.5">
         <input
-          type="number"
-          min={0}
-          max={100}
-          step={0.5}
+          type="text"
+          inputMode="decimal"
           value={salesPct}
           onChange={(e) => setSalesPct(e.target.value)}
+          placeholder="5"
           className="w-16 text-right text-[12.5px] border border-line rounded px-2 py-1 bg-paper font-mono"
         />
       </td>
       <td className="px-4 py-2.5">
         <input
-          type="number"
-          min={0}
-          max={100}
-          step={0.5}
+          type="text"
+          inputMode="decimal"
           value={legalPct}
           onChange={(e) => setLegalPct(e.target.value)}
+          placeholder="5"
           className="w-16 text-right text-[12.5px] border border-line rounded px-2 py-1 bg-paper font-mono"
         />
       </td>
@@ -285,10 +301,15 @@ function ServiceRow({
   );
 }
 
-function Th({ children, align }: { children?: React.ReactNode; align?: 'right' }) {
+function Th({
+  children, align, hint,
+}: { children?: React.ReactNode; align?: 'right'; hint?: string }) {
   return (
     <th className={`px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold ${align === 'right' ? 'text-right' : 'text-left'}`}>
-      {children}
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end w-full' : ''}`}>
+        {children}
+        {hint && <Hint size={11}>{hint}</Hint>}
+      </span>
     </th>
   );
 }
