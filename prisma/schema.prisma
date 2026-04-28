@@ -55,6 +55,12 @@ model User {
   // Принудительная смена пароля при следующем входе (первый вход / ресет админом)
   mustChangePassword Boolean @default(false)
 
+  // Персональный % комиссии для этого менеджера. Перебивает % из услуги.
+  // null = использовать % из услуги (старое поведение).
+  // SALES получает этот % с ПЕРВОГО платежа лида (предоплата),
+  // LEGAL — со ВТОРОГО платежа (после закрытия дела).
+  commissionPercent Decimal? @db.Decimal(5, 2)
+
   // OAuth для Google Calendar
   googleAccessToken           String?   @db.Text
   googleAccessTokenExpiresAt  DateTime?
@@ -445,8 +451,11 @@ model Payment {
   method    PaymentMethod @default(CASH)
   paidAt    DateTime      @default(now())
   notes     String?       @db.Text
-  // Порядковый номер платежа в рамках лида (1 — предоплата, 2+ — последующие)
-  // Используется для расчёта комиссий: с какого номера начинать начислять
+  // Порядковый номер платежа в рамках лида.
+  // Используется для расчёта комиссий:
+  //   sequence=1 → SALES (менеджер продаж получает свой %)
+  //   sequence=2 → LEGAL (менеджер легализации получает свой %)
+  //   sequence>=3 → комиссии не начисляются
   sequence  Int           @default(1)
   createdById String?
   createdBy   User?       @relation(fields: [createdById], references: [id])
@@ -949,7 +958,8 @@ model Service {
   description String?  @db.Text
   basePrice   Decimal  @default(0) @db.Decimal(10, 2)
 
-  // % комиссии менеджеру при оплате
+  // % комиссии менеджеру при оплате (используется как дефолт если у юзера
+  // не задан персональный User.commissionPercent)
   salesCommissionPercent Decimal @default(5) @db.Decimal(5, 2)
   legalCommissionPercent Decimal @default(5) @db.Decimal(5, 2)
 
@@ -973,6 +983,16 @@ model Service {
 // ============================================================
 // КОМИССИИ МЕНЕДЖЕРАМ (авторасчёт при оплате)
 // ============================================================
+// Логика начисления (Anna 28.04.2026):
+//   - SALES (менеджер продаж, кто привёл клиента) получает % от ПЕРВОГО
+//     платежа лида (sequence=1, обычно предоплата).
+//   - LEGAL (специалист по легализации, кто закрывает дело) получает %
+//     от ВТОРОГО платежа (sequence=2, обычно финальный после закрытия).
+//   - Платежи sequence=3+ комиссий не генерируют.
+// % берётся в порядке приоритета:
+//   1. User.commissionPercent (персональный, если задан)
+//   2. Service.salesCommissionPercent / legalCommissionPercent (по основной услуге)
+//   3. 5% по умолчанию (если нет ни того, ни другого)
 
 model Commission {
   id            String   @id @default(cuid())
