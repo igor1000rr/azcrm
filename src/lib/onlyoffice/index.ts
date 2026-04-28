@@ -35,9 +35,9 @@ function requireSecret(): string {
 export interface OnlyOfficeConfig {
   document: {
     fileType:  string;
-    key:       string;     // уникальный ключ — менять при смене содержимого
+    key:       string;
     title:     string;
-    url:       string;     // откуда OO скачает файл
+    url:       string;
     permissions: {
       edit:     boolean;
       download: boolean;
@@ -47,7 +47,7 @@ export interface OnlyOfficeConfig {
   };
   documentType: 'word' | 'cell' | 'slide' | 'pdf';
   editorConfig: {
-    callbackUrl: string;   // куда OO отправит callback при сохранении
+    callbackUrl: string;
     user: { id: string; name: string };
     customization: {
       autosave:     boolean;
@@ -63,7 +63,7 @@ export interface OnlyOfficeConfig {
   height: string;
   width:  string;
   type:   'desktop' | 'mobile' | 'embedded';
-  token?: string;          // подпись JWT всего конфига
+  token?: string;
 }
 
 export type DocFormat = 'DOCX' | 'XLSX' | 'PPTX' | 'PDF';
@@ -76,24 +76,18 @@ export function getFileExtension(format: DocFormat): string {
   return ({DOCX: 'docx', XLSX: 'xlsx', PPTX: 'pptx', PDF: 'pdf'} as const)[format];
 }
 
-/**
- * Сборка конфига для OnlyOffice editor.
- * Подписывает JWT-токеном чтобы OO принял запрос.
- */
 export function buildEditorConfig(opts: {
   documentId: string;
-  documentKey: string;       // должен меняться при изменении файла
+  documentKey: string;
   fileName:   string;
   format:     DocFormat;
-  fileUrl:    string;        // относительный URL: /api/files/docs/...
+  fileUrl:    string;
   user:       { id: string; name: string };
   mode?:      'edit' | 'view';
 }): OnlyOfficeConfig {
   const documentType = getDocumentType(opts.format);
   const fileType     = getFileExtension(opts.format);
 
-  // Подписываем URL файла токеном — OO сервер скачает без сессии,
-  // но только этот конкретный путь и не дольше 10 минут.
   const fileToken      = signFileAccessToken(opts.fileUrl, 600);
   const fileUrlWithTok = `${opts.fileUrl}?ooToken=${encodeURIComponent(fileToken)}`;
   const fullFileUrl    = absoluteUrl(fileUrlWithTok);
@@ -130,16 +124,10 @@ export function buildEditorConfig(opts: {
     type:   'desktop',
   };
 
-  // Подписываем весь конфиг JWT (кастуем к Record для signJwt-signature)
   config.token = signJwt(config as unknown as Record<string, unknown>);
   return config;
 }
 
-/**
- * Подписать short-lived токен доступа к файлу для OnlyOffice сервера.
- * OO ходит за файлом по публичному URL без сессии — этот токен пускает
- * только конкретный путь и только на короткий срок (по умолчанию 5 мин).
- */
 export function signFileAccessToken(filePath: string, ttlSeconds = 300): string {
   return signJwt({
     p: filePath,
@@ -147,7 +135,6 @@ export function signFileAccessToken(filePath: string, ttlSeconds = 300): string 
   });
 }
 
-/** Проверить токен из ?ooToken=... — путь должен совпадать, срок не истёк */
 export function verifyFileAccessToken(token: string, expectedPath: string): boolean {
   const payload = verifyJwt<{ p: string; exp: number }>(token);
   if (!payload) return false;
@@ -156,7 +143,36 @@ export function verifyFileAccessToken(token: string, expectedPath: string): bool
   return true;
 }
 
-/** Простой HS256 JWT (без зависимостей) — OnlyOffice использует HS256 */
+/**
+ * SSRF-защита для callback'а OnlyOffice.
+ * При status=2 OnlyOffice присылает url откуда нужно скачать новый файл.
+ * Принимаем только хосты, известные нам по env (публичный + внутренний).
+ */
+export function isAllowedDownloadUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+
+    const allowed = new Set<string>();
+    for (const envUrl of [
+      process.env.ONLYOFFICE_PUBLIC_URL,
+      process.env.APP_INTERNAL_URL,
+      process.env.ONLYOFFICE_INTERNAL_URL,
+    ]) {
+      if (!envUrl) continue;
+      try { allowed.add(new URL(envUrl).hostname); } catch {}
+    }
+    // Имена сервисов внутри docker-compose
+    allowed.add('onlyoffice');
+    allowed.add('documentserver');
+    allowed.add('azgroup-onlyoffice');
+
+    return allowed.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function signJwt(payload: Record<string, unknown>): string {
   const secret = requireSecret();
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -170,7 +186,6 @@ export function signJwt(payload: Record<string, unknown>): string {
   return `${data}.${sig}`;
 }
 
-/** Проверка JWT (для callback от OnlyOffice) */
 export function verifyJwt<T = Record<string, unknown>>(token: string): T | null {
   try {
     const secret = requireSecret();
@@ -182,7 +197,6 @@ export function verifyJwt<T = Record<string, unknown>>(token: string): T | null 
       .update(`${b64Header}.${b64Payload}`)
       .digest('base64url');
 
-    // Защита от timing-attack + от падения при разной длине строк
     const sigBuf = Buffer.from(sig);
     const expBuf = Buffer.from(expected);
     if (sigBuf.length !== expBuf.length) return null;
@@ -200,21 +214,10 @@ function base64url(str: string): string {
 
 function absoluteUrl(relativeOrAbsolute: string): string {
   if (relativeOrAbsolute.startsWith('http')) return relativeOrAbsolute;
-  // Внутри docker OnlyOffice идёт к app по внутренней сети
   const internal = process.env.APP_INTERNAL_URL ?? OO_CALLBACK_PUBLIC_URL;
   return `${internal}${relativeOrAbsolute}`;
 }
 
-/**
- * Статусы callback'а OnlyOffice
- * 0 — без изменений
- * 1 — редактируется
- * 2 — готов к сохранению (нужно скачать)
- * 3 — ошибка сохранения
- * 4 — закрыт без изменений
- * 6 — редактируется, но текущая версия сохранена
- * 7 — ошибка при принудительном сохранении
- */
 export const OOCallbackStatus = {
   NO_CHANGES:    0,
   EDITING:       1,
@@ -228,7 +231,7 @@ export const OOCallbackStatus = {
 export interface OOCallbackBody {
   key:    string;
   status: number;
-  url?:   string;       // URL для скачивания нового состояния (status=2)
-  users?: string[];     // кто редактировал
+  url?:   string;
+  users?: string[];
   actions?: Array<{ type: number; userid: string }>;
 }
