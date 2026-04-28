@@ -16,6 +16,13 @@ import { audit } from '@/lib/audit';
 
 // ====================== СОЗДАНИЕ ЛИДА ======================
 
+const leadServiceItem = z.object({
+  serviceId: z.string().min(1),
+  amount:    z.coerce.number().min(0).optional(),
+  qty:       z.coerce.number().int().min(1).default(1),
+  notes:     z.string().optional(),
+});
+
 const createLeadSchema = z.object({
   // Клиент: либо существующий, либо новый
   clientId:      z.string().optional(),
@@ -31,11 +38,23 @@ const createLeadSchema = z.object({
   // Лид
   funnelId:      z.string().min(1, 'Выберите воронку'),
   stageId:       z.string().optional(),
-  cityId:        z.string().optional(),
+  cityId:        z.string().optional(),       // город обращения
+  workCityId:    z.string().optional(),       // город работы (karta praca)
   source:        z.string().optional(),
   sourceKind:    z.enum(['WHATSAPP','PHONE','TELEGRAM','EMAIL','WEBSITE','REFERRAL','WALK_IN','MANUAL','IMPORT','OTHER']).optional(),
   whatsappAccountId: z.string().optional(),
+  telegramAccountId: z.string().optional(),
+
+  // Работодатель (ручной ввод, для karta praca)
+  employerName:  z.string().optional(),
+  employerPhone: z.string().optional(),
+
+  // Услуги:
+  //  - быстрый способ: одна услуга через serviceId
+  //  - или несколько через services[]
   serviceId:     z.string().optional(),
+  services:      z.array(leadServiceItem).optional(),
+
   salesManagerId: z.string().optional(),
   legalManagerId: z.string().optional(),
   totalAmount:   z.coerce.number().min(0).default(0),
@@ -77,7 +96,7 @@ export async function createLead(input: z.infer<typeof createLeadSchema>) {
     }
   }
 
-  // Шаг 2: получить первый этап воронки если не указан
+  // Шаг 2: первый этап воронки если не указан
   let stageId = data.stageId;
   if (!stageId) {
     const firstStage = await db.stage.findFirst({
@@ -88,52 +107,115 @@ export async function createLead(input: z.infer<typeof createLeadSchema>) {
     stageId = firstStage.id;
   }
 
-  // Шаг 3: создаём лида + чек-лист документов из шаблона воронки
-  const docTemplates = await db.documentTemplate.findMany({
-    where: { funnelId: data.funnelId },
-    orderBy: { position: 'asc' },
-  });
+  // Шаг 3: подготовка услуг и суммы
+  // Собираем итоговый список услуг: либо services[], либо [{serviceId}] если задан один
+  const serviceItems = data.services && data.services.length > 0
+    ? data.services
+    : data.serviceId
+      ? [{ serviceId: data.serviceId, qty: 1, amount: undefined as number | undefined, notes: undefined }]
+      : [];
 
-  // Если выбрана услуга и сумма не задана — берём цену из прайса
-  let totalAmount = data.totalAmount;
-  if (data.serviceId && (!totalAmount || totalAmount === 0)) {
-    const svc = await db.service.findUnique({
-      where: { id: data.serviceId },
-      select: { basePrice: true },
-    });
-    if (svc) totalAmount = Number(svc.basePrice);
+  // Подгружаем basePrice для услуг без явно указанной цены
+  const serviceIds = serviceItems.map((s) => s.serviceId);
+  const serviceRecords = serviceIds.length
+    ? await db.service.findMany({
+        where: { id: { in: serviceIds } },
+        select: { id: true, basePrice: true },
+      })
+    : [];
+  const basePriceMap = new Map(serviceRecords.map((s) => [s.id, Number(s.basePrice)]));
+
+  // Резолвим фактическую цену каждой услуги лида
+  const resolvedServices = serviceItems.map((s, i) => ({
+    serviceId: s.serviceId,
+    amount:    s.amount ?? basePriceMap.get(s.serviceId) ?? 0,
+    qty:       s.qty ?? 1,
+    notes:     s.notes,
+    position:  i,
+  }));
+
+  // Сумма по всем услугам
+  const calculatedTotal = resolvedServices.reduce((s, r) => s + r.amount * r.qty, 0);
+  const totalAmount = data.totalAmount > 0 ? data.totalAmount : calculatedTotal;
+
+  // Основная услуга — явный serviceId, иначе первая из services[]
+  const primaryServiceId = data.serviceId ?? resolvedServices[0]?.serviceId ?? null;
+
+  // Шаг 4: чек-лист документов
+  // Приоритет — из выбранных услуг. Дедуплицируем по name.
+  const docTemplates = serviceIds.length
+    ? await db.documentTemplate.findMany({
+        where: { serviceId: { in: serviceIds } },
+        orderBy: { position: 'asc' },
+      })
+    : await db.documentTemplate.findMany({
+        where: { funnelId: data.funnelId },
+        orderBy: { position: 'asc' },
+      });
+
+  // Дедупликация по имени (две услуги могут требовать «Загранпаспорт»)
+  const seenDocs = new Set<string>();
+  const dedupedDocs: typeof docTemplates = [];
+  for (const t of docTemplates) {
+    const key = t.name.trim().toLowerCase();
+    if (seenDocs.has(key)) continue;
+    seenDocs.add(key);
+    dedupedDocs.push(t);
   }
 
-  const lead = await db.lead.create({
-    data: {
-      clientId,
-      funnelId:       data.funnelId,
-      stageId,
-      cityId:         data.cityId || null,
-      source:         data.source || null,
-      sourceKind:     data.sourceKind ?? 'MANUAL',
-      whatsappAccountId: data.whatsappAccountId || null,
-      serviceId:      data.serviceId || null,
-      salesManagerId: data.salesManagerId || (user.role === 'SALES' ? user.id : null),
-      legalManagerId: data.legalManagerId || null,
-      totalAmount,
-      summary:        data.summary || null,
-      firstContactAt: new Date(),
-      documents: {
-        create: docTemplates.map((t: { name: string; position: number }) => ({
-          name:       t.name,
-          position:   t.position,
-          isPresent:  false,
-        })),
-      },
-      events: {
-        create: {
-          authorId: user.id,
-          kind:     'LEAD_CREATED',
-          message:  'Лид создан',
+  // Шаг 5: создаём лида со всем в одной транзакции
+  const lead = await db.$transaction(async (tx) => {
+    const created = await tx.lead.create({
+      data: {
+        clientId,
+        funnelId:       data.funnelId,
+        stageId,
+        cityId:         data.cityId || null,
+        workCityId:     data.workCityId || null,
+        source:         data.source || null,
+        sourceKind:     data.sourceKind ?? 'MANUAL',
+        whatsappAccountId: data.whatsappAccountId || null,
+        telegramAccountId: data.telegramAccountId || null,
+        employerName:   data.employerName || null,
+        employerPhone:  data.employerPhone || null,
+        serviceId:      primaryServiceId,
+        salesManagerId: data.salesManagerId || (user.role === 'SALES' ? user.id : null),
+        legalManagerId: data.legalManagerId || null,
+        totalAmount,
+        summary:        data.summary || null,
+        firstContactAt: new Date(),
+        documents: {
+          create: dedupedDocs.map((t, i) => ({
+            name:      t.name,
+            position:  i + 1,
+            isPresent: false,
+          })),
+        },
+        events: {
+          create: {
+            authorId: user.id,
+            kind:     'LEAD_CREATED',
+            message:  'Лид создан',
+          },
         },
       },
-    },
+    });
+
+    // Связь M:N с услугами
+    if (resolvedServices.length > 0) {
+      await tx.leadService.createMany({
+        data: resolvedServices.map((r) => ({
+          leadId:    created.id,
+          serviceId: r.serviceId,
+          amount:    r.amount,
+          qty:       r.qty,
+          notes:     r.notes ?? null,
+          position:  r.position,
+        })),
+      });
+    }
+
+    return created;
   });
 
   revalidatePath('/funnel');
@@ -144,7 +226,11 @@ export async function createLead(input: z.infer<typeof createLeadSchema>) {
     action:     'lead.create',
     entityType: 'Lead',
     entityId:   lead.id,
-    after:      { clientId, funnelId: data.funnelId, totalAmount: data.totalAmount },
+    after:      {
+      clientId, funnelId: data.funnelId, totalAmount,
+      services: resolvedServices.map((r) => r.serviceId),
+      employerName: data.employerName, workCityId: data.workCityId,
+    },
   });
 
   return { id: lead.id, clientId };
@@ -193,7 +279,7 @@ export async function changeLeadStage(leadId: string, stageId: string) {
   ]);
 
   revalidatePath('/funnel');
-  revalidatePath(`/clients/${lead.id}`); // на случай если карточка открыта
+  revalidatePath(`/clients/${lead.id}`);
   return { ok: true };
 }
 
@@ -323,7 +409,7 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
   if (!lead) throw new Error('Лид не найден');
   assert(canEditLead(user, lead));
 
-  // Глобальная настройка: с какого по счёту платежа начинать начислять комиссии
+  // Глобальная настройка: с какого платежа начинать начислять комиссии
   const setting = await db.setting.findUnique({
     where: { key: 'commission.startFromPaymentNumber' },
   });
@@ -344,7 +430,6 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       const result = await db.$transaction(async (tx) => {
-        // Считаем sequence через MAX внутри транзакции
         const last = await tx.payment.aggregate({
           where: { leadId: data.leadId },
           _max:  { sequence: true },
@@ -419,12 +504,8 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
       return result;
     } catch (e) {
       lastErr = e;
-      // P2002 = unique constraint violation на (leadId, sequence)
       const code = (e as { code?: string }).code;
-      if (code === 'P2002') {
-        // Повторяем — другой запрос забрал наш sequence
-        continue;
-      }
+      if (code === 'P2002') continue;
       throw e;
     }
   }
@@ -505,7 +586,7 @@ export async function toggleDocument(documentId: string, isPresent: boolean) {
   return { ok: true };
 }
 
-// ====================== ОТПЕЧАТКИ ======================
+// ====================== ОТПЕЧАТКИ И ДОП. ВЫЗВАНИЯ ======================
 
 export async function setFingerprintDate(
   leadId:   string,
@@ -533,7 +614,6 @@ export async function setFingerprintDate(
   });
 
   if (existingEvent?.googleId && existingEvent.ownerId) {
-    // Async-удаление в Google (не блокируем основной поток)
     const { deleteGoogleEvent } = await import('@/lib/google');
     deleteGoogleEvent(existingEvent.ownerId, existingEvent.googleId).catch((e) => {
       console.error('failed to delete google event:', e);
@@ -578,7 +658,6 @@ export async function setFingerprintDate(
     });
   });
 
-  // После транзакции — создаём в Google Calendar (если есть менеджер с подключённым календарём)
   if (dt && lead.legalManagerId) {
     const { createGoogleEvent } = await import('@/lib/google');
     const googleId = await createGoogleEvent(lead.legalManagerId, {
@@ -609,6 +688,126 @@ export async function setFingerprintDate(
   return { ok: true };
 }
 
+/**
+ * Дополнительное вызвание (kind=EXTRA_CALL).
+ * Отличие от отпечатков: их может быть НЕСКОЛЬКО на лид, и они не хранятся
+ * на самом лиде (в отличие от fingerprintDate). Просто события в calendarEvents.
+ */
+export async function addExtraCall(input: {
+  leadId:    string;
+  date:      string;
+  location?: string | null;
+  title?:    string | null;
+}) {
+  const user = await requireUser();
+
+  const lead = await db.lead.findUnique({
+    where: { id: input.leadId },
+    select: {
+      id: true, salesManagerId: true, legalManagerId: true,
+      client: { select: { fullName: true, phone: true } },
+    },
+  });
+  if (!lead) throw new Error('Лид не найден');
+  assert(canEditLead(user, lead));
+
+  const dt = new Date(input.date);
+  if (isNaN(dt.getTime())) throw new Error('Некорректная дата');
+
+  const title = input.title?.trim() || `Доп. вызвание: ${lead.client.fullName}`;
+  const location = input.location?.trim() || null;
+
+  const event = await db.$transaction(async (tx) => {
+    const created = await tx.calendarEvent.create({
+      data: {
+        leadId:    lead.id,
+        ownerId:   lead.legalManagerId,
+        kind:      'EXTRA_CALL',
+        title,
+        location:  location || undefined,
+        startsAt:  dt,
+        endsAt:    new Date(dt.getTime() + 30 * 60 * 1000),
+      },
+    });
+
+    await tx.leadEvent.create({
+      data: {
+        leadId:   lead.id,
+        authorId: user.id,
+        kind:     'EXTRA_CALL_SET',
+        message:  `Доп. вызвание: ${dt.toLocaleString('ru-RU')}${location ? ` — ${location}` : ''}`,
+        payload:  { eventId: created.id, date: dt.toISOString(), location },
+      },
+    });
+
+    return created;
+  });
+
+  // Google Calendar (если у legal-менеджера подключён Google)
+  if (lead.legalManagerId) {
+    const { createGoogleEvent } = await import('@/lib/google');
+    const googleId = await createGoogleEvent(lead.legalManagerId, {
+      summary:     title,
+      description: `Клиент: ${lead.client.fullName}\nТелефон: ${lead.client.phone}`,
+      location:    location || undefined,
+      start: { dateTime: dt.toISOString(), timeZone: 'Europe/Warsaw' },
+      end:   { dateTime: new Date(dt.getTime() + 30 * 60 * 1000).toISOString(), timeZone: 'Europe/Warsaw' },
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'popup', minutes: 60 },
+          { method: 'popup', minutes: 24 * 60 },
+        ],
+      },
+    });
+
+    if (googleId) {
+      await db.calendarEvent.update({
+        where: { id: event.id },
+        data:  { googleId },
+      });
+    }
+  }
+
+  revalidatePath(`/clients/${lead.id}`);
+  revalidatePath('/calendar');
+  return { id: event.id };
+}
+
+export async function deleteCalendarEvent(eventId: string) {
+  const user = await requireUser();
+
+  const ev = await db.calendarEvent.findUnique({
+    where: { id: eventId },
+    select: {
+      id: true, leadId: true, googleId: true, ownerId: true, kind: true,
+      lead: { select: { salesManagerId: true, legalManagerId: true } },
+    },
+  });
+  if (!ev) throw new Error('Событие не найдено');
+  if (ev.lead) assert(canEditLead(user, ev.lead));
+
+  // Асинхронно удалить из Google
+  if (ev.googleId && ev.ownerId) {
+    const { deleteGoogleEvent } = await import('@/lib/google');
+    deleteGoogleEvent(ev.ownerId, ev.googleId).catch(() => {});
+  }
+
+  await db.calendarEvent.delete({ where: { id: eventId } });
+
+  // Если это были отпечатки — обнуляем на лиде
+  if (ev.kind === 'FINGERPRINT' && ev.leadId) {
+    await db.lead.update({
+      where: { id: ev.leadId },
+      data:  { fingerprintDate: null, fingerprintLocation: null },
+    });
+  }
+
+  if (ev.leadId) revalidatePath(`/clients/${ev.leadId}`);
+  revalidatePath('/calendar');
+  return { ok: true };
+}
+
 // ====================== ЗАМЕТКИ ======================
 
 const addNoteSchema = z.object({
@@ -627,23 +826,34 @@ export async function addNote(input: z.infer<typeof addNoteSchema>) {
   if (!lead) throw new Error('Лид не найден');
   assert(canEditLead(user, lead));
 
-  // Парсинг @упоминаний — ищем @email или @login
+  // Парсинг @упоминаний
   const mentionRegex = /@([a-zA-Z0-9._-]+)/g;
-  const matches = [...data.body.matchAll(mentionRegex)].map((m) => m[1].toLowerCase());
+  const matches = [...data.body.matchAll(mentionRegex)]
+    .map((m) => m[1].toLowerCase())
+    .filter((m) => m.length >= 2);
+  const uniqueMatches = [...new Set(matches)];
 
-  const mentionedUsers = matches.length
+  // Резолвим в юзеров: либо по email login-части, либо по имени (contains).
+  // Прежняя версия использовала `name: { in: matches }` — это НИКОГДА не
+  // срабатывало ("Yuliia Hura" ≠ "yuliia"). Исправлено на contains+insensitive.
+  const orConditions = uniqueMatches.flatMap((m) => {
+    const conds: Array<Record<string, unknown>> = [
+      { email: { startsWith: `${m}@`, mode: 'insensitive' as const } },
+    ];
+    if (m.length >= 3) {
+      conds.push({ name: { contains: m, mode: 'insensitive' as const } });
+    }
+    return conds;
+  });
+
+  const mentionedUsers = orConditions.length
     ? await db.user.findMany({
-        where: {
-          OR: [
-            { email: { in: matches.map((m) => `${m}@azgroup.pl`) } },
-            { name:  { in: matches, mode: 'insensitive' } },
-          ],
-        },
+        where: { OR: orConditions, isActive: true },
         select: { id: true },
       })
     : [];
 
-  const mentionIds = mentionedUsers.map((u) => u.id);
+  const mentionIds = [...new Set(mentionedUsers.map((u) => u.id))];
 
   await db.$transaction([
     db.note.create({
@@ -664,7 +874,6 @@ export async function addNote(input: z.infer<typeof addNoteSchema>) {
     }),
   ]);
 
-  // Уведомления упомянутым (push + БД)
   for (const mentionedId of mentionIds.filter((id) => id !== user.id)) {
     await notify({
       userId: mentionedId,
