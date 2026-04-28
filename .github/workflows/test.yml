@@ -43,8 +43,11 @@ jobs:
           POSTGRES_PASSWORD: crm
           POSTGRES_DB:       azgroup_crm
         ports: ['5432:5432']
+        # ВАЖНО: -d azgroup_crm — иначе pg_isready использует db=username=crm,
+        # которой нет, и healthcheck возвращает exit 1 ("rejecting connections"),
+        # засоряя логи 60+ ошибками "database 'crm' does not exist".
         options: >-
-          --health-cmd "pg_isready -U crm"
+          --health-cmd "pg_isready -U crm -d azgroup_crm"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
