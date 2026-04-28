@@ -1,5 +1,4 @@
 // Integration: settings/team — upsertUser + toggleActive + resetPassword
-// Критичные пути: bcrypt.hash, защита единственного админа.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type AnyFn = ReturnType<typeof vi.fn>;
@@ -44,15 +43,15 @@ describe('upsertUser — создание', () => {
       .rejects.toThrow();
   });
   it('zod: invalid role → throw', async () => {
-    await expect(upsertUser({ email: 'test@example.com', name: 'AA', role: 'GUEST', password: '123456' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'GUEST', password: '123456' } as never))
       .rejects.toThrow();
   });
   it('создание без пароля → throw', async () => {
-    await expect(upsertUser({ email: 'test@example.com', name: 'AA', role: 'SALES' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'SALES' } as never))
       .rejects.toThrow('Пароль должен');
   });
   it('создание с паролем <6 символов → throw', async () => {
-    await expect(upsertUser({ email: 'test@example.com', name: 'AA', role: 'SALES', password: '12345' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'SALES', password: '12345' } as never))
       .rejects.toThrow('Пароль должен');
   });
   it('создание → bcrypt.hash + user.create + audit user.create', async () => {
@@ -62,7 +61,6 @@ describe('upsertUser — создание', () => {
     } as never);
     expect(mockBcryptHash).toHaveBeenCalledWith('secret123', 10);
     const call = mockDb.user.create.mock.calls[0][0];
-    // email lowercase + trim
     expect(call.data.email).toBe('new@user.com');
     expect(call.data.passwordHash).toBe('HASHED:secret123');
     expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'user.create' }));
@@ -72,14 +70,14 @@ describe('upsertUser — создание', () => {
 describe('upsertUser — обновление', () => {
   it('без пароля → обновляет без passwordHash', async () => {
     await upsertUser({
-      id: 'u-1', email: 'test@example.com', name: 'X', role: 'SALES',
+      id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES',
     } as never);
     const call = mockDb.user.update.mock.calls[0][0];
     expect(call.data.passwordHash).toBeUndefined();
   });
   it('с паролем >=6 → хеширует и обновляет hash', async () => {
     await upsertUser({
-      id: 'u-1', email: 'test@example.com', name: 'X', role: 'SALES', password: 'newpass',
+      id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES', password: 'newpass',
     } as never);
     expect(mockBcryptHash).toHaveBeenCalledWith('newpass', 10);
     const call = mockDb.user.update.mock.calls[0][0];
@@ -87,7 +85,7 @@ describe('upsertUser — обновление', () => {
   });
   it('с коротким паролем (<6) → игнорируется при обновлении', async () => {
     await upsertUser({
-      id: 'u-1', email: 'test@example.com', name: 'X', role: 'SALES', password: '12',
+      id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES', password: '12',
     } as never);
     expect(mockBcryptHash).not.toHaveBeenCalled();
     const call = mockDb.user.update.mock.calls[0][0];

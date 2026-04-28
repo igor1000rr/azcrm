@@ -31,6 +31,9 @@ vi.mock('next/headers', () => ({
   cookies: vi.fn(async () => cookieStore),
 }));
 
+type CallbackRes = { status: number; url: string };
+type AuthRes     = { status: number; url?: string; data?: { error: string } };
+
 const mockDb = {
   user: { update: vi.fn() as AnyFn },
 };
@@ -77,15 +80,14 @@ describe('GET /api/google/auth', () => {
   it('Google не настроен → 500 с понятным message', async () => {
     mockIsGoogleConfigured.mockReturnValue(false);
     const { GET } = await import('@/app/api/google/auth/route');
-    const res = await GET() as { status: number; data: { error: string } };
+    const res = (await GET()) as AuthRes;
     expect(res.status).toBe(500);
-    expect(res.data.error).toMatch(/GOOGLE_CLIENT_ID/);
+    expect(res.data?.error).toMatch(/GOOGLE_CLIENT_ID/);
   });
   it('успех → выставляет cookie state и редирект', async () => {
     const { GET } = await import('@/app/api/google/auth/route');
-    const res = await GET() as { status: number; url?: string };
+    const res = (await GET()) as AuthRes;
     expect(res.status).toBe(302);
-    // cookie state выставлена в формате userId:nonce
     expect(cookieSet).toHaveBeenCalledWith(
       'google_oauth_state',
       expect.stringMatching(/^u-1:[a-f0-9]+$/),
@@ -111,39 +113,31 @@ describe('GET /api/google/auth', () => {
 describe('GET /api/google/callback', () => {
   it('Google ответил error= → redirect ?google=error', async () => {
     const { GET } = await import('@/app/api/google/callback/route');
-    const res = await GET(makeReq('http://localhost/api/google/callback?error=access_denied') as never)
-      as { status: number; url: string };
+    const res = (await GET(makeReq('http://localhost/api/google/callback?error=access_denied') as never)) as CallbackRes;
     expect(res.status).toBe(302);
     expect(res.url).toContain('google=error');
   });
   it('нет code → redirect ?google=missing', async () => {
     const { GET } = await import('@/app/api/google/callback/route');
-    const res = await GET(makeReq('http://localhost/api/google/callback?state=u-1:abc') as never)
-      as { status: number; url: string };
+    const res = (await GET(makeReq('http://localhost/api/google/callback?state=u-1:abc') as never)) as CallbackRes;
     expect(res.url).toContain('google=missing');
   });
   it('нет state → redirect ?google=missing', async () => {
     const { GET } = await import('@/app/api/google/callback/route');
-    const res = await GET(makeReq('http://localhost/api/google/callback?code=AUTH_CODE') as never)
-      as { status: number; url: string };
+    const res = (await GET(makeReq('http://localhost/api/google/callback?code=AUTH_CODE') as never)) as CallbackRes;
     expect(res.url).toContain('google=missing');
   });
   it('CSRF: state в запросе НЕ совпадает с cookie → redirect ?google=csrf', async () => {
     _cookieMap.set('google_oauth_state', 'u-1:nonce-A');
     const { GET } = await import('@/app/api/google/callback/route');
-    const res = await GET(
-      makeReq('http://localhost/api/google/callback?code=X&state=u-evil:nonce-B') as never,
-    ) as { status: number; url: string };
+    const res = (await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-evil:nonce-B') as never)) as CallbackRes;
     expect(res.url).toContain('google=csrf');
     expect(mockExchangeCodeForTokens).not.toHaveBeenCalled();
     expect(mockDb.user.update).not.toHaveBeenCalled();
   });
   it('CSRF: cookie отсутствует → redirect ?google=csrf', async () => {
-    // _cookieMap пустой
     const { GET } = await import('@/app/api/google/callback/route');
-    const res = await GET(
-      makeReq('http://localhost/api/google/callback?code=X&state=u-1:abc') as never,
-    ) as { status: number; url: string };
+    const res = (await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-1:abc') as never)) as CallbackRes;
     expect(res.url).toContain('google=csrf');
   });
   it('успех: токены приходят → user.update с expiresAt и redirect ?google=connected', async () => {
@@ -154,9 +148,7 @@ describe('GET /api/google/callback', () => {
       expires_in:    3600,
     });
     const { GET } = await import('@/app/api/google/callback/route');
-    const res = await GET(
-      makeReq('http://localhost/api/google/callback?code=AUTH&state=u-1:nonce-1') as never,
-    ) as { status: number; url: string };
+    const res = (await GET(makeReq('http://localhost/api/google/callback?code=AUTH&state=u-1:nonce-1') as never)) as CallbackRes;
     expect(res.url).toContain('google=connected');
     expect(mockDb.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -169,28 +161,23 @@ describe('GET /api/google/callback', () => {
         }),
       }),
     );
-    // cookie state очищен (не используется повторно)
     expect(cookieDelete).toHaveBeenCalledWith('google_oauth_state');
   });
   it('успех без refresh_token → обновляет без перезаписи (undefined)', async () => {
     _cookieMap.set('google_oauth_state', 'u-1:nonce-1');
     mockExchangeCodeForTokens.mockResolvedValue({
       access_token: 'AT-only', expires_in: 3600,
-      // refresh_token отсутствует — Google не всегда присылает повторно
     });
     const { GET } = await import('@/app/api/google/callback/route');
     await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-1:nonce-1') as never);
     const updateCall = mockDb.user.update.mock.calls[0][0];
-    // Ключ присутствует с значением undefined — Prisma интерпретирует это как «не трогать поле»
     expect(updateCall.data.googleRefreshToken).toBeUndefined();
   });
   it('exchangeCodeForTokens бросил исключение → redirect ?google=failed', async () => {
     _cookieMap.set('google_oauth_state', 'u-1:nonce-1');
     mockExchangeCodeForTokens.mockRejectedValue(new Error('Network'));
     const { GET } = await import('@/app/api/google/callback/route');
-    const res = await GET(
-      makeReq('http://localhost/api/google/callback?code=X&state=u-1:nonce-1') as never,
-    ) as { status: number; url: string };
+    const res = (await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-1:nonce-1') as never)) as CallbackRes;
     expect(res.url).toContain('google=failed');
     expect(mockDb.user.update).not.toHaveBeenCalled();
   });
@@ -200,9 +187,7 @@ describe('GET /api/google/callback', () => {
       access_token: 'AT', refresh_token: 'RT', expires_in: 3600,
     });
     const { GET } = await import('@/app/api/google/callback/route');
-    await GET(
-      makeReq('http://localhost/api/google/callback?code=X&state=u-real-id:long-random-nonce-with-dashes') as never,
-    );
+    await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-real-id:long-random-nonce-with-dashes') as never);
     expect(mockDb.user.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'u-real-id' } }),
     );
