@@ -54,6 +54,11 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
     }),
   ]);
 
+  // Экспорт в Excel — только для ADMIN и LEGAL.
+  // SALES (менеджер продаж) не должен иметь возможность массово выгружать
+  // финансовую информацию.
+  const canExport = user.role === 'ADMIN' || user.role === 'LEGAL';
+
   return (
     <>
       <Topbar breadcrumbs={[{ label: 'CRM' }, { label: 'Оплаты' }]} />
@@ -84,9 +89,11 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
               <span className="text-ink-3">Сумма:</span>{' '}
               <strong className="text-success font-mono">{formatMoney(agg._sum.amount ?? 0)} zł</strong>
             </div>
-            <Button>
-              <Download size={12} /> Excel
-            </Button>
+            {canExport && (
+              <Button>
+                <Download size={12} /> Excel
+              </Button>
+            )}
           </div>
         </div>
 
