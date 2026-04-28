@@ -16,6 +16,7 @@ export default async function TeamPage() {
       id: true, email: true, name: true, role: true, phone: true,
       isActive: true, lastSeenAt: true, createdAt: true,
       googleConnectedAt: true,
+      commissionPercent: true,
       _count: {
         select: {
           salesLeads: { where: { isArchived: false } },
@@ -38,6 +39,7 @@ export default async function TeamPage() {
           lastSeenAt: u.lastSeenAt?.toISOString() ?? null,
           createdAt:  u.createdAt.toISOString(),
           googleConnected: !!u.googleConnectedAt,
+          commissionPercent: u.commissionPercent != null ? Number(u.commissionPercent) : null,
           activeLeadsCount: u._count.salesLeads + u._count.legalLeads,
         }))}
       />
