@@ -3,7 +3,7 @@
 // UI: управление пользователями
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Edit3, Power, Key, CheckCircle } from 'lucide-react';
+import { Plus, Edit3, Power, Key, CheckCircle, Percent } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import { Input, Select, FormField } from '@/components/ui/input';
 import { formatRelative } from '@/lib/utils';
 import {
   upsertUser, toggleUserActive, resetUserPassword,
+  setUserCommissionPercent,
 } from './actions';
 import type { UserRole } from '@prisma/client';
 
@@ -26,6 +27,7 @@ interface UserLite {
   createdAt: string;
   googleConnected: boolean;
   activeLeadsCount: number;
+  commissionPercent: number | null;
 }
 
 export function TeamView({ users }: { users: UserLite[] }) {
@@ -51,6 +53,12 @@ export function TeamView({ users }: { users: UserLite[] }) {
         <Button variant="primary" className="ml-auto" onClick={() => setCreating(true)}>
           <Plus size={12} /> Добавить сотрудника
         </Button>
+      </div>
+
+      <div className="bg-info-bg border border-info/20 rounded-md px-3 py-2 mb-3 text-[12px] text-info-2 leading-relaxed">
+        <strong>Премии:</strong> SALES получает % с 1-го платежа клиента,
+        LEGAL — со 2-го. Если у сотрудника задан персональный %, он
+        перебивает % из услуги.
       </div>
 
       <div className="flex flex-col gap-3">
@@ -102,6 +110,9 @@ function RoleGroup({
   const label = role === 'ADMIN' ? 'Администраторы' :
                 role === 'SALES' ? 'Менеджеры продаж' : 'Менеджеры легализации';
 
+  // ADMIN не получает комиссий → поле % не показываем
+  const showCommission = role !== 'ADMIN';
+
   return (
     <div className="bg-paper border border-line rounded-lg overflow-hidden">
       <div className="px-4 py-2.5 border-b border-line bg-bg">
@@ -127,6 +138,15 @@ function RoleGroup({
                 {u.lastSeenAt && <span>· был {formatRelative(u.lastSeenAt)}</span>}
               </div>
             </div>
+
+            {showCommission && (
+              <CommissionInput
+                userId={u.id}
+                value={u.commissionPercent}
+                roleLabel={role === 'SALES' ? '1-й платёж' : '2-й платёж'}
+              />
+            )}
+
             <div className="flex gap-1.5">
               <Button size="sm" onClick={() => onEdit(u)}>
                 <Edit3 size={11} />
@@ -145,6 +165,57 @@ function RoleGroup({
   );
 }
 
+/**
+ * Inline-редактор персонального %. На пустом значении (null) показывает
+ * плейсхолдер «авто» и подсказывает что используется дефолт услуги.
+ */
+function CommissionInput({
+  userId, value, roleLabel,
+}: { userId: string; value: number | null; roleLabel: string }) {
+  const router = useRouter();
+  const [val, setVal] = useState<string>(value != null ? String(value) : '');
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    const trimmed = val.trim();
+    const num = trimmed === '' ? null : Number(trimmed);
+    if (num !== null && (isNaN(num) || num < 0 || num > 100)) {
+      alert('% должен быть от 0 до 100');
+      setVal(value != null ? String(value) : '');
+      return;
+    }
+    if (num === value || (num === null && value === null)) return;
+
+    setBusy(true);
+    try {
+      await setUserCommissionPercent(userId, num);
+      router.refresh();
+    } catch (e) {
+      alert((e as Error).message);
+      setVal(value != null ? String(value) : '');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="flex items-center gap-1 shrink-0" title={`Премия за ${roleLabel}`}>
+      <Percent size={11} className="text-ink-4" />
+      <input
+        type="number"
+        min="0"
+        max="100"
+        step="0.5"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+        disabled={busy}
+        placeholder="авто"
+        className="w-14 px-1.5 py-1 text-[12px] font-mono text-center bg-paper border border-line rounded-md focus:border-navy focus:outline-none"
+      />
+    </div>
+  );
+}
+
 function UserFormModal({
   user, onClose,
 }: {
@@ -157,6 +228,9 @@ function UserFormModal({
   const [role, setRole]         = useState<UserRole>(user?.role ?? 'SALES');
   const [phone, setPhone]       = useState(user?.phone ?? '');
   const [password, setPassword] = useState('');
+  const [commissionPercent, setCommissionPercent] = useState<string>(
+    user?.commissionPercent != null ? String(user.commissionPercent) : '',
+  );
   const [busy, setBusy]         = useState(false);
   const [err, setErr]           = useState<string | null>(null);
 
@@ -164,6 +238,11 @@ function UserFormModal({
     setErr(null);
     setBusy(true);
     try {
+      const cpTrimmed = commissionPercent.trim();
+      const cp = cpTrimmed === '' ? null : Number(cpTrimmed);
+      if (cp !== null && (isNaN(cp) || cp < 0 || cp > 100)) {
+        throw new Error('Комиссия должна быть от 0 до 100');
+      }
       await upsertUser({
         id:       user?.id,
         email,
@@ -172,6 +251,7 @@ function UserFormModal({
         phone:    phone || null,
         password: password || undefined,
         isActive: user?.isActive ?? true,
+        commissionPercent: cp,
       });
       router.refresh();
       onClose();
@@ -212,6 +292,25 @@ function UserFormModal({
             </Select>
           </FormField>
         </div>
+
+        {role !== 'ADMIN' && (
+          <FormField
+            label="Комиссия %"
+            hint={role === 'SALES'
+              ? 'Получает с 1-го платежа клиента (предоплата). Пусто = брать % из услуги.'
+              : 'Получает со 2-го платежа клиента (после закрытия). Пусто = брать % из услуги.'}
+          >
+            <Input
+              type="number"
+              min="0"
+              max="100"
+              step="0.5"
+              value={commissionPercent}
+              onChange={(e) => setCommissionPercent(e.target.value)}
+              placeholder="например 5"
+            />
+          </FormField>
+        )}
 
         <FormField
           label={user ? 'Новый пароль (оставьте пустым чтобы не менять)' : 'Пароль'}
