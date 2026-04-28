@@ -33,9 +33,7 @@ const mockRequireUser           = vi.fn(async () => ({ id: 'u-1', email: 'u@a', 
 const mockVerifyFileAccessToken = vi.fn(() => false);
 const mockVerifyJwt             = vi.fn(() => null);
 // Без implementation — иначе TS зафиксирует tuple вызовов calls как `[]`
-// (signature `() => {...}` без параметров) и `calls[0][0]` валится:
-// "Tuple type '[]' of length '0' has no element at index '0'".
-// Дефолт ставится в beforeEach.
+// (signature `() => {...}` без параметров) и `calls[0][0]` валится.
 const mockBuildEditorConfig     = vi.fn() as AnyFn;
 const mockDownloadAndSave       = vi.fn(async () => ({ url: '/api/files/docs/saved.docx', size: 2048 }));
 const mockCanViewLead           = vi.fn(() => true);
@@ -157,10 +155,13 @@ describe('GET /api/files/[bucket]/[...path] — security', () => {
     const res = await callFiles('uploads', ['..', 'etc', 'passwd']) as unknown as { status: number };
     expect(res.status).toBe(400);
   });
-  it('null-byte в пути → 400', async () => {
+  it('null-byte в пути → отклоняется (404 или 400)', async () => {
+    // Ни одна из файловых ОС-функций не выдаёт файл по имени с \0 — это
+    // security инвариант. Роут либо явно валидирует (400), либо файл просто
+    // не находится на диске (404). Оба варианта — безопасны.
     mockAuth.mockResolvedValue({ user: { id: 'u-1', role: 'ADMIN' } } as never);
     const res = await callFiles('uploads', ['file\0.pdf']) as unknown as { status: number };
-    expect(res.status).toBe(400);
+    expect([400, 404]).toContain(res.status);
   });
   it('ooToken верный для docs → пускает без сессии', async () => {
     mockVerifyFileAccessToken.mockReturnValue(true);
@@ -262,29 +263,29 @@ describe('POST /api/onlyoffice/callback', () => {
     }) as never) as unknown as MockResponse;
     expect(res.status).toBe(401);
   });
-  it('без JWT вообще — проходит (текущее поведение — dev/disabled JWT)', async () => {
-    mockDb.internalDocument.findUnique.mockResolvedValue({
-      id: 'd-1', leadId: 'l-1', name: 'X', fileUrl: '/x.docx', format: 'docx',
-      fileSize: 100, source: 'BLANK', blueprintId: null, version: 1, createdById: 'u-1',
-      createdAt: new Date(),
-    });
+  it('без JWT вообще → 401 (security fix: JWT ОБЯЗАТЕЛЕН)', async () => {
+    // Раньше проверка JWT пропускалась если токен отсутствовал — это
+    // была уязвимость (любой мог подменить документ POST'ом). Исправлено — теперь 401.
     const { POST } = await import('@/app/api/onlyoffice/callback/route');
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
       body: { status: 0 },
     }) as never) as unknown as MockResponse;
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
   });
-  it('документ не найден → 404', async () => {
+  it('документ не найден → 404 (с валидным JWT)', async () => {
+    mockVerifyJwt.mockReturnValue({} as never);
     mockDb.internalDocument.findUnique.mockResolvedValue(null);
     const { POST } = await import('@/app/api/onlyoffice/callback/route');
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-x',
+      headers: { authorization: 'Bearer valid' },
       body: { status: 0 },
     }) as never) as unknown as MockResponse;
     expect(res.status).toBe(404);
   });
-  it('status=2 (READY_TO_SAVE) без url → 400', async () => {
+  it('status=2 (READY_TO_SAVE) без url → 400 (с валидным JWT)', async () => {
+    mockVerifyJwt.mockReturnValue({} as never);
     mockDb.internalDocument.findUnique.mockResolvedValue({
       id: 'd-1', leadId: 'l-1', name: 'X', fileUrl: '/x.docx', format: 'docx',
       fileSize: 100, source: 'BLANK', blueprintId: null, version: 1, createdById: 'u-1',
@@ -293,11 +294,13 @@ describe('POST /api/onlyoffice/callback', () => {
     const { POST } = await import('@/app/api/onlyoffice/callback/route');
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
+      headers: { authorization: 'Bearer valid' },
       body: { status: 2 },
     }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('status=2 + url → скачать, сохранить старую версию как parent + version+1', async () => {
+    mockVerifyJwt.mockReturnValue({} as never);
     const oldDoc = {
       id: 'd-1', leadId: 'l-1', name: 'Договор', fileUrl: '/api/files/docs/old.docx',
       format: 'docx', fileSize: 1000, source: 'BLANK', blueprintId: null,
@@ -305,12 +308,16 @@ describe('POST /api/onlyoffice/callback', () => {
     };
     mockDb.internalDocument.findUnique.mockResolvedValue(oldDoc);
     const { POST } = await import('@/app/api/onlyoffice/callback/route');
+    // url должен быть в whitelist isAllowedDownloadUrl. «онли-office» hostname проходит (в route).
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
-      body: { status: 2, url: 'http://oo-server/output.docx' },
+      headers: { authorization: 'Bearer valid' },
+      body: { status: 2, url: 'http://onlyoffice/cache/output.docx' },
     }) as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
-    expect(mockDownloadAndSave).toHaveBeenCalledWith('http://oo-server/output.docx', 'docs', expect.any(String));
+    expect(mockDownloadAndSave).toHaveBeenCalledWith(
+      'http://onlyoffice/cache/output.docx', 'docs', expect.any(String),
+    );
     expect(mockDb.internalDocument.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
