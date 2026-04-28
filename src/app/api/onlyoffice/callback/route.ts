@@ -3,18 +3,51 @@
 // Status=2 — нужно скачать обновлённый файл и сохранить.
 //
 // БЕЗОПАСНОСТЬ:
-//  - JWT-токен ОБЯЗАТЕЛЕН (без него — 401, иначе можно подменить файл документа)
-//  - body.url проверяется по whitelist хостов (защита от SSRF: ранее можно было
-//    скормить ссылку на metadata-сервис AWS или внутренний http-сервис)
+//  1. JWT-токен ОБЯЗАТЕЛЕН (раньше при отсутствии токена проверка пропускалась —
+//     любой мог подменить документ POST'ом без auth).
+//  2. body.url проверяется по hostname против белого списка (ONLYOFFICE_PUBLIC_URL
+//     и APP_INTERNAL_URL) — иначе SSRF: можно было заставить скачать любой URL.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
-  verifyJwt, OOCallbackStatus, isAllowedDownloadUrl,
-  type OOCallbackBody,
+  verifyJwt, OOCallbackStatus, type OOCallbackBody,
 } from '@/lib/onlyoffice';
 import { downloadAndSave } from '@/lib/storage';
 import path from 'node:path';
+
+/**
+ * Разрешённые источники файла OnlyOffice. Помимо публичного URL — внутренний
+ * адрес app в docker-сети, потому что callback ходит изнутри.
+ */
+function isAllowedDownloadUrl(rawUrl: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+
+  const allowedHosts = new Set<string>();
+  for (const env of [
+    process.env.ONLYOFFICE_PUBLIC_URL,
+    process.env.ONLYOFFICE_INTERNAL_URL,
+    process.env.APP_INTERNAL_URL,
+    process.env.APP_PUBLIC_URL,
+  ]) {
+    if (!env) continue;
+    try {
+      allowedHosts.add(new URL(env).hostname);
+    } catch {}
+  }
+  // В docker-compose сервис называется 'onlyoffice' — допускаем по умолчанию
+  allowedHosts.add('onlyoffice');
+  allowedHosts.add('localhost');
+  allowedHosts.add('127.0.0.1');
+
+  return allowedHosts.has(u.hostname);
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,15 +58,13 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json() as OOCallbackBody & { token?: string };
 
-    // OnlyOffice присылает токен либо в Authorization, либо в body.token
-    const authHeader  = req.headers.get('authorization') ?? '';
+    // Токен либо в Authorization, либо в body.token. ОБЯЗАТЕЛЕН.
+    const authHeader = req.headers.get('authorization') ?? '';
     const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
     const token = headerToken || body.token;
 
-    // Без токена — отказ. Раньше было `if (token) { check }` — пустой токен
-    // пропускал callback и позволял подменить файл произвольным содержимым.
     if (!token) {
-      return NextResponse.json({ error: 1, message: 'unauthorized: token required' }, { status: 401 });
+      return NextResponse.json({ error: 1, message: 'unauthorized' }, { status: 401 });
     }
     const verified = verifyJwt<OOCallbackBody>(token);
     if (!verified) {
@@ -57,14 +88,14 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 1, message: 'no url' }, { status: 400 });
         }
 
-        // SSRF-защита: качаем только с заранее известных хостов OnlyOffice
+        // Защита от SSRF — URL должен быть с разрешённого OO-сервера
         if (!isAllowedDownloadUrl(body.url)) {
-          console.error(`[onlyoffice/callback] untrusted url rejected: ${body.url}`);
+          console.error('[onlyoffice/callback] rejected url:', body.url);
           return NextResponse.json({ error: 1, message: 'untrusted url' }, { status: 400 });
         }
 
         const ext = path.extname(doc.fileUrl);
-        const newFileName = `${doc.name.replace(/[^\w\s.-]/g, '_')}${ext}`;
+        const newFileName = `${doc.name.replace(/[^\\w\\s.-]/g, '_')}${ext}`;
         const saved = await downloadAndSave(body.url, 'docs', newFileName);
 
         await db.$transaction(async (tx) => {

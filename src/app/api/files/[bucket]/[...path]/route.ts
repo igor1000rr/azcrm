@@ -1,12 +1,9 @@
 // GET /api/files/<bucket>/<path...>
 // Отдаёт файлы из storage. Доступ:
-//  - 'avatars' — публично (для img-тегов в UI без auth)
-//  - все остальные ('docs', 'uploads', 'wa-media', ...) — требуют сессию
+//  - 'avatars' — публично (для аватарок в UI без auth)
+//  - 'uploads', 'docs', 'wa-media' — нужна авторизация
+//      (PII клиентов: паспорта, фото из WhatsApp, и т.д.)
 //  - 'blueprints', 'expenses' — только ADMIN
-//
-// wa-media раньше был публичным, но содержит фото паспортов и пр. PII —
-// предсказуемый URL утекал бы в логи, history, screenshot'ы.
-// Теперь требует сессию (CRM-only — все юзеры авторизованы).
 //
 // Для OnlyOffice сервера, который ходит за файлом без сессии, поддерживается
 // query-параметр ?ooToken=<JWT> — short-lived подпись на конкретный путь.
@@ -51,8 +48,8 @@ export async function GET(
     return new NextResponse('Not found', { status: 404 });
   }
 
-  // Только аватары пользователей публичны (для <img> без auth).
-  // Всё остальное требует авторизации.
+  // Только аватарки публичные. wa-media тоже требует auth — могут содержать
+  // фотки паспортов клиентов, изначально предсказуемые имена.
   const isPublicBucket = bucket === 'avatars';
 
   // OnlyOffice сервер скачивает docs по подписанному URL без сессии.
@@ -72,6 +69,7 @@ export async function GET(
     if (!session?.user) {
       return new NextResponse('Unauthorized', { status: 401 });
     }
+    // Админские bucket'ы — только для ADMIN
     if ((bucket === 'blueprints' || bucket === 'expenses') && session.user.role !== 'ADMIN') {
       return new NextResponse('Forbidden', { status: 403 });
     }
@@ -79,10 +77,11 @@ export async function GET(
 
   // Защита от path-traversal
   const storedName = pathSegments.join('/');
-  if (storedName.includes('..') || storedName.includes('\0')) {
+  if (storedName.includes('..') || storedName.includes('\\0')) {
     return new NextResponse('Bad request', { status: 400 });
   }
 
+  // Существование
   const fullPath = path.resolve(STORAGE_ROOT, bucket, storedName);
   const bucketRoot = path.resolve(STORAGE_ROOT, bucket);
   if (!fullPath.startsWith(bucketRoot + path.sep)) {
@@ -99,7 +98,9 @@ export async function GET(
   const ext = path.extname(storedName).toLowerCase();
   const contentType = MIME_TYPES[ext] ?? 'application/octet-stream';
 
+  // Стримим — без полного буфера в память
   const nodeStream = streamFile(bucket as 'docs', storedName);
+  // Конвертация Node.js stream → Web ReadableStream
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
 
   return new NextResponse(webStream, {
