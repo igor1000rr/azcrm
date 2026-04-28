@@ -690,14 +690,19 @@ export async function setFingerprintDate(
 
 /**
  * Дополнительное вызвание (kind=EXTRA_CALL).
- * Отличие от отпечатков: их может быть НЕСКОЛЬКО на лид, и они не хранятся
- * на самом лиде (в отличие от fingerprintDate). Просто события в calendarEvents.
+ * Их может быть НЕСКОЛЬКО на лид, и они не хранятся на самом лиде
+ * (в отличие от fingerprintDate). Просто события в calendarEvents.
+ *
+ * Семантика двух дат:
+ *   - notifiedAt — когда УВ прислал уведомление (для истории)
+ *   - dueDate    — дедлайн донести запрошенные документы (это и попадает
+ *                  в Google Calendar как основная дата напоминания)
  */
 export async function addExtraCall(input: {
-  leadId:    string;
-  date:      string;
-  location?: string | null;
-  title?:    string | null;
+  leadId:      string;
+  notifiedAt:  string;        // дата получения уведомления
+  dueDate:     string;        // дедлайн донести документы
+  title?:      string | null; // что именно запрошено («запрос документов: ...»)
 }) {
   const user = await requireUser();
 
@@ -711,22 +716,36 @@ export async function addExtraCall(input: {
   if (!lead) throw new Error('Лид не найден');
   assert(canEditLead(user, lead));
 
-  const dt = new Date(input.date);
-  if (isNaN(dt.getTime())) throw new Error('Некорректная дата');
+  const notifiedDt = new Date(input.notifiedAt);
+  const dueDt      = new Date(input.dueDate);
+  if (isNaN(notifiedDt.getTime())) throw new Error('Некорректная дата вызвания');
+  if (isNaN(dueDt.getTime()))      throw new Error('Некорректный срок');
+  if (dueDt < notifiedDt) throw new Error('Срок не может быть раньше даты вызвания');
 
-  const title = input.title?.trim() || `Доп. вызвание: ${lead.client.fullName}`;
-  const location = input.location?.trim() || null;
+  const requestText = input.title?.trim() || `Запрос документов`;
+  const fullTitle = `Доп. вызвание: ${lead.client.fullName} — ${requestText}`;
+
+  // Дата для отображения "от 14.04.2026 по 21.04.2026"
+  const fmt = (d: Date) => d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const periodLabel = `от ${fmt(notifiedDt)} по ${fmt(dueDt)}`;
+
+  const description = [
+    `Клиент: ${lead.client.fullName}`,
+    `Телефон: ${lead.client.phone}`,
+    `Период: ${periodLabel}`,
+    `Запрос: ${requestText}`,
+  ].join('\n');
 
   const event = await db.$transaction(async (tx) => {
     const created = await tx.calendarEvent.create({
       data: {
-        leadId:    lead.id,
-        ownerId:   lead.legalManagerId,
-        kind:      'EXTRA_CALL',
-        title,
-        location:  location || undefined,
-        startsAt:  dt,
-        endsAt:    new Date(dt.getTime() + 30 * 60 * 1000),
+        leadId:      lead.id,
+        ownerId:     lead.legalManagerId,
+        kind:        'EXTRA_CALL',
+        title:       fullTitle,
+        description,
+        startsAt:    dueDt,                                // дедлайн = точка в календаре
+        endsAt:      new Date(dueDt.getTime() + 30 * 60 * 1000),
       },
     });
 
@@ -735,8 +754,13 @@ export async function addExtraCall(input: {
         leadId:   lead.id,
         authorId: user.id,
         kind:     'EXTRA_CALL_SET',
-        message:  `Доп. вызвание: ${dt.toLocaleString('ru-RU')}${location ? ` — ${location}` : ''}`,
-        payload:  { eventId: created.id, date: dt.toISOString(), location },
+        message:  `Доп. вызвание ${periodLabel}: ${requestText}`,
+        payload:  {
+          eventId:    created.id,
+          notifiedAt: notifiedDt.toISOString(),
+          dueDate:    dueDt.toISOString(),
+          request:    requestText,
+        },
       },
     });
 
@@ -747,11 +771,10 @@ export async function addExtraCall(input: {
   if (lead.legalManagerId) {
     const { createGoogleEvent } = await import('@/lib/google');
     const googleId = await createGoogleEvent(lead.legalManagerId, {
-      summary:     title,
-      description: `Клиент: ${lead.client.fullName}\nТелефон: ${lead.client.phone}`,
-      location:    location || undefined,
-      start: { dateTime: dt.toISOString(), timeZone: 'Europe/Warsaw' },
-      end:   { dateTime: new Date(dt.getTime() + 30 * 60 * 1000).toISOString(), timeZone: 'Europe/Warsaw' },
+      summary:     fullTitle,
+      description,
+      start: { dateTime: dueDt.toISOString(), timeZone: 'Europe/Warsaw' },
+      end:   { dateTime: new Date(dueDt.getTime() + 30 * 60 * 1000).toISOString(), timeZone: 'Europe/Warsaw' },
       reminders: {
         useDefault: false,
         overrides: [
