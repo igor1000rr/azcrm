@@ -395,6 +395,19 @@ const addPaymentSchema = z.object({
   notes:  z.string().optional(),
 });
 
+/**
+ * Логика начисления комиссий (Anna 28.04.2026):
+ *   - SALES (менеджер продаж, кто привёл клиента) получает % от ПЕРВОГО
+ *     платежа лида (sequence=1, обычно предоплата).
+ *   - LEGAL (специалист по легализации, кто закрывает дело) получает %
+ *     от ВТОРОГО платежа (sequence=2, обычно финальный после закрытия).
+ *   - Платежи sequence=3+ комиссий не генерируют.
+ *
+ * % берётся в порядке приоритета:
+ *   1. User.commissionPercent (персональный, если задан)
+ *   2. Service.salesCommissionPercent / legalCommissionPercent (по основной услуге)
+ *   3. 5% по умолчанию
+ */
 export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
   const user = await requireUser();
   const data = addPaymentSchema.parse(input);
@@ -402,24 +415,26 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
   const lead = await db.lead.findUnique({
     where: { id: data.leadId },
     select: {
-      id: true, salesManagerId: true, legalManagerId: true,
+      id: true,
+      salesManagerId: true,
+      legalManagerId: true,
       service: { select: { salesCommissionPercent: true, legalCommissionPercent: true } },
+      // Персональные % менеджеров — приоритетнее % услуги
+      salesManager:   { select: { commissionPercent: true } },
+      legalManager:   { select: { commissionPercent: true } },
     },
   });
   if (!lead) throw new Error('Лид не найден');
   assert(canEditLead(user, lead));
 
-  // Глобальная настройка: с какого платежа начинать начислять комиссии
-  const setting = await db.setting.findUnique({
-    where: { key: 'commission.startFromPaymentNumber' },
-  });
-  const startFromN = Number(setting?.value ?? 2) || 2;
-
-  // Дефолтные % комиссии (если у лида не задана услуга)
-  const defaultSalesPct = 5;
-  const defaultLegalPct = 5;
-  const salesPct = lead.service ? Number(lead.service.salesCommissionPercent) : defaultSalesPct;
-  const legalPct = lead.service ? Number(lead.service.legalCommissionPercent) : defaultLegalPct;
+  // Резолвим эффективный % для SALES и LEGAL по приоритету
+  const FALLBACK_PCT = 5;
+  const salesPct = lead.salesManager?.commissionPercent != null
+    ? Number(lead.salesManager.commissionPercent)
+    : (lead.service ? Number(lead.service.salesCommissionPercent) : FALLBACK_PCT);
+  const legalPct = lead.legalManager?.commissionPercent != null
+    ? Number(lead.legalManager.commissionPercent)
+    : (lead.service ? Number(lead.service.legalCommissionPercent) : FALLBACK_PCT);
 
   // Создание платежа + комиссий + события атомарно с retry на P2002
   // (race condition: два параллельных addPayment могут получить одинаковый
@@ -435,7 +450,6 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
           _max:  { sequence: true },
         });
         const sequence = (last._max.sequence ?? 0) + 1;
-        const shouldCalcCommission = sequence >= startFromN;
 
         const payment = await tx.payment.create({
           data: {
@@ -449,39 +463,49 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
           },
         });
 
-        if (shouldCalcCommission) {
-          const commissionsToCreate: Array<{
-            paymentId: string;
-            userId: string;
-            role: 'SALES' | 'LEGAL';
-            basePayment: number;
-            percent: number;
-            amount: number;
-          }> = [];
+        // Кому начисляем комиссию по этому платежу:
+        //   sequence=1 → SALES (менеджер продаж получает свой %)
+        //   sequence=2 → LEGAL (менеджер легализации получает свой %)
+        //   sequence>=3 → никому
+        let commissionRole: 'SALES' | 'LEGAL' | null = null;
+        let commissionUserId: string | null = null;
+        let commissionPct = 0;
 
-          if (lead.salesManagerId && salesPct > 0) {
-            commissionsToCreate.push({
+        if (sequence === 1 && lead.salesManagerId && salesPct > 0) {
+          commissionRole   = 'SALES';
+          commissionUserId = lead.salesManagerId;
+          commissionPct    = salesPct;
+        } else if (sequence === 2 && lead.legalManagerId && legalPct > 0) {
+          commissionRole   = 'LEGAL';
+          commissionUserId = lead.legalManagerId;
+          commissionPct    = legalPct;
+        }
+
+        const commissionAmount = commissionRole
+          ? Math.round((data.amount * commissionPct) / 100 * 100) / 100
+          : 0;
+
+        if (commissionRole && commissionUserId) {
+          await tx.commission.create({
+            data: {
               paymentId:   payment.id,
-              userId:      lead.salesManagerId,
-              role:        'SALES',
+              userId:      commissionUserId,
+              role:        commissionRole,
               basePayment: data.amount,
-              percent:     salesPct,
-              amount:      Math.round((data.amount * salesPct) / 100 * 100) / 100,
-            });
-          }
-          if (lead.legalManagerId && legalPct > 0) {
-            commissionsToCreate.push({
-              paymentId:   payment.id,
-              userId:      lead.legalManagerId,
-              role:        'LEGAL',
-              basePayment: data.amount,
-              percent:     legalPct,
-              amount:      Math.round((data.amount * legalPct) / 100 * 100) / 100,
-            });
-          }
-          if (commissionsToCreate.length > 0) {
-            await tx.commission.createMany({ data: commissionsToCreate });
-          }
+              percent:     commissionPct,
+              amount:      commissionAmount,
+            },
+          });
+        }
+
+        // Сообщение для истории — что начислено и кому
+        let commissionNote = '';
+        if (commissionRole === 'SALES') {
+          commissionNote = `, премия SALES ${commissionPct}% = ${commissionAmount} zł`;
+        } else if (commissionRole === 'LEGAL') {
+          commissionNote = `, премия LEGAL ${commissionPct}% = ${commissionAmount} zł`;
+        } else if (sequence >= 3) {
+          commissionNote = ' (без премий — платёж #' + sequence + ')';
         }
 
         await tx.leadEvent.create({
@@ -489,8 +513,15 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
             leadId:   data.leadId,
             authorId: user.id,
             kind:     'PAYMENT_ADDED',
-            message:  `+${data.amount} zł (${methodLabel(data.method)}, платёж #${sequence}${shouldCalcCommission ? ', начислены комиссии' : ''})`,
-            payload:  { paymentId: payment.id, amount: data.amount, method: data.method, sequence },
+            message:  `+${data.amount} zł (${methodLabel(data.method)}, платёж #${sequence}${commissionNote})`,
+            payload:  {
+              paymentId: payment.id,
+              amount:    data.amount,
+              method:    data.method,
+              sequence,
+              commissionRole,
+              commissionAmount,
+            },
           },
         });
 
