@@ -6,7 +6,7 @@ import { notFound } from 'next/navigation';
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { canViewLead } from '@/lib/permissions';
+import { canViewLead, whatsappAccountFilter } from '@/lib/permissions';
 import { LeadCardView } from './lead-card-view';
 
 export const dynamic = 'force-dynamic';
@@ -115,6 +115,49 @@ export default async function LeadPage({ params }: PageProps) {
     },
     orderBy: { createdAt: 'desc' },
     take: 10,
+  });
+
+  // ============ ОБЪЕДИНЁННАЯ ПЕРЕПИСКА КЛИЕНТА ============
+  // Anna хочет видеть всю историю общения по клиенту независимо от
+  // того с какого канала писали. Собираем сообщения со всех каналов
+  // которые пользователю доступны (через whatsappAccountFilter).
+  //
+  // Также подгружаем СПИСОК доступных каналов для селектора при ответе:
+  //   ADMIN — все активные
+  //   SALES/LEGAL — свои (ownerId == user.id) + общие (ownerId == null)
+
+  const visibleAccountFilter = whatsappAccountFilter(user);
+
+  const clientThreads = await db.chatThread.findMany({
+    where: {
+      clientId:        lead.clientId,
+      channel:         'WHATSAPP',
+      whatsappAccount: visibleAccountFilter,
+    },
+    select: { id: true },
+  });
+  const threadIds = clientThreads.map((t) => t.id);
+
+  const chatMessagesRaw = threadIds.length === 0 ? [] : await db.chatMessage.findMany({
+    where: { threadId: { in: threadIds } },
+    orderBy: { createdAt: 'asc' },
+    take: 500,                                         // последние 500 — хватит для большинства лидов
+    include: {
+      sender:          { select: { name: true } },
+      whatsappAccount: { select: { id: true, label: true } },
+    },
+  });
+
+  const availableChatAccounts = await db.whatsappAccount.findMany({
+    where: { isActive: true, ...visibleAccountFilter },
+    select: {
+      id:          true,
+      label:       true,
+      phoneNumber: true,
+      isConnected: true,
+      ownerId:     true,
+    },
+    orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],   // общие (ownerId=null) первыми
   });
 
   const paid = lead.payments.reduce((sum, p) => sum + Number(p.amount), 0);
@@ -255,6 +298,27 @@ export default async function LeadPage({ params }: PageProps) {
         }))}
         team={team}
         attorneys={attorneys}
+        chatMessages={chatMessagesRaw.map((m) => ({
+          id:           m.id,
+          direction:    m.direction,
+          type:         m.type,
+          body:         m.body,
+          mediaUrl:     m.mediaUrl,
+          mediaName:    m.mediaName,
+          createdAt:    m.createdAt.toISOString(),
+          isRead:       m.isRead,
+          deliveredAt:  m.deliveredAt?.toISOString() ?? null,
+          senderName:   m.sender?.name ?? null,
+          accountId:    m.whatsappAccount?.id ?? '',
+          accountLabel: m.whatsappAccount?.label ?? '?',
+        }))}
+        availableChatAccounts={availableChatAccounts.map((a) => ({
+          id:          a.id,
+          label:       a.label,
+          phoneNumber: a.phoneNumber,
+          isConnected: a.isConnected,
+          isShared:    a.ownerId === null,
+        }))}
       />
     </>
   );
