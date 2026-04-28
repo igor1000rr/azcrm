@@ -16,8 +16,9 @@ vi.mock('next/server', () => ({
 }));
 
 // next/headers — cookies() store через closure (избегаем `this` parameter внутри vi.fn).
+// cookieSet принимает 3-й аргумент options — реальный код вызывает cookies.set(name, value, opts).
 const _cookieMap = new Map<string, string>();
-const cookieSet    = vi.fn((name: string, value: string) => { _cookieMap.set(name, value); });
+const cookieSet    = vi.fn((name: string, value: string, _opts?: unknown) => { _cookieMap.set(name, value); void _opts; });
 const cookieDelete = vi.fn((name: string) => { _cookieMap.delete(name); });
 const cookieStore = {
   get: (name: string) => {
@@ -99,13 +100,13 @@ describe('GET /api/google/auth', () => {
   it('cookie maxAge=600 (10 мин) и path=/', async () => {
     const { GET } = await import('@/app/api/google/auth/route');
     await GET();
-    const setCall = cookieSet.mock.calls[0];
+    const setCall = cookieSet.mock.calls[0]!;
     expect(setCall[2]).toMatchObject({ maxAge: 600, path: '/' });
   });
   it('buildAuthUrl вызывается с тем же state что в cookie', async () => {
     const { GET } = await import('@/app/api/google/auth/route');
     await GET();
-    const cookieState = cookieSet.mock.calls[0][1];
+    const cookieState = cookieSet.mock.calls[0]![1];
     expect(mockBuildAuthUrl).toHaveBeenCalledWith(cookieState);
   });
 });
@@ -170,7 +171,7 @@ describe('GET /api/google/callback', () => {
     });
     const { GET } = await import('@/app/api/google/callback/route');
     await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-1:nonce-1') as never);
-    const updateCall = mockDb.user.update.mock.calls[0][0];
+    const updateCall = mockDb.user.update.mock.calls[0]![0];
     expect(updateCall.data.googleRefreshToken).toBeUndefined();
   });
   it('exchangeCodeForTokens бросил исключение → redirect ?google=failed', async () => {
