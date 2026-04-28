@@ -9,7 +9,7 @@ import {
   Inbox, LayoutGrid, Users, Calendar, CreditCard,
   CheckSquare, Zap, BarChart3, Phone, MessageSquare,
   Settings, X, Menu, Activity, Wallet, Receipt, ListChecks, Clock,
-  Cake,
+  Cake, MapPin,
 } from 'lucide-react';
 import { Logo } from './logo';
 import { Avatar } from './ui/avatar';
@@ -80,6 +80,7 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
   const settingsItems: NavItem[] = [
     { href: '/settings/team',           label: 'Команда',          icon: Users,         roles: ['ADMIN'] },
     { href: '/settings/funnels',        label: 'Воронки',          icon: BarChart3,     roles: ['ADMIN'] },
+    { href: '/settings/cities',         label: 'Города',           icon: MapPin,        roles: ['ADMIN'] },
     { href: '/settings/channels',       label: 'WhatsApp каналы',  icon: MessageSquare, roles: ['ADMIN'] },
     { href: '/settings/blueprints',     label: 'Шаблоны Word',     icon: Settings,      roles: ['ADMIN'] },
     { href: '/settings/chat-templates', label: 'Шаблоны сообщений', icon: Settings,     roles: ['ADMIN'] },
