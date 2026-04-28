@@ -1,6 +1,8 @@
 'use server';
 
-// Конфиг ЗП менеджера: ставка/час, фикс., налог
+// Конфиг ЗП менеджера: ставка/час, ZUS, PIT
+// Старые поля fixedSalary/taxAmount остаются в БД для совместимости
+// со старыми данными, но в новом UI не используются.
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
@@ -8,11 +10,11 @@ import { requireAdmin } from '@/lib/auth';
 import { audit } from '@/lib/audit';
 
 const schema = z.object({
-  userId:      z.string(),
-  hourlyRate:  z.coerce.number().min(0).default(0),
-  fixedSalary: z.coerce.number().min(0).default(0),
-  taxAmount:   z.coerce.number().min(0).default(0),
-  notes:       z.string().optional(),
+  userId:     z.string(),
+  hourlyRate: z.coerce.number().min(0).default(0),
+  zus:        z.coerce.number().min(0).default(0),
+  pit:        z.coerce.number().min(0).default(0),
+  notes:      z.string().optional(),
 });
 
 export async function upsertPayrollConfig(input: z.infer<typeof schema>) {
@@ -24,16 +26,16 @@ export async function upsertPayrollConfig(input: z.infer<typeof schema>) {
     where: { userId: data.userId },
     update: {
       hourlyRate: data.hourlyRate,
-      fixedSalary: data.fixedSalary,
-      taxAmount: data.taxAmount,
-      notes: data.notes || null,
+      zus:        data.zus,
+      pit:        data.pit,
+      notes:      data.notes || null,
     },
     create: {
-      userId: data.userId,
+      userId:     data.userId,
       hourlyRate: data.hourlyRate,
-      fixedSalary: data.fixedSalary,
-      taxAmount: data.taxAmount,
-      notes: data.notes || null,
+      zus:        data.zus,
+      pit:        data.pit,
+      notes:      data.notes || null,
     },
   });
 
