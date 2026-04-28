@@ -1,11 +1,11 @@
 'use client';
 
-// UI: список каналов WhatsApp + подключение через QR
+// UI: два списка каналов (WhatsApp через QR + Telegram через BotFather token)
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Plus, QrCode, Smartphone, Trash2, Edit3, Power,
-  CheckCircle, XCircle, Loader2, RefreshCw,
+  CheckCircle, XCircle, Loader2, RefreshCw, Send,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,98 +15,152 @@ import { cn, formatRelative, formatPhone } from '@/lib/utils';
 import {
   upsertWhatsappAccount, deleteWhatsappAccount, toggleWhatsappAccount,
 } from './actions';
+import {
+  connectTelegramBot, disconnectTelegramBot, toggleTelegramBot,
+} from './telegram-actions';
 import type { UserRole } from '@prisma/client';
 
-interface AccountLite {
-  id: string;
-  phoneNumber: string;
-  label: string;
-  ownerId: string | null;
-  ownerName: string | null;
-  isConnected: boolean;
-  isActive: boolean;
+interface WaAccount {
+  id: string; phoneNumber: string; label: string;
+  ownerId: string | null; ownerName: string | null;
+  isConnected: boolean; isActive: boolean;
   lastSeenAt: string | null;
-  threadsCount: number;
-  messagesCount: number;
+  threadsCount: number; messagesCount: number;
 }
+
+interface TgAccount {
+  id: string; botUsername: string; label: string;
+  ownerId: string | null; ownerName: string | null;
+  isConnected: boolean; isActive: boolean;
+  webhookUrl: string | null;
+  lastSeenAt: string | null;
+  threadsCount: number; messagesCount: number;
+}
+
+interface UserLite { id: string; name: string; role: UserRole }
 
 interface Props {
-  accounts: AccountLite[];
-  users: Array<{ id: string; name: string; role: UserRole }>;
+  waAccounts: WaAccount[];
+  tgAccounts: TgAccount[];
+  users:      UserLite[];
 }
 
-export function ChannelsView({ accounts, users }: Props) {
-  const [editing, setEditing]   = useState<AccountLite | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [qrFor, setQrFor]       = useState<AccountLite | null>(null);
+export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
+  // WhatsApp стейт
+  const [editingWa, setEditingWa]   = useState<WaAccount | null>(null);
+  const [creatingWa, setCreatingWa] = useState(false);
+  const [qrFor, setQrFor]           = useState<WaAccount | null>(null);
+
+  // Telegram стейт
+  const [creatingTg, setCreatingTg] = useState(false);
 
   return (
-    <div className="p-4 md:p-5 max-w-[1100px] w-full">
-      <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
-        <div>
-          <h2 className="text-[15px] font-bold tracking-tight">WhatsApp каналы</h2>
-          <p className="text-[12px] text-ink-3 mt-0.5">
-            {accounts.length} {plural(accounts.length, 'канал', 'канала', 'каналов')} ·
-            {' '}{accounts.filter((a) => a.isConnected).length} подключено
-          </p>
-        </div>
-        <Button variant="primary" className="ml-auto" onClick={() => setCreating(true)}>
-          <Plus size={12} /> Добавить канал
-        </Button>
-      </div>
+    <div className="p-4 md:p-5 max-w-[1100px] w-full flex flex-col gap-4">
 
-      <div className="bg-paper border border-line rounded-lg overflow-hidden">
-        {accounts.length === 0 ? (
-          <div className="p-10 text-center">
-            <Smartphone size={36} className="mx-auto text-ink-5 mb-3" />
-            <h3 className="text-[14px] font-semibold mb-1">Каналов пока нет</h3>
-            <p className="text-[12px] text-ink-3">
-              Добавьте номер телефона и подключите его через QR-код
+      {/* ============= WHATSAPP ============= */}
+      <section>
+        <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
+          <div className="w-9 h-9 rounded-md bg-wa text-white grid place-items-center shrink-0">
+            <Smartphone size={16} />
+          </div>
+          <div>
+            <h2 className="text-[15px] font-bold tracking-tight">WhatsApp каналы</h2>
+            <p className="text-[12px] text-ink-3 mt-0.5">
+              {waAccounts.length} {plural(waAccounts.length, 'канал', 'канала', 'каналов')} ·
+              {' '}{waAccounts.filter((a) => a.isConnected).length} подключено
             </p>
           </div>
-        ) : (
-          <div className="divide-y divide-line">
-            {accounts.map((a) => (
-              <ChannelRow
-                key={a.id}
-                account={a}
-                onEdit={() => setEditing(a)}
-                onConnect={() => setQrFor(a)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+          <Button variant="primary" className="ml-auto" onClick={() => setCreatingWa(true)}>
+            <Plus size={12} /> Добавить номер
+          </Button>
+        </div>
 
-      <p className="text-[11px] text-ink-4 mt-3">
-        Канал без владельца — общий, видят все менеджеры.
-        Канал с владельцем — личный, видит только указанный менеджер.
+        <div className="bg-paper border border-line rounded-lg overflow-hidden">
+          {waAccounts.length === 0 ? (
+            <div className="p-8 text-center">
+              <Smartphone size={32} className="mx-auto text-ink-5 mb-2" />
+              <p className="text-[12.5px] text-ink-3">Номеров пока нет. Нажмите «Добавить номер» и подключите через QR.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-line">
+              {waAccounts.map((a) => (
+                <WaRow
+                  key={a.id}
+                  account={a}
+                  onEdit={() => setEditingWa(a)}
+                  onConnect={() => setQrFor(a)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ============= TELEGRAM ============= */}
+      <section>
+        <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
+          <div className="w-9 h-9 rounded-md bg-info text-white grid place-items-center shrink-0">
+            <Send size={16} />
+          </div>
+          <div>
+            <h2 className="text-[15px] font-bold tracking-tight">Telegram боты</h2>
+            <p className="text-[12px] text-ink-3 mt-0.5">
+              {tgAccounts.length} {plural(tgAccounts.length, 'бот', 'бота', 'ботов')} ·
+              {' '}{tgAccounts.filter((a) => a.isConnected).length} подключено
+            </p>
+          </div>
+          <Button variant="primary" className="ml-auto" onClick={() => setCreatingTg(true)}>
+            <Plus size={12} /> Добавить бота
+          </Button>
+        </div>
+
+        <div className="bg-paper border border-line rounded-lg overflow-hidden">
+          {tgAccounts.length === 0 ? (
+            <div className="p-8 text-center">
+              <Send size={32} className="mx-auto text-ink-5 mb-2" />
+              <p className="text-[12.5px] text-ink-3 mb-1">Ботов пока нет.</p>
+              <p className="text-[11px] text-ink-4">Создайте бота у <a href="https://t.me/BotFather" target="_blank" rel="noopener" className="text-navy hover:underline font-mono">@BotFather</a> и введите его токен.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-line">
+              {tgAccounts.map((a) => (
+                <TgRow key={a.id} account={a} />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <p className="text-[11px] text-ink-4">
+        Канал без владельца — общий, видят все менеджеры. Канал с владельцем — личный, видит только указанный менеджер.
       </p>
 
-      {/* Модалка создания/редактирования */}
-      {(editing || creating) && (
-        <AccountFormModal
-          account={editing}
+      {/* Модалки WhatsApp */}
+      {(editingWa || creatingWa) && (
+        <WaFormModal
+          account={editingWa}
           users={users}
-          onClose={() => { setEditing(null); setCreating(false); }}
+          onClose={() => { setEditingWa(null); setCreatingWa(false); }}
         />
       )}
+      {qrFor && <QrConnectModal account={qrFor} onClose={() => setQrFor(null)} />}
 
-      {/* Модалка QR */}
-      {qrFor && (
-        <QrConnectModal
-          account={qrFor}
-          onClose={() => setQrFor(null)}
-        />
+      {/* Модалка Telegram */}
+      {creatingTg && (
+        <TgConnectModal users={users} onClose={() => setCreatingTg(false)} />
       )}
     </div>
   );
 }
 
-function ChannelRow({
+// ============================================================
+// WHATSAPP ряд и модалки
+// ============================================================
+
+function WaRow({
   account, onEdit, onConnect,
 }: {
-  account: AccountLite;
+  account: WaAccount;
   onEdit: () => void;
   onConnect: () => void;
 }) {
@@ -114,26 +168,19 @@ function ChannelRow({
 
   async function onDelete() {
     if (!confirm(`Удалить канал «${account.label}»? Переписки сохранятся.`)) return;
-    try {
-      await deleteWhatsappAccount(account.id);
-      router.refresh();
-    } catch (e) { console.error(e); alert('Ошибка удаления'); }
+    try { await deleteWhatsappAccount(account.id); router.refresh(); }
+    catch (e) { console.error(e); alert('Ошибка удаления'); }
   }
-
   async function onToggle() {
-    try {
-      await toggleWhatsappAccount(account.id, !account.isActive);
-      router.refresh();
-    } catch (e) { console.error(e); }
+    try { await toggleWhatsappAccount(account.id, !account.isActive); router.refresh(); }
+    catch (e) { console.error(e); }
   }
 
   return (
     <div className="px-5 py-3.5 flex items-center gap-3 flex-wrap">
       <div className="flex items-center gap-3 flex-1 min-w-[260px]">
-        <div className={cn(
-          'w-10 h-10 rounded-md grid place-items-center shrink-0',
-          account.isConnected ? 'bg-success-bg text-success' : 'bg-bg text-ink-4',
-        )}>
+        <div className={cn('w-10 h-10 rounded-md grid place-items-center shrink-0',
+          account.isConnected ? 'bg-success-bg text-success' : 'bg-bg text-ink-4')}>
           <Smartphone size={16} />
         </div>
         <div className="flex-1 min-w-0">
@@ -158,34 +205,24 @@ function ChannelRow({
 
       <div className="flex gap-1.5 ml-auto">
         {!account.isConnected && account.isActive && (
-          <Button variant="primary" size="sm" onClick={onConnect}>
-            <QrCode size={11} /> Подключить
-          </Button>
+          <Button variant="primary" size="sm" onClick={onConnect}><QrCode size={11} /> Подключить</Button>
         )}
         {account.isConnected && (
-          <Button variant="warn" size="sm" onClick={onConnect}>
-            <RefreshCw size={11} /> Переподключить
-          </Button>
+          <Button variant="warn" size="sm" onClick={onConnect}><RefreshCw size={11} /> Переподключить</Button>
         )}
-        <Button size="sm" onClick={onEdit} title="Редактировать">
-          <Edit3 size={11} />
-        </Button>
-        <Button size="sm" onClick={onToggle} title={account.isActive ? 'Отключить' : 'Включить'}>
-          <Power size={11} />
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onDelete} title="Удалить">
-          <Trash2 size={11} />
-        </Button>
+        <Button size="sm" onClick={onEdit} title="Редактировать"><Edit3 size={11} /></Button>
+        <Button size="sm" onClick={onToggle} title={account.isActive ? 'Отключить' : 'Включить'}><Power size={11} /></Button>
+        <Button size="sm" variant="ghost" onClick={onDelete} title="Удалить"><Trash2 size={11} /></Button>
       </div>
     </div>
   );
 }
 
-function AccountFormModal({
+function WaFormModal({
   account, users, onClose,
 }: {
-  account: AccountLite | null;
-  users: Array<{ id: string; name: string; role: UserRole }>;
+  account: WaAccount | null;
+  users: UserLite[];
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -199,31 +236,22 @@ function AccountFormModal({
     setBusy(true);
     try {
       await upsertWhatsappAccount({
-        id:          account?.id,
-        phoneNumber: phone,
-        label,
-        ownerId:     ownerId || null,
+        id: account?.id, phoneNumber: phone, label, ownerId: ownerId || null,
       });
-      router.refresh();
-      onClose();
+      router.refresh(); onClose();
     } catch (e) { console.error(e); alert((e as Error).message); }
     finally { setBusy(false); }
   }
 
   return (
-    <Modal
-      open={true}
-      onClose={onClose}
+    <Modal open={true} onClose={onClose}
       title={account ? 'Редактирование канала' : 'Новый канал WhatsApp'}
-      footer={
-        <>
-          <Button onClick={onClose}>Отмена</Button>
-          <Button variant="primary" onClick={save} disabled={busy || !phone || !label}>
-            {busy ? 'Сохранение...' : 'Сохранить'}
-          </Button>
-        </>
-      }
-    >
+      footer={<>
+        <Button onClick={onClose}>Отмена</Button>
+        <Button variant="primary" onClick={save} disabled={busy || !phone || !label}>
+          {busy ? 'Сохранение...' : 'Сохранить'}
+        </Button>
+      </>}>
       <div className="flex flex-col gap-3">
         <FormField label="Номер телефона" required hint="В международном формате с +">
           <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+48 731 006 935" />
@@ -249,7 +277,7 @@ function AccountFormModal({
 function QrConnectModal({
   account, onClose,
 }: {
-  account: AccountLite;
+  account: WaAccount;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -264,8 +292,7 @@ function QrConnectModal({
     async function start() {
       try {
         const res = await fetch('/api/whatsapp/connect', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ accountId: account.id }),
         });
         const data = await res.json();
@@ -277,23 +304,15 @@ function QrConnectModal({
           return;
         }
         if (data.status === 'qr' && data.qr) {
-          setQrUrl(data.qr);
-          setStatus('qr');
-          startPolling();
-          return;
+          setQrUrl(data.qr); setStatus('qr'); startPolling(); return;
         }
         if (data.status === 'failed') {
           setError(data.error || 'не удалось подключиться');
-          setStatus('failed');
-          return;
+          setStatus('failed'); return;
         }
-        setStatus('connecting');
-        startPolling();
+        setStatus('connecting'); startPolling();
       } catch (e) {
-        if (!cancelled) {
-          setError((e as Error).message);
-          setStatus('failed');
-        }
+        if (!cancelled) { setError((e as Error).message); setStatus('failed'); }
       }
     }
 
@@ -301,40 +320,29 @@ function QrConnectModal({
       pollRef.current = setInterval(async () => {
         try {
           const res = await fetch('/api/whatsapp/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ accountId: account.id }),
           });
           const data = await res.json();
           if (cancelled) return;
 
           if (data.status === 'ready') {
-            setStatus('ready');
-            stopPolling();
+            setStatus('ready'); stopPolling();
             setTimeout(() => { router.refresh(); onClose(); }, 1500);
           } else if (data.status === 'qr' && data.qr && data.qr !== qrUrl) {
             setQrUrl(data.qr);
           } else if (data.status === 'failed') {
-            setStatus('failed');
-            stopPolling();
+            setStatus('failed'); stopPolling();
           }
         } catch {}
       }, 2000);
     }
-
     function stopPolling() {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
 
     start();
-
-    return () => {
-      cancelled = true;
-      stopPolling();
-    };
+    return () => { cancelled = true; stopPolling(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.id]);
 
@@ -347,7 +355,6 @@ function QrConnectModal({
             <p className="text-[13px] text-ink-3">Подготовка...</p>
           </div>
         )}
-
         {status === 'qr' && qrUrl && (
           <>
             <div className="bg-white border border-line rounded-lg p-4 inline-block mb-4">
@@ -363,21 +370,18 @@ function QrConnectModal({
             </ol>
           </>
         )}
-
         {status === 'connecting' && (
           <div className="py-8">
             <Loader2 size={32} className="mx-auto text-info animate-spin mb-3" />
             <p className="text-[13px] text-ink-3">Авторизация...</p>
           </div>
         )}
-
         {status === 'ready' && (
           <div className="py-8">
             <CheckCircle size={36} className="mx-auto text-success mb-3" />
             <h3 className="text-[15px] font-bold text-success">Подключено!</h3>
           </div>
         )}
-
         {status === 'failed' && (
           <div className="py-8">
             <XCircle size={36} className="mx-auto text-danger mb-3" />
@@ -386,6 +390,138 @@ function QrConnectModal({
           </div>
         )}
       </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// TELEGRAM ряд и модалка подключения
+// ============================================================
+
+function TgRow({ account }: { account: TgAccount }) {
+  const router = useRouter();
+
+  async function onDelete() {
+    if (!confirm(`Отключить бота @${account.botUsername}? Переписки сохранятся, но новых сообщений не будет.`)) return;
+    try { await disconnectTelegramBot(account.id); router.refresh(); }
+    catch (e) { alert((e as Error).message); }
+  }
+  async function onToggle() {
+    try { await toggleTelegramBot(account.id, !account.isActive); router.refresh(); }
+    catch (e) { alert((e as Error).message); }
+  }
+
+  return (
+    <div className="px-5 py-3.5 flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-1 min-w-[260px]">
+        <div className={cn('w-10 h-10 rounded-md grid place-items-center shrink-0',
+          account.isConnected ? 'bg-info-bg text-info' : 'bg-bg text-ink-4')}>
+          <Send size={16} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <strong className="text-[14px] text-ink">{account.label}</strong>
+            {account.isConnected
+              ? <Badge variant="success" withDot>webhook активен</Badge>
+              : <Badge variant="default">не подключён</Badge>}
+            {!account.isActive && <Badge variant="default">отключён</Badge>}
+            {!account.ownerId && <Badge variant="gold">общий</Badge>}
+          </div>
+          <div className="text-[11.5px] text-ink-3 mt-0.5 flex flex-wrap gap-x-3">
+            <a href={`https://t.me/${account.botUsername}`} target="_blank" rel="noopener" className="font-mono text-navy hover:underline">@{account.botUsername}</a>
+            {account.ownerName && <span>· {account.ownerName}</span>}
+            <span>· {account.threadsCount} переписок</span>
+            {account.lastSeenAt && (
+              <span>· webhook поднят {formatRelative(account.lastSeenAt)}</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 ml-auto">
+        <Button size="sm" onClick={onToggle} title={account.isActive ? 'Отключить' : 'Включить'}><Power size={11} /></Button>
+        <Button size="sm" variant="ghost" onClick={onDelete} title="Удалить"><Trash2 size={11} /></Button>
+      </div>
+    </div>
+  );
+}
+
+function TgConnectModal({
+  users, onClose,
+}: {
+  users: UserLite[];
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [token, setToken]     = useState('');
+  const [label, setLabel]     = useState('');
+  const [ownerId, setOwnerId] = useState('');
+  const [busy, setBusy]       = useState(false);
+  const [error, setError]     = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  async function save() {
+    setError(null); setBusy(true);
+    try {
+      const res = await connectTelegramBot({
+        token: token.trim(),
+        label: label.trim() || `Бот ${token.slice(0, 6)}…`,
+        ownerId: ownerId || null,
+      });
+      setSuccess(`Подключён @${res.botUsername}`);
+      setTimeout(() => { router.refresh(); onClose(); }, 1500);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title="Подключение Telegram-бота"
+      footer={<>
+        <Button onClick={onClose} disabled={busy}>Отмена</Button>
+        <Button variant="primary" onClick={save} disabled={busy || !token || token.length < 40}>
+          {busy ? 'Подключение...' : 'Подключить'}
+        </Button>
+      </>}>
+      {success ? (
+        <div className="py-6 text-center">
+          <CheckCircle size={36} className="mx-auto text-success mb-3" />
+          <h3 className="text-[15px] font-bold text-success">{success}</h3>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="bg-info-bg border border-info/20 rounded-md px-3 py-2.5 text-[12px] text-ink-2 leading-relaxed">
+            <strong className="block text-info mb-1">Как получить токен:</strong>
+            1. Откройте <a href="https://t.me/BotFather" target="_blank" rel="noopener" className="text-navy hover:underline font-mono">@BotFather</a> в Telegram<br />
+            2. Команда <code className="font-mono bg-bg px-1">/newbot</code> → выберите имя и username (должен оканчиваться на <code>bot</code>)<br />
+            3. BotFather пришлёт токен вида <code className="font-mono">123456789:AAH...</code> — вставьте его ниже
+          </div>
+          <FormField label="Токен бота" required hint="Из @BotFather, формат 12345:ABC...">
+            <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="123456789:AAH..." autoFocus />
+          </FormField>
+          <FormField label="Название" hint="Как будет отображаться в списке">
+            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Общий / Anna / ..." />
+          </FormField>
+          <FormField label="Владелец" hint="Если выбрать — личный, иначе общий">
+            <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+              <option value="">— общий бот (видят все) —</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.role === 'ADMIN' ? 'Админ' : u.role === 'SALES' ? 'Продажи' : 'Легализация'})
+                </option>
+              ))}
+            </Select>
+          </FormField>
+          {error && (
+            <div className="bg-danger-bg border border-danger/20 text-danger text-[12.5px] p-2.5 rounded-md">
+              {error}
+            </div>
+          )}
+          <p className="text-[11px] text-ink-4">
+            После подключения любое сообщение в бота автоматически создаёт лид в воронке «Консультация» и появляется в /inbox.
+            Требует чтобы APP_PUBLIC_URL в .env был публичным HTTPS-адресом.
+          </p>
+        </div>
+      )}
     </Modal>
   );
 }
