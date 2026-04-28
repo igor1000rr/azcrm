@@ -1,0 +1,212 @@
+// Integration: API routes — google/auth (CSRF state cookie) + google/callback (OAuth)
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+type AnyFn = ReturnType<typeof vi.fn>;
+
+vi.mock('next/server', () => ({
+  NextResponse: {
+    json: (data: unknown, init?: { status?: number }) => ({
+      status: init?.status ?? 200, data, json: async () => data,
+    }),
+    redirect: (url: URL | string) => ({
+      status: 302, url: url.toString(),
+      headers: new Map([['location', url.toString()]]),
+    }),
+  },
+}));
+
+// next/headers — cookies() store mock
+const cookieStore = {
+  _store: new Map<string, string>(),
+  get(name: string) {
+    const value = this._store.get(name);
+    return value !== undefined ? { name, value } : undefined;
+  },
+  set: vi.fn(function (this: typeof cookieStore, name: string, value: string) {
+    this._store.set(name, value);
+  }),
+  delete: vi.fn(function (this: typeof cookieStore, name: string) {
+    this._store.delete(name);
+  }),
+};
+vi.mock('next/headers', () => ({
+  cookies: vi.fn(async () => cookieStore),
+}));
+
+const mockDb = {
+  user: { update: vi.fn() as AnyFn },
+};
+const mockRequireUser           = vi.fn(async () => ({ id: 'u-1', email: 'u@a', name: 'Ivan', role: 'SALES' }));
+const mockBuildAuthUrl          = vi.fn(() => 'https://accounts.google.com/o/oauth2/auth?state=...');
+const mockIsGoogleConfigured    = vi.fn(() => true);
+const mockExchangeCodeForTokens = vi.fn();
+
+vi.mock('@/lib/db',     () => ({ db: mockDb }));
+vi.mock('@/lib/auth',   () => ({
+  requireUser: mockRequireUser,
+  requireAdmin: vi.fn(),
+}));
+vi.mock('@/lib/google', () => ({
+  buildAuthUrl:           mockBuildAuthUrl,
+  isGoogleConfigured:     mockIsGoogleConfigured,
+  exchangeCodeForTokens:  mockExchangeCodeForTokens,
+}));
+
+function makeReq(url: string) {
+  const u = new URL(url);
+  return {
+    nextUrl: u,
+    url:     u.toString(),
+    headers: new Headers(),
+  } as unknown as Request;
+}
+
+beforeEach(() => {
+  cookieStore._store.clear();
+  cookieStore.set.mockClear();
+  cookieStore.delete.mockClear();
+  mockDb.user.update.mockReset();
+  mockRequireUser.mockReset();
+  mockRequireUser.mockImplementation(async () => ({ id: 'u-1', email: 'u@a', name: 'Ivan', role: 'SALES' }));
+  mockBuildAuthUrl.mockReset();
+  mockBuildAuthUrl.mockReturnValue('https://accounts.google.com/o/oauth2/auth?state=...');
+  mockIsGoogleConfigured.mockReset();
+  mockIsGoogleConfigured.mockReturnValue(true);
+  mockExchangeCodeForTokens.mockReset();
+});
+
+describe('GET /api/google/auth', () => {
+  it('Google не настроен → 500 с понятным message', async () => {
+    mockIsGoogleConfigured.mockReturnValue(false);
+    const { GET } = await import('@/app/api/google/auth/route');
+    const res = await GET() as { status: number; data: { error: string } };
+    expect(res.status).toBe(500);
+    expect(res.data.error).toMatch(/GOOGLE_CLIENT_ID/);
+  });
+  it('успех → выставляет cookie state и редирект', async () => {
+    const { GET } = await import('@/app/api/google/auth/route');
+    const res = await GET() as { status: number; url?: string };
+    expect(res.status).toBe(302);
+    // cookie state выставлена в формате userId:nonce
+    expect(cookieStore.set).toHaveBeenCalledWith(
+      'google_oauth_state',
+      expect.stringMatching(/^u-1:[a-f0-9]+$/),
+      expect.objectContaining({
+        httpOnly: true, sameSite: 'lax', maxAge: 600, path: '/',
+      }),
+    );
+  });
+  it('cookie maxAge=600 (10 мин) и path=/', async () => {
+    const { GET } = await import('@/app/api/google/auth/route');
+    await GET();
+    const setCall = cookieStore.set.mock.calls[0];
+    expect(setCall[2]).toMatchObject({ maxAge: 600, path: '/' });
+  });
+  it('buildAuthUrl вызывается с тем же state что в cookie', async () => {
+    const { GET } = await import('@/app/api/google/auth/route');
+    await GET();
+    const cookieState = cookieStore.set.mock.calls[0][1];
+    expect(mockBuildAuthUrl).toHaveBeenCalledWith(cookieState);
+  });
+});
+
+describe('GET /api/google/callback', () => {
+  it('Google ответил error= → redirect ?google=error', async () => {
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = await GET(makeReq('http://localhost/api/google/callback?error=access_denied') as never)
+      as { status: number; url: string };
+    expect(res.status).toBe(302);
+    expect(res.url).toContain('google=error');
+  });
+  it('нет code → redirect ?google=missing', async () => {
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = await GET(makeReq('http://localhost/api/google/callback?state=u-1:abc') as never)
+      as { status: number; url: string };
+    expect(res.url).toContain('google=missing');
+  });
+  it('нет state → redirect ?google=missing', async () => {
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = await GET(makeReq('http://localhost/api/google/callback?code=AUTH_CODE') as never)
+      as { status: number; url: string };
+    expect(res.url).toContain('google=missing');
+  });
+  it('CSRF: state в запросе НЕ совпадает с cookie → redirect ?google=csrf', async () => {
+    cookieStore._store.set('google_oauth_state', 'u-1:nonce-A');
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = await GET(
+      makeReq('http://localhost/api/google/callback?code=X&state=u-evil:nonce-B') as never,
+    ) as { status: number; url: string };
+    expect(res.url).toContain('google=csrf');
+    expect(mockExchangeCodeForTokens).not.toHaveBeenCalled();
+    expect(mockDb.user.update).not.toHaveBeenCalled();
+  });
+  it('CSRF: cookie отсутствует → redirect ?google=csrf', async () => {
+    // cookieStore пустой
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = await GET(
+      makeReq('http://localhost/api/google/callback?code=X&state=u-1:abc') as never,
+    ) as { status: number; url: string };
+    expect(res.url).toContain('google=csrf');
+  });
+  it('успех: токены приходят → user.update с expiresAt и redirect ?google=connected', async () => {
+    cookieStore._store.set('google_oauth_state', 'u-1:nonce-1');
+    mockExchangeCodeForTokens.mockResolvedValue({
+      access_token:  'AT-abc',
+      refresh_token: 'RT-xyz',
+      expires_in:    3600,
+    });
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = await GET(
+      makeReq('http://localhost/api/google/callback?code=AUTH&state=u-1:nonce-1') as never,
+    ) as { status: number; url: string };
+    expect(res.url).toContain('google=connected');
+    expect(mockDb.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'u-1' },
+        data: expect.objectContaining({
+          googleAccessToken:  'AT-abc',
+          googleRefreshToken: 'RT-xyz',
+          googleCalendarId:   'primary',
+          googleAccessTokenExpiresAt: expect.any(Date),
+        }),
+      }),
+    );
+    // cookie state очищен (не используется повторно)
+    expect(cookieStore.delete).toHaveBeenCalledWith('google_oauth_state');
+  });
+  it('успех без refresh_token → обновляет без перезаписи (undefined)', async () => {
+    cookieStore._store.set('google_oauth_state', 'u-1:nonce-1');
+    mockExchangeCodeForTokens.mockResolvedValue({
+      access_token: 'AT-only', expires_in: 3600,
+      // refresh_token отсутствует — Google не всегда присылает повторно
+    });
+    const { GET } = await import('@/app/api/google/callback/route');
+    await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-1:nonce-1') as never);
+    const updateCall = mockDb.user.update.mock.calls[0][0];
+    // Ключ присутствует с значением undefined — Prisma интерпретирует это как «не трогать поле»
+    expect(updateCall.data.googleRefreshToken).toBeUndefined();
+  });
+  it('exchangeCodeForTokens бросил исключение → redirect ?google=failed', async () => {
+    cookieStore._store.set('google_oauth_state', 'u-1:nonce-1');
+    mockExchangeCodeForTokens.mockRejectedValue(new Error('Network'));
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = await GET(
+      makeReq('http://localhost/api/google/callback?code=X&state=u-1:nonce-1') as never,
+    ) as { status: number; url: string };
+    expect(res.url).toContain('google=failed');
+    expect(mockDb.user.update).not.toHaveBeenCalled();
+  });
+  it('userId в user.update — берётся из state ДО двоеточия', async () => {
+    cookieStore._store.set('google_oauth_state', 'u-real-id:long-random-nonce-with-dashes');
+    mockExchangeCodeForTokens.mockResolvedValue({
+      access_token: 'AT', refresh_token: 'RT', expires_in: 3600,
+    });
+    const { GET } = await import('@/app/api/google/callback/route');
+    await GET(
+      makeReq('http://localhost/api/google/callback?code=X&state=u-real-id:long-random-nonce-with-dashes') as never,
+    );
+    expect(mockDb.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'u-real-id' } }),
+    );
+  });
+});
