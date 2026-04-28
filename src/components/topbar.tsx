@@ -13,7 +13,10 @@ interface TopbarProps {
 
 export function Topbar({ breadcrumbs, rightSlot }: TopbarProps) {
   return (
-    <header className="bg-paper border-b border-line h-[52px] flex items-center gap-3 px-4 md:px-5 sticky top-0 z-50 relative">
+    // Премиум-акцент: тонкая золотая декоративная полоса снизу под header
+    // (под основным border-line), отображается только в десктопе.
+    <header className="bg-paper border-b border-line h-[52px] flex items-center gap-3 px-4 md:px-5 sticky top-0 z-50 relative
+      after:hidden md:after:block after:absolute after:bottom-[-1px] after:left-0 after:w-32 after:h-px after:bg-gold/70">
       {/* Отступ под мобильную кнопку меню */}
       <div className="md:hidden w-9 shrink-0" />
 
@@ -23,11 +26,11 @@ export function Topbar({ breadcrumbs, rightSlot }: TopbarProps) {
           const isLast = i === breadcrumbs.length - 1;
           return (
             <div key={i} className="flex items-center gap-1.5 min-w-0">
-              {i > 0 && <span className="text-ink-5 shrink-0">/</span>}
+              {i > 0 && <span className="text-navy/30 shrink-0">/</span>}
               {isLast ? (
-                <strong className="text-ink font-semibold truncate">{crumb.label}</strong>
+                <strong className="text-navy font-bold tracking-tight truncate">{crumb.label}</strong>
               ) : crumb.href ? (
-                <a href={crumb.href} className="text-ink-4 hover:text-ink truncate">
+                <a href={crumb.href} className="text-ink-3 hover:text-navy transition-colors truncate">
                   {crumb.label}
                 </a>
               ) : (
@@ -45,7 +48,7 @@ export function Topbar({ breadcrumbs, rightSlot }: TopbarProps) {
         <NotificationsPopup />
 
         <Link href="/clients/new" className="hidden sm:inline-flex">
-          <Button variant="default">
+          <Button variant="primary">
             <Plus size={13} />
             Новый лид
           </Button>

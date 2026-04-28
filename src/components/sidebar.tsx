@@ -125,8 +125,8 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           open ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
         )}
       >
-        {/* Бренд */}
-        <div className="px-4 pb-4 border-b border-line mb-3 flex items-center justify-between">
+        {/* Бренд — тонкая золотая полоска снизу для премиум-акцента */}
+        <div className="px-4 pb-4 mb-3 flex items-center justify-between relative">
           <Link href="/" onClick={() => setOpen(false)}>
             <Logo size="sm" />
           </Link>
@@ -138,6 +138,10 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           >
             <X size={14} />
           </button>
+          {/* Тонкая декоративная полоска: серая фон + золотая первая треть */}
+          <div className="absolute bottom-0 left-4 right-4 h-px bg-line">
+            <div className="absolute left-0 top-0 h-full w-1/3 bg-gold/60" />
+          </div>
         </div>
 
         {/* Навигация */}
@@ -162,7 +166,7 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
                 onClick={() => setOpen(false)}
                 className={cn(
                   'flex items-center gap-2 px-4 py-1.5 text-[12px] text-ink-2',
-                  'hover:bg-bg hover:text-ink transition-colors',
+                  'hover:bg-navy/[0.04] hover:text-navy transition-colors',
                   wa.unread && 'font-semibold',
                 )}
               >
@@ -206,16 +210,16 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           </>
         )}
 
-        {/* Карточка юзера снизу */}
-        <div className="mt-auto px-3.5 pt-3 border-t border-line flex items-center gap-2.5">
+        {/* Карточка юзера снизу — небольшой navy фон */}
+        <div className="mt-auto mx-3 mt-3 px-3 py-2.5 rounded-lg border border-navy/10 bg-navy/[0.03] flex items-center gap-2.5">
           <Avatar name={user.name} size="md" status="online" variant="navy" />
           <div className="flex-1 min-w-0">
             <div className="text-[12px] font-semibold text-ink truncate">{user.name}</div>
-            <div className="text-[10.5px] text-ink-4">{roleLabel(user.role)}</div>
+            <div className="text-[10.5px] text-navy/70 font-medium">{roleLabel(user.role)}</div>
           </div>
           <Link
             href="/settings/profile"
-            className="text-ink-4 hover:text-ink p-1 transition-colors"
+            className="text-ink-4 hover:text-navy p-1 transition-colors"
             aria-label="Настройки"
           >
             <Settings size={14} />
@@ -229,8 +233,9 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
 // ====================== ВСПОМОГАТЕЛЬНЫЕ ======================
 
 function NavLabel({ children }: { children: React.ReactNode }) {
+  // Заголовки разделов навигации — лёгкий navy для брендового акцента
   return (
-    <div className="text-[10px] tracking-[0.12em] text-ink-4 font-semibold uppercase px-4 mt-3 mb-1">
+    <div className="text-[10px] tracking-[0.12em] text-navy/60 font-bold uppercase px-4 mt-3 mb-1">
       {children}
     </div>
   );
@@ -249,14 +254,15 @@ function NavLink({
       href={item.href}
       onClick={onClick}
       className={cn(
-        'flex items-center gap-2.5 px-4 py-1.5 text-[13px] font-medium transition-colors',
-        'border-l-2 border-transparent',
+        'flex items-center gap-2.5 px-4 py-1.5 text-[13px] font-medium transition-colors relative',
+        'border-l-[3px]',
         active
-          ? 'bg-bg text-navy border-l-gold font-semibold'
-          : 'text-ink-2 hover:bg-bg hover:text-ink',
+          // Активный пункт: лёгкий синеватый фон + navy левый бордер + золотая точка-маркер
+          ? 'bg-navy/[0.06] text-navy border-l-navy font-semibold'
+          : 'text-ink-2 border-l-transparent hover:bg-navy/[0.03] hover:text-navy hover:border-l-navy/30',
       )}
     >
-      <Icon size={15} className={cn('shrink-0', active ? 'opacity-100' : 'opacity-65')} />
+      <Icon size={15} className={cn('shrink-0', active ? 'text-navy' : 'opacity-65')} />
       <span className="flex-1">{item.label}</span>
       {item.badge !== undefined && item.badge !== 0 && (
         <span
@@ -265,7 +271,7 @@ function NavLink({
             item.pulse
               ? 'bg-danger text-white border-danger pulse-dot'
               : active
-                ? 'bg-navy text-white border-navy'
+                ? 'bg-gold text-navy border-gold/60'   // активный бейдж — gold для контраста
                 : 'bg-paper text-ink-3 border-line',
           )}
         >
