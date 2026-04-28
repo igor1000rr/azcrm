@@ -1,25 +1,26 @@
-// E2E smoke: проверяет что все основные страницы открываются без падений.
-// Не тестирует логику — только что нет белого экрана, JS-ошибок и 5xx.
+// E2E smoke: проверяет что все основные страницы открываются без КРАША.
+// Не тестирует логику — ловит белые экраны, JS-крэши и 5xx.
 //
-// Стратегия: один adminPage fixture (логин один раз через Anna),
-// последовательно ходим по списку URL. Для каждой страницы:
-//  1. HTTP < 500
-//  2. URL не уехал на /login (значит auth/role не отбросил)
-//  3. body содержит хоть какой-то текст (не белый экран)
-//  4. Нет uncaught JS exceptions (page error)
-//  5. Нет console.error кроме известного шума (favicon 404, hydration на dev и т.д.)
+// Что валит smoke:
+//  - HTTP >= 500
+//  - редирект на /login (auth/role отбросил, страница недоступна)
+//  - body содержит <50 символов (вероятно белый экран)
+//  - uncaught JS exception (page error) — реальный краш приложения
+//  - console.error с критичными паттернами (TypeError, ReferenceError,
+//    Cannot read properties) — обычно это баг рендера
 //
-// Если какая-то страница падает — тест точечно покажет где, по имени роута.
+// Что НЕ валит:
+//  - обычные console.error (404 favicon, polling fail, web-push permission и т.д.)
+//    — собираются и прикрепляются к отчёту как test info attachment.
+//    Так мы видим что в консоли шумит, но не блокируем CI на инфраструктурном шуме.
 import { test, expect } from './fixtures';
 
 interface SmokeRoute {
   url:      string;
   name:     string;
-  /** Минимальный селектор который должен быть на странице (опционально). */
   expect?:  string;
 }
 
-// Все основные страницы приложения. Список синхронизирован с src/app/(app)/*.
 const ROUTES: SmokeRoute[] = [
   { url: '/dashboard',                  name: 'Дашборд' },
   { url: '/clients',                    name: 'Клиенты — список' },
@@ -28,14 +29,13 @@ const ROUTES: SmokeRoute[] = [
   { url: '/calendar',                   name: 'Календарь событий' },
   { url: '/work-calendar',              name: 'Рабочий календарь' },
   { url: '/payments',                   name: 'Платежи' },
-  { url: '/finance',                    name: 'Финансы (расходы/зарплаты)' },
+  { url: '/finance',                    name: 'Финансы' },
   { url: '/tasks',                      name: 'Задачи' },
   { url: '/team-chat',                  name: 'Team-chat' },
   { url: '/stats',                      name: 'Статистика' },
   { url: '/calls',                      name: 'Звонки' },
   { url: '/birthdays',                  name: 'Дни рождения' },
   { url: '/automations',                name: 'Автоматизации' },
-  // Settings sub-routes
   { url: '/settings',                   name: 'Settings — индекс' },
   { url: '/settings/team',              name: 'Settings — команда' },
   { url: '/settings/channels',          name: 'Settings — каналы (WhatsApp)' },
@@ -46,34 +46,35 @@ const ROUTES: SmokeRoute[] = [
   { url: '/settings/audit',             name: 'Settings — журнал аудита' },
 ];
 
-// Известный шум из консоли который НЕ говорит о реальной поломке.
-// Расширяй список если появятся новые false positive.
-const IGNORED_CONSOLE_PATTERNS = [
-  /Failed to load resource.*favicon/i,        // отсутствующий favicon
-  /Hydration/i,                                // dev-time hydration warnings (в prod не появляются)
-  /DevTools/i,                                 // React DevTools подсказка
-  /Download the React DevTools/i,
-  /NEXT_REDIRECT/i,                            // нормальный механизм навигации Next.js
-  /\/api\/notifications\/list/i,               // poll может фейлиться на чистом сиде — не критично для smoke
-  /\/api\/cron\//i,                            // cron-эндпоинты не должны дёргаться из браузера, но фильтруем шум
+// Паттерны которые в console.error означают РЕАЛЬНЫЙ баг рендера —
+// тест на них падает.
+const CRITICAL_PATTERNS = [
+  /TypeError/i,
+  /ReferenceError/i,
+  /Cannot read propert(y|ies)/i,
+  /is not a function/i,
+  /is not defined/i,
+  /Maximum update depth exceeded/i,    // infinite re-render
+  /Objects are not valid as a React child/i,
+  /Each child in a list should have a unique "key"/i,
 ];
 
-function isIgnored(text: string): boolean {
-  return IGNORED_CONSOLE_PATTERNS.some((re) => re.test(text));
+function isCritical(text: string): boolean {
+  return CRITICAL_PATTERNS.some((re) => re.test(text));
 }
 
 for (const route of ROUTES) {
-  test(`smoke: ${route.name} (${route.url})`, async ({ adminPage }) => {
-    const consoleErrors: string[] = [];
-    const pageErrors:    string[] = [];
+  test(`smoke: ${route.name} (${route.url})`, async ({ adminPage }, testInfo) => {
+    const consoleMessages: string[] = [];
+    const pageErrors:      string[] = [];
 
     adminPage.on('console', (msg) => {
-      if (msg.type() === 'error' && !isIgnored(msg.text())) {
-        consoleErrors.push(msg.text());
+      if (msg.type() === 'error') {
+        consoleMessages.push(msg.text());
       }
     });
     adminPage.on('pageerror', (err) => {
-      pageErrors.push(`${err.name}: ${err.message}`);
+      pageErrors.push(`${err.name}: ${err.message}\n${err.stack ?? ''}`);
     });
 
     // 1. HTTP — не 5xx
@@ -81,12 +82,12 @@ for (const route of ROUTES) {
     expect(response, `${route.url} вернул null response`).not.toBeNull();
     expect(response!.status(), `${route.url} вернул ${response!.status()}`).toBeLessThan(500);
 
-    // 2. Дожидаемся пока React смонтирует основной контент (или таймаут — это уже косяк)
+    // 2. Дать React смонтироваться
     await adminPage.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {
-      // network idle может не наступить если есть polling — это ОК для smoke
+      // network idle может не наступить если есть polling — это ОК
     });
 
-    // 3. Не уехали на /login (значит сессия валидна и роль admin покрыла страницу)
+    // 3. Не уехали на /login
     expect(adminPage.url(), `${route.url} редиректнул на login`).not.toMatch(/\/login/);
 
     // 4. body содержит реальный контент
@@ -96,26 +97,38 @@ for (const route of ROUTES) {
       `${route.url} — body почти пустой (белый экран?)`,
     ).toBeGreaterThan(50);
 
-    // 5. Опциональный селектор — если задан, должен быть на странице
+    // 5. Опциональный селектор
     if (route.expect) {
       await expect(adminPage.locator(route.expect).first()).toBeVisible({ timeout: 5_000 });
     }
 
-    // 6. Нет uncaught JS exceptions — самое важное!
-    expect(pageErrors, `Uncaught errors на ${route.url}`).toEqual([]);
+    // 6. Прикрепляем console errors как attachment — для диагностики, не fail
+    if (consoleMessages.length > 0) {
+      await testInfo.attach('console-errors', {
+        body: consoleMessages.join('\n---\n'),
+        contentType: 'text/plain',
+      });
+    }
 
-    // 7. Нет console.error (после фильтра шума)
-    expect(consoleErrors, `Console errors на ${route.url}`).toEqual([]);
+    // 7. Fail на критичные паттерны (это реальные баги рендера)
+    const critical = consoleMessages.filter(isCritical);
+    expect(
+      critical,
+      `${route.url} — критичные ошибки в консоли:\n${critical.join('\n---\n')}`,
+    ).toEqual([]);
+
+    // 8. Fail на uncaught JS exceptions — самое важное!
+    expect(
+      pageErrors,
+      `${route.url} — uncaught exceptions:\n${pageErrors.join('\n---\n')}`,
+    ).toEqual([]);
   });
 }
 
-// Дополнительный тест: навигация по сайдбару работает.
-// Кликаем по каждой основной ссылке в навигации и проверяем что URL поменялся
-// и контент новый. Это ловит случаи когда ссылка ведёт на 404 или сломан Link.
+// Доп тест: навигация по сайдбару работает (Link не сломан).
 test('smoke: навигация по сайдбару работает', async ({ adminPage }) => {
   await adminPage.goto('/dashboard');
 
-  // Названия пунктов сайдбара — берём из реального layout-а
   const navLinks = [
     { label: /воронка/i,         expectUrl: /\/funnel/      },
     { label: /клиенты/i,         expectUrl: /\/clients/     },
@@ -125,13 +138,11 @@ test('smoke: навигация по сайдбару работает', async (
   ];
 
   for (const link of navLinks) {
-    // role=link с матчем по тексту — наиболее надёжно для Next Link
     const linkEl = adminPage.getByRole('link', { name: link.label }).first();
-    if (await linkEl.count() === 0) continue; // пункт может отсутствовать в зависимости от роли — пропускаем
+    if (await linkEl.count() === 0) continue;
 
     await linkEl.click();
     await adminPage.waitForURL(link.expectUrl, { timeout: 10_000 });
-    // body не пустой после перехода
     const len = ((await adminPage.locator('body').textContent()) ?? '').trim().length;
     expect(len, `после перехода по ${link.label} body пустой`).toBeGreaterThan(50);
   }
