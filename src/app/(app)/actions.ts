@@ -396,12 +396,14 @@ const addPaymentSchema = z.object({
 });
 
 /**
- * Логика начисления комиссий (Anna 28.04.2026):
- *   - SALES (менеджер продаж, кто привёл клиента) получает % от ПЕРВОГО
- *     платежа лида (sequence=1, обычно предоплата).
- *   - LEGAL (специалист по легализации, кто закрывает дело) получает %
- *     от ВТОРОГО платежа (sequence=2, обычно финальный после закрытия).
- *   - Платежи sequence=3+ комиссий не генерируют.
+ * Логика начисления премий (Anna 28.04.2026):
+ *   - sequence=1 (первый платёж / предоплата)
+ *       → SALES получает свой %
+ *       → если этот платёж = полная стоимость лида (одна оплата за всё),
+ *         то LEGAL ТОЖЕ получает свой % сразу (Anna: «вряд ли такие случаи
+ *         будут, это их зп — пусть оба получат»)
+ *   - sequence=2 → LEGAL получает свой % (если ещё не получил)
+ *   - sequence>=3 → премий не начисляем
  *
  * % берётся в порядке приоритета:
  *   1. User.commissionPercent (персональный, если задан)
@@ -416,6 +418,7 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
     where: { id: data.leadId },
     select: {
       id: true,
+      totalAmount: true,
       salesManagerId: true,
       legalManagerId: true,
       service: { select: { salesCommissionPercent: true, legalCommissionPercent: true } },
@@ -463,49 +466,57 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
           },
         });
 
-        // Кому начисляем комиссию по этому платежу:
-        //   sequence=1 → SALES (менеджер продаж получает свой %)
-        //   sequence=2 → LEGAL (менеджер легализации получает свой %)
-        //   sequence>=3 → никому
-        let commissionRole: 'SALES' | 'LEGAL' | null = null;
-        let commissionUserId: string | null = null;
-        let commissionPct = 0;
+        // Кейс «полной оплаты сразу»: первый платёж покрывает всю сумму лида.
+        // Тогда И SALES, И LEGAL получают свои % сразу с этого одного платежа.
+        // Защита от плавающей запятой через малую дельту 0.01 zł.
+        const isFullUpfront =
+          sequence === 1
+          && Number(lead.totalAmount) > 0
+          && Number(data.amount) >= Number(lead.totalAmount) - 0.01;
 
+        // Кому начисляем по этому платежу
+        const accruals: Array<{
+          role:    'SALES' | 'LEGAL';
+          userId:  string;
+          percent: number;
+        }> = [];
+
+        // SALES — на первом платеже
         if (sequence === 1 && lead.salesManagerId && salesPct > 0) {
-          commissionRole   = 'SALES';
-          commissionUserId = lead.salesManagerId;
-          commissionPct    = salesPct;
-        } else if (sequence === 2 && lead.legalManagerId && legalPct > 0) {
-          commissionRole   = 'LEGAL';
-          commissionUserId = lead.legalManagerId;
-          commissionPct    = legalPct;
+          accruals.push({ role: 'SALES', userId: lead.salesManagerId, percent: salesPct });
+        }
+        // LEGAL — на втором платеже ИЛИ на первом если он покрыл всё
+        if (lead.legalManagerId && legalPct > 0) {
+          if (sequence === 2 || (sequence === 1 && isFullUpfront)) {
+            accruals.push({ role: 'LEGAL', userId: lead.legalManagerId, percent: legalPct });
+          }
         }
 
-        const commissionAmount = commissionRole
-          ? Math.round((data.amount * commissionPct) / 100 * 100) / 100
-          : 0;
+        const commissionsToCreate = accruals.map((a) => ({
+          paymentId:   payment.id,
+          userId:      a.userId,
+          role:        a.role,
+          basePayment: data.amount,
+          percent:     a.percent,
+          amount:      Math.round((data.amount * a.percent) / 100 * 100) / 100,
+        }));
 
-        if (commissionRole && commissionUserId) {
-          await tx.commission.create({
-            data: {
-              paymentId:   payment.id,
-              userId:      commissionUserId,
-              role:        commissionRole,
-              basePayment: data.amount,
-              percent:     commissionPct,
-              amount:      commissionAmount,
-            },
-          });
+        if (commissionsToCreate.length > 0) {
+          await tx.commission.createMany({ data: commissionsToCreate });
         }
 
-        // Сообщение для истории — что начислено и кому
+        // Сообщение для истории
         let commissionNote = '';
-        if (commissionRole === 'SALES') {
-          commissionNote = `, премия SALES ${commissionPct}% = ${commissionAmount} zł`;
-        } else if (commissionRole === 'LEGAL') {
-          commissionNote = `, премия LEGAL ${commissionPct}% = ${commissionAmount} zł`;
+        if (commissionsToCreate.length > 0) {
+          const parts = commissionsToCreate.map((c) =>
+            `${c.role === 'SALES' ? 'продажи' : 'легализация'} ${c.percent}% = ${c.amount} zł`,
+          );
+          commissionNote = `, премии: ${parts.join(', ')}`;
+          if (isFullUpfront && commissionsToCreate.length === 2) {
+            commissionNote += ' (полная оплата сразу)';
+          }
         } else if (sequence >= 3) {
-          commissionNote = ' (без премий — платёж #' + sequence + ')';
+          commissionNote = ` (без премий — платёж #${sequence})`;
         }
 
         await tx.leadEvent.create({
@@ -515,12 +526,14 @@ export async function addPayment(input: z.infer<typeof addPaymentSchema>) {
             kind:     'PAYMENT_ADDED',
             message:  `+${data.amount} zł (${methodLabel(data.method)}, платёж #${sequence}${commissionNote})`,
             payload:  {
-              paymentId: payment.id,
-              amount:    data.amount,
-              method:    data.method,
+              paymentId:   payment.id,
+              amount:      data.amount,
+              method:      data.method,
               sequence,
-              commissionRole,
-              commissionAmount,
+              commissions: commissionsToCreate.map((c) => ({
+                role: c.role, percent: c.percent, amount: c.amount,
+              })),
+              isFullUpfront,
             },
           },
         });
