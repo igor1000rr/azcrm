@@ -7,6 +7,7 @@ import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { Cake, Phone } from 'lucide-react';
 import { formatPhone } from '@/lib/utils';
+import { MonthFilter } from './month-filter';
 
 export const dynamic = 'force-dynamic';
 
@@ -151,19 +152,7 @@ export default async function BirthdaysPage({ searchParams }: PageProps) {
             </span>
           </div>
 
-          <form method="GET" className="flex items-center gap-2">
-            <select
-              name="month"
-              defaultValue={filterMonth ?? ''}
-              onChange={(e) => e.currentTarget.form?.submit()}
-              className="text-[12.5px] border border-line rounded px-2 py-1.5 bg-paper"
-            >
-              <option value="">Все месяцы (по порядку)</option>
-              {MONTH_NAMES.map((name, i) => (
-                <option key={i} value={i + 1}>{name}</option>
-              ))}
-            </select>
-          </form>
+          <MonthFilter value={filterMonth} />
         </div>
 
         {totalCount === 0 ? (
