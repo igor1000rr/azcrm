@@ -15,8 +15,9 @@ APP_DIR="/home/$DEPLOY_USER/azcrm"
 ENV_FILE="$APP_DIR/.env"
 
 # Дефолтные домены — переопредели через DOMAIN=... bash setup.sh
-APP_DOMAIN="${DOMAIN:-crm.azgroup.pl}"
-OO_DOMAIN="${OO_DOMAIN:-office.azgroup.pl}"
+APP_DOMAIN="${DOMAIN:-crm.azgroupcompany.net}"
+OO_DOMAIN="${OO_DOMAIN:-office.azgroupcompany.net}"
+NOTIFY_EMAIL="${NOTIFY_EMAIL:-anna@azgroupcompany.net}"
 
 # ============================================================
 # Генерация всех секретов СРАЗУ. Если .env уже есть — НЕ перезаписываем.
@@ -125,14 +126,14 @@ SAVE_CALL_RECORDS="false"
 # ----- PUSH-УВЕДОМЛЕНИЯ -----
 VAPID_PUBLIC_KEY="$VAPID_PUBLIC_KEY"
 VAPID_PRIVATE_KEY="$VAPID_PRIVATE_KEY"
-VAPID_SUBJECT="mailto:anna@azgroup.pl"
+VAPID_SUBJECT="mailto:$NOTIFY_EMAIL"
 
 # ----- EMAIL SMTP (опционально) -----
 SMTP_HOST=""
 SMTP_PORT="587"
 SMTP_USER=""
 SMTP_PASS=""
-SMTP_FROM="AZ Group CRM <noreply@azgroup.pl>"
+SMTP_FROM="AZ Group CRM <noreply@azgroupcompany.net>"
 SMTP_SECURE="false"
 
 # ----- CRON -----
@@ -150,7 +151,7 @@ else
   echo "==> $ENV_FILE уже существует — НЕ трогаю."
 fi
 
-echo "==> nginx-конфиг (HTTPS через certbot после; пока HTTP-проксирование)"
+echo "==> nginx-конфиг для CRM (HTTPS через certbot после)"
 cat > /etc/nginx/sites-available/azcrm <<NGINX
 server {
     listen 80;
@@ -182,6 +183,30 @@ server {
 }
 NGINX
 ln -sf /etc/nginx/sites-available/azcrm /etc/nginx/sites-enabled/azcrm
+
+echo "==> nginx-конфиг для OnlyOffice"
+cat > /etc/nginx/sites-available/office <<NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $OO_DOMAIN;
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 3600s;
+    }
+}
+NGINX
+ln -sf /etc/nginx/sites-available/office /etc/nginx/sites-enabled/office
+
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 
@@ -212,7 +237,7 @@ echo ""
 echo "  Дозаполнить вручную в .env:"
 echo "    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (console.cloud.google.com)"
 echo ""
-echo "  HTTPS ставится отдельно:  certbot --nginx -d $APP_DOMAIN -d $OO_DOMAIN"
+echo "  HTTPS:  certbot --nginx -d $APP_DOMAIN -d $OO_DOMAIN"
 echo ""
 echo "  GitHub Secrets для деплоя:"
 echo "    SSH_HOST = $(curl -s https://api.ipify.org || echo 'IP')"
