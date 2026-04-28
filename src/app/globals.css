@@ -13,7 +13,10 @@
 
 html, body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  background: #FAFAFA;
+  /* Фон страницы — брендовый лёгко синеватый фон вместо бело-серого.
+     На этом фоне белые карточки (bg-paper) выделяются и
+     выглядят брендированно — эффект премиум-CRM. */
+  background: #F1F5FC;
   color: #18181B;
   font-size: 13.5px;
   line-height: 1.5;
@@ -29,7 +32,7 @@ input, select, textarea { font-family: inherit; outline: none; }
 /* ====================== СКРОЛЛБАРЫ ====================== */
 
 .thin-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
-.thin-scroll::-webkit-scrollbar-thumb { background: #DDDDDD; border-radius: 2px; }
+.thin-scroll::-webkit-scrollbar-thumb { background: #BFCBDD; border-radius: 2px; }
 .thin-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .no-scroll::-webkit-scrollbar { display: none; }
