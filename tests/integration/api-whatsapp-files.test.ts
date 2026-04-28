@@ -29,7 +29,9 @@ const mockWorkerStatus     = vi.fn(async () => ({ ok: true, isConnected: true })
 const mockWorkerSendMessage = vi.fn(async () => ({ ok: true, messageId: 'msg-123' }));
 const mockSaveBuffer = vi.fn(async () => ({ url: '/api/files/uploads/test.pdf', size: 1024 }));
 const mockRemoveFile = vi.fn();
-const mockIsAllowedFile = vi.fn(() => ({ ok: true }));
+// Без implementation — иначе TS зафиксирует тип как { ok: true } и не даст
+// потом передать { ok: false, reason: '...' }. Дефолт ставится в beforeEach.
+const mockIsAllowedFile = vi.fn() as AnyFn;
 const mockCanViewLead = vi.fn(() => true);
 
 vi.mock('@/lib/db',          () => ({ db: mockDb }));
