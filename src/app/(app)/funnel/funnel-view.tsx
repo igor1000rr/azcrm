@@ -192,7 +192,7 @@ export function FunnelView({
               'flex items-center gap-2',
               f.id === currentFunnelId
                 ? 'bg-navy text-white font-semibold'
-                : 'text-ink-3 hover:bg-bg hover:text-ink',
+                : 'text-ink-3 hover:bg-navy/[0.04] hover:text-navy',
             )}
           >
             <span>{f.name}</span>
@@ -200,7 +200,7 @@ export function FunnelView({
               className={cn(
                 'text-[10.5px] font-bold px-1.5 py-px rounded-full min-w-[22px] text-center',
                 f.id === currentFunnelId
-                  ? 'bg-white/20 text-white'
+                  ? 'bg-gold text-navy'    // активный — золотой бейдж для контраста
                   : 'bg-bg text-ink-3',
               )}
             >
@@ -212,12 +212,17 @@ export function FunnelView({
 
       {/* === Funnel head: title + KPI === */}
       <div className="bg-paper border border-line rounded-lg mb-3 overflow-hidden">
+        {/* Тонкая брендовая полоска сверху воронки */}
+        <div className="h-[3px] bg-gradient-to-r from-navy via-navy/60 to-gold/40" />
         <div className="px-4 md:px-5 py-3.5 border-b border-line flex items-center gap-3 flex-wrap">
           <div className="flex items-baseline gap-2.5">
-            <h1 className="text-[16px] font-bold text-ink tracking-tight">
+            {/* Заголовок воронки — крупно и брендово navy */}
+            <h1 className="text-[17px] font-bold text-navy tracking-tight">
               {currentFunnelName}
             </h1>
-            <span className="text-12 text-ink-3">{kpi.leadsCount} активных</span>
+            <span className="text-12 text-navy/60 font-semibold">
+              {kpi.leadsCount} активных
+            </span>
           </div>
 
           <div className="ml-auto flex items-center gap-1.5 flex-wrap">
@@ -238,7 +243,8 @@ export function FunnelView({
           <KpiCell label="Стоимость"   value={formatMoney(kpi.totalAmount)} unit="zł"
                    foot={`средний ${formatMoney(kpi.leadsCount ? Math.round(kpi.totalAmount / kpi.leadsCount) : 0)} zł`} />
           <KpiCell label="Получено"    value={formatMoney(kpi.totalPaid)} unit="zł"
-                   foot={`${Math.round((kpi.totalPaid / Math.max(kpi.totalAmount, 1)) * 100)}% от суммы`} />
+                   foot={`${Math.round((kpi.totalPaid / Math.max(kpi.totalAmount, 1)) * 100)}% от суммы`}
+                   highlight={kpi.totalPaid > 0 ? 'success' : undefined} />
           <KpiCell label="Долг"        value={formatMoney(kpi.totalDebt)} unit="zł"
                    foot={`${kpi.debtorsCount} ${plural(kpi.debtorsCount, 'клиент', 'клиента', 'клиентов')}`}
                    highlight={kpi.totalDebt > 0 ? 'danger' : undefined} />
@@ -250,13 +256,13 @@ export function FunnelView({
       {/* === Toolbar === */}
       <div className="flex gap-2 mb-3 items-center flex-wrap">
         <form onSubmit={handleSearchSubmit} className="flex-1 min-w-[200px] max-w-[320px] relative">
-          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
+          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-navy/40" />
           <input
             type="text"
             value={searchValue}
             onChange={(e) => setSearchValue(e.target.value)}
             placeholder="Поиск по имени, телефону..."
-            className="w-full pl-8 pr-3 py-1.5 text-12 bg-paper border border-line rounded-md focus:border-ink-5 focus:outline-none"
+            className="w-full pl-8 pr-3 py-1.5 text-12 bg-paper border border-line rounded-md focus:border-navy focus:outline-none"
           />
         </form>
 
@@ -264,7 +270,7 @@ export function FunnelView({
           <select
             value={currentFilters.city}
             onChange={(e) => updateUrl({ city: e.target.value })}
-            className="hidden md:block px-2.5 py-1.5 text-12 bg-paper border border-line rounded-md text-ink-2 font-medium cursor-pointer hover:border-ink-5"
+            className="hidden md:block px-2.5 py-1.5 text-12 bg-paper border border-line rounded-md text-ink-2 font-medium cursor-pointer hover:border-navy/40"
           >
             <option value="">Все города</option>
             {cities.map((c) => (
@@ -277,7 +283,7 @@ export function FunnelView({
           <select
             value={currentFilters.mgr}
             onChange={(e) => updateUrl({ mgr: e.target.value })}
-            className="hidden md:block px-2.5 py-1.5 text-12 bg-paper border border-line rounded-md text-ink-2 font-medium cursor-pointer hover:border-ink-5"
+            className="hidden md:block px-2.5 py-1.5 text-12 bg-paper border border-line rounded-md text-ink-2 font-medium cursor-pointer hover:border-navy/40"
           >
             <option value="">Все менеджеры</option>
             {managers.map((m) => (
@@ -293,7 +299,7 @@ export function FunnelView({
             'px-2.5 py-1.5 rounded-md text-12 font-medium border inline-flex items-center gap-1.5 transition-colors',
             currentFilters.debt
               ? 'bg-navy text-white border-navy'
-              : 'bg-paper text-ink-2 border-line hover:border-ink-5 hover:text-ink',
+              : 'bg-paper text-ink-2 border-line hover:border-navy/40 hover:text-navy',
           )}
         >
           <AlertCircle size={11} />
@@ -309,7 +315,7 @@ export function FunnelView({
           {currentUserRole === 'ADMIN' && (
             <a
               href={`/api/leads/export?funnel=${currentFunnelId}${currentFilters.city ? `&city=${currentFilters.city}` : ''}`}
-              className="px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1 border border-line bg-paper text-ink-2 hover:text-ink hover:bg-bg"
+              className="px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1 border border-line bg-paper text-ink-2 hover:text-navy hover:bg-navy/[0.03] hover:border-navy/30"
               title="Экспорт всех лидов воронки в CSV"
             >
               <Download size={11} /> Экспорт
@@ -321,7 +327,7 @@ export function FunnelView({
               onClick={() => setViewMode('kanban')}
               className={cn(
                 'px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1',
-                viewMode === 'kanban' ? 'bg-navy text-white' : 'text-ink-3 hover:text-ink',
+                viewMode === 'kanban' ? 'bg-navy text-white' : 'text-ink-3 hover:text-navy',
               )}
             >
               <LayoutGrid size={11} /> Канбан
@@ -331,7 +337,7 @@ export function FunnelView({
               onClick={() => setViewMode('list')}
               className={cn(
                 'px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1',
-                viewMode === 'list' ? 'bg-navy text-white' : 'text-ink-3 hover:text-ink',
+                viewMode === 'list' ? 'bg-navy text-white' : 'text-ink-3 hover:text-navy',
               )}
             >
               <List size={11} /> Список
@@ -359,24 +365,24 @@ export function FunnelView({
                   dragOverStage === stage.id ? 'border-gold bg-gold-pale' : 'border-line',
                 )}
               >
-                {/* Заголовок колонки */}
+                {/* Заголовок колонки — название этапа теперь navy bold */}
                 <div
                   className="px-3.5 py-2.5 flex items-center justify-between border-b border-line bg-paper rounded-t-lg sticky top-0 z-10"
-                  style={{ borderTopWidth: 2, borderTopStyle: 'solid', borderTopColor: stage.color || '#71717A' }}
+                  style={{ borderTopWidth: 2, borderTopStyle: 'solid', borderTopColor: stage.color || '#0A1A35' }}
                 >
                   <div>
-                    <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-ink-2 flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: stage.color || '#71717A' }} />
+                    <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-navy flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: stage.color || '#0A1A35' }} />
                       {stage.name}
                     </div>
                     <div className="text-[11px] text-ink-3 mt-0.5 flex items-center gap-2">
-                      <span><strong className="text-ink">{stageLeads.length}</strong> {plural(stageLeads.length, 'лид', 'лида', 'лидов')}</span>
-                      {stageSum > 0 && <><span>·</span><span className="font-mono"><strong>{formatMoney(stageSum)}</strong> zł</span></>}
+                      <span><strong className="text-navy">{stageLeads.length}</strong> {plural(stageLeads.length, 'лид', 'лида', 'лидов')}</span>
+                      {stageSum > 0 && <><span>·</span><span className="font-mono"><strong className="text-ink">{formatMoney(stageSum)}</strong> zł</span></>}
                     </div>
                   </div>
                   <button
                     type="button"
-                    className="w-6 h-6 rounded border border-dashed border-line-strong text-ink-3 grid place-items-center hover:border-navy hover:border-solid hover:text-navy"
+                    className="w-6 h-6 rounded border border-dashed border-navy/30 text-navy/50 grid place-items-center hover:border-navy hover:bg-navy hover:text-white transition-colors"
                     aria-label="Добавить лида в этап"
                     onClick={() => router.push(`/clients/new?funnel=${currentFunnelId}&stage=${stage.id}`)}
                   >
@@ -387,7 +393,7 @@ export function FunnelView({
                 {/* Тело колонки */}
                 <div className="p-2 flex-1 flex flex-col gap-1.5 overflow-y-auto thin-scroll">
                   {stageLeads.length === 0 ? (
-                    <div className="text-center p-4 border border-dashed border-line-strong rounded-md text-ink-4 text-[11.5px] my-1">
+                    <div className="text-center p-4 border border-dashed border-navy/15 rounded-md text-navy/40 text-[11.5px] my-1 bg-paper/40">
                       Перетащите лида сюда
                     </div>
                   ) : (
@@ -429,12 +435,15 @@ function KpiCell({
 }) {
   return (
     <div className="bg-paper px-4 py-3">
-      <div className="text-[10.5px] text-ink-4 uppercase tracking-[0.06em] font-semibold mb-1">
+      {/* Лейбл — лёгкий navy для брендового акцента (раньше был серый ink-4) */}
+      <div className="text-[10.5px] text-navy/60 uppercase tracking-[0.06em] font-bold mb-1">
         {label}
       </div>
       <div
         className={cn(
           'text-[19px] font-bold tracking-tight leading-none flex items-baseline gap-1 font-mono',
+          // По умолчанию цифры navy (бренд) если нет специального highlight
+          !highlight && 'text-navy',
           highlight === 'danger' && 'text-danger',
           highlight === 'success' && 'text-success',
         )}
@@ -470,7 +479,8 @@ function LeadCard({
       onDragEnd={onDragEnd}
       className={cn(
         'group block bg-paper border border-line rounded-md p-2.5 cursor-grab active:cursor-grabbing',
-        'hover:border-ink-5 hover:shadow-sm transition-all',
+        // Hover на карточке: лёгкий синий бордер + слабая тень — выглядит интерактивно
+        'hover:border-navy/40 hover:shadow-md transition-all',
         'flex flex-col gap-2',
         isUrgent ? 'border-l-2 border-l-danger' : isWarm ? 'border-l-2 border-l-warn' : '',
         dragging && 'opacity-40',
@@ -479,7 +489,8 @@ function LeadCard({
       <div className="flex items-center gap-2.5">
         <Avatar name={lead.clientName} size="md" />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-semibold text-ink truncate leading-tight">
+          {/* Имя клиента — navy bold для бренд-акцента */}
+          <div className="text-[13px] font-semibold text-navy truncate leading-tight group-hover:text-navy">
             {lead.clientName}
           </div>
           <div className="text-[11px] text-ink-3 truncate mt-px">
@@ -574,25 +585,26 @@ function LeadListView({
       <div className="overflow-x-auto thin-scroll">
         <table className="w-full text-[12.5px]">
           <thead>
-            <tr className="bg-bg border-b border-line">
-              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold">Клиент</th>
-              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold">Этап</th>
-              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold">Город</th>
-              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold">Менеджеры</th>
-              <th className="text-right px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold">Сумма</th>
-              <th className="text-right px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold">Долг</th>
+            {/* Шапка таблицы — лёгкий navy фон + navy/70 текст вместо серого */}
+            <tr className="bg-navy/[0.04] border-b border-navy/10">
+              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-navy/70 font-bold">Клиент</th>
+              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-navy/70 font-bold">Этап</th>
+              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-navy/70 font-bold">Город</th>
+              <th className="text-left px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-navy/70 font-bold">Менеджеры</th>
+              <th className="text-right px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-navy/70 font-bold">Сумма</th>
+              <th className="text-right px-4 py-2.5 text-[10.5px] uppercase tracking-[0.05em] text-navy/70 font-bold">Долг</th>
             </tr>
           </thead>
           <tbody>
             {leads.map((l) => {
               const st = stages.find((s) => s.id === l.stageId);
               return (
-                <tr key={l.id} className="border-b border-line-2 hover:bg-bg cursor-pointer">
+                <tr key={l.id} className="border-b border-line-2 hover:bg-navy/[0.02] cursor-pointer transition-colors">
                   <td className="px-4 py-2.5">
                     <Link href={`/clients/${l.id}`} className="flex items-center gap-2.5">
                       <Avatar name={l.clientName} size="sm" />
                       <div>
-                        <div className="font-semibold text-ink">{l.clientName}</div>
+                        <div className="font-semibold text-navy">{l.clientName}</div>
                         <div className="text-[11px] text-ink-4 font-mono">{l.phone}</div>
                       </div>
                     </Link>
@@ -617,7 +629,7 @@ function LeadListView({
                       {l.legal && <Avatar name={l.legal.name} size="xs" className="ring-2 ring-paper -ml-1" />}
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold text-ink">
+                  <td className="px-4 py-2.5 text-right font-mono font-semibold text-navy">
                     {formatMoney(l.totalAmount)} zł
                   </td>
                   <td className={cn(
