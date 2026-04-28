@@ -40,9 +40,7 @@ const APP_PUBLIC_URL   = process.env.APP_PUBLIC_URL ?? process.env.AUTH_URL ?? '
 const CRM_WEBHOOK_URL  = process.env.CRM_WEBHOOK_URL ?? `${APP_PUBLIC_URL.replace(/\/$/, '')}/api/whatsapp/webhook`;
 const STORAGE_ROOT     = process.env.STORAGE_ROOT ?? path.resolve(process.cwd(), '..', 'storage');
 const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(STORAGE_ROOT, 'wa-sessions');
-// Куда сохраняем входящие медиа из WhatsApp. Эта папка должна быть смонтирована
-// одним volume и в worker, и в CRM-app — CRM раздаёт из неё файлы по
-// /api/files/wa-media/<filename> (теперь bucket приватный, требует auth).
+// Куда сохраняем входящие медиа из WhatsApp.
 const WA_MEDIA_DIR     = process.env.WA_MEDIA_DIR ?? path.join(STORAGE_ROOT, 'wa-media');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -73,7 +71,6 @@ function getOrCreateClient(accountId) {
     }),
     puppeteer: {
       headless: true,
-      // Используем системный chromium из setup.sh (если установлен)
       executablePath: process.env.CHROME_BIN ?? process.env.PUPPETEER_EXECUTABLE_PATH ?? undefined,
       args: [
         '--no-sandbox',
@@ -146,6 +143,8 @@ function bindEvents(accountId, client, entry) {
       // Игнорируем статусы и групповые сообщения
       if (msg.from === 'status@broadcast') return;
       if (msg.from.endsWith('@g.us')) return;
+      // Новый LID-формат — игнорируем, иначе fromPhone не является реальным номером
+      if (msg.from.endsWith('@lid')) return;
 
       const fromPhone = msg.from.split('@')[0];
       const contact = await msg.getContact().catch(() => null);
@@ -158,12 +157,10 @@ function bindEvents(accountId, client, entry) {
             const buf = Buffer.from(media.data, 'base64');
             mediaName = sanitizeFilename(media.filename || `media.${guessExt(media.mimetype)}`);
             mediaSize = buf.length;
-            // 32 байта случайности — 256 бит, файл нельзя угадать
             const ext = path.extname(mediaName) || `.${guessExt(media.mimetype)}`;
             const storedName = `${crypto.randomBytes(32).toString('hex')}${ext}`;
             const fullPath = path.join(WA_MEDIA_DIR, storedName);
             fs.writeFileSync(fullPath, buf);
-            // CRM раздаёт по bucket=wa-media (теперь приватный, требует auth)
             mediaUrl = `/api/files/wa-media/${storedName}`;
           }
         } catch (e) {
@@ -190,7 +187,6 @@ function bindEvents(accountId, client, entry) {
   });
 
   client.on('message_ack', (msg, ack) => {
-    // ack: -1=error, 0=pending, 1=sent, 2=delivered, 3=read, 4=played
     let status;
     if (ack === 1) status = 'sent';
     else if (ack === 2) status = 'delivered';
@@ -218,15 +214,13 @@ function mapMessageType(waType) {
   return 'text';
 }
 
-// Уборка имени файла от path traversal и спецсимволов FS
 function sanitizeFilename(name) {
   return String(name || 'file')
-    .replace(/[\/\\\x00-\x1f]/g, '_')   // убираем разделители путей и control-chars
-    .replace(/^\.+/, '')                 // никаких ведущих точек
+    .replace(/[\/\\\x00-\x1f]/g, '_')
+    .replace(/^\.+/, '')
     .slice(0, 200) || 'file';
 }
 
-// Угадать расширение по mime-типу WhatsApp
 function guessExt(mimetype) {
   const m = String(mimetype || '').toLowerCase();
   if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
@@ -240,7 +234,6 @@ function guessExt(mimetype) {
   if (m.includes('wav'))  return 'wav';
   if (m.includes('msword') || m.includes('officedocument.wordprocessingml')) return 'docx';
   if (m.includes('spreadsheetml') || m.includes('ms-excel')) return 'xlsx';
-  // fallback из mime/subtype
   const sub = m.split('/')[1] || 'bin';
   return sub.replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
 }
@@ -265,10 +258,8 @@ async function sendWebhook(payload) {
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-// Auth middleware
 app.use((req, res, next) => {
   if (!AUTH_TOKEN) return next();
-  // /health доступен без авторизации
   if (req.path === '/health') return next();
   const auth = req.headers.authorization ?? '';
   if (auth !== `Bearer ${AUTH_TOKEN}`) {
@@ -292,7 +283,6 @@ app.post('/accounts/:id/connect', async (req, res) => {
       return res.json({ status: 'qr', qr: entry.qr });
     }
 
-    // Запускаем initialize (если ещё не запущен), ждём первого events
     if (entry.status === 'disconnected' || entry.status === 'failed') {
       entry.status = 'initializing';
       entry.client.initialize().catch((e) => {
@@ -301,7 +291,6 @@ app.post('/accounts/:id/connect', async (req, res) => {
       });
     }
 
-    // Ждём до 30 сек QR или ready
     const start = Date.now();
     while (Date.now() - start < 30000) {
       await new Promise((r) => setTimeout(r, 500));
@@ -349,6 +338,12 @@ app.get('/accounts/:id/status', (req, res) => {
   });
 });
 
+// Отправка сообщения — резолвим правильный wid через getNumberId.
+//
+// Проблема «No LID for user» (вылетает на стороне WhatsApp Web): нельзя просто
+// собрать chatId вида `phone@c.us` и слать sendMessage — в новом протоколе
+// WA требует сначала разрешить номер в LID (linked-id) через внутренний запрос.
+// getNumberId делает это и возвращает валидный _serialized.
 app.post('/accounts/:id/send', async (req, res) => {
   try {
     const id = req.params.id;
@@ -362,12 +357,30 @@ app.post('/accounts/:id/send', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'to and body required' });
     }
 
-    // Нормализуем номер для WhatsApp (убираем + и добавляем @c.us)
-    const cleanPhone = to.replace(/[^\d]/g, '');
-    const chatId = `${cleanPhone}@c.us`;
+    // Нормализуем номер — только цифры
+    const cleanPhone = String(to).replace(/[^\d]/g, '');
+    if (!cleanPhone || cleanPhone.length < 6) {
+      return res.status(400).json({ ok: false, error: 'Некорректный номер получателя' });
+    }
+
+    // Резолвим WID через WA Web — это фикс «No LID for user»
+    let chatId;
+    try {
+      const numberId = await entry.client.getNumberId(cleanPhone);
+      if (!numberId) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Номер не зарегистрирован в WhatsApp',
+        });
+      }
+      chatId = numberId._serialized;
+    } catch (e) {
+      console.error(`[${id}] getNumberId error:`, e);
+      // Fallback: вручную собираем chatId, сработает для старых контактов
+      chatId = `${cleanPhone}@c.us`;
+    }
 
     const msg = await entry.client.sendMessage(chatId, body);
-
     res.json({ ok: true, messageId: msg.id._serialized });
   } catch (e) {
     console.error('send error:', e);
@@ -380,7 +393,6 @@ app.listen(PORT, () => {
   console.log(`webhook URL: ${CRM_WEBHOOK_URL}`);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('shutting down...');
   for (const [, entry] of clients) {
