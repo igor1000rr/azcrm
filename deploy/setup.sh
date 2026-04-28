@@ -14,9 +14,13 @@ DB_USER="crm"
 APP_DIR="/home/$DEPLOY_USER/azcrm"
 ENV_FILE="$APP_DIR/.env"
 
+# Дефолтные домены — переопредели через DOMAIN=... bash setup.sh
+APP_DOMAIN="${DOMAIN:-crm.azgroup.pl}"
+OO_DOMAIN="${OO_DOMAIN:-office.azgroup.pl}"
+
 # ============================================================
 # Генерация всех секретов СРАЗУ. Если .env уже есть — НЕ перезаписываем.
-# Секреты длиной 32 байта (64 hex символа) — сильнее чем минимум NextAuth (32).
+# Имена переменных строго по .env.example — НИКАКИХ NEXT_PUBLIC_, NEXTAUTH_*.
 # ============================================================
 DB_PASS=$(openssl rand -hex 16)
 AUTH_SECRET=$(openssl rand -hex 32)
@@ -78,85 +82,100 @@ echo "==> Папки приложения и логов"
 mkdir -p "$APP_DIR" /home/$DEPLOY_USER/logs
 chown -R $DEPLOY_USER:$DEPLOY_USER "$APP_DIR" /home/$DEPLOY_USER/logs
 
-# ============================================================
-# Создаём .env с заполненными секретами (если ещё нет)
-# ============================================================
+echo "==> Генерация VAPID-ключей через web-push"
+VAPID_JSON=$(npx --yes -p web-push web-push generate-vapid-keys --json 2>/dev/null || echo '{}')
+VAPID_PUBLIC_KEY=$(echo "$VAPID_JSON"  | grep -oE '"publicKey":"[^"]+"'  | cut -d'"' -f4)
+VAPID_PRIVATE_KEY=$(echo "$VAPID_JSON" | grep -oE '"privateKey":"[^"]+"' | cut -d'"' -f4)
+
 if [ ! -f "$ENV_FILE" ]; then
-  echo "==> Создаю $ENV_FILE с автогенерированными секретами"
-  PUBLIC_IP=$(curl -s https://api.ipify.org || echo "127.0.0.1")
+  echo "==> Создаю $ENV_FILE"
   cat > "$ENV_FILE" <<ENV
-# Автогенерировано $(date -Iseconds) скриптом setup.sh.
-# Секреты сгенерированы криптографически — не делись и не коммить.
+# Автогенерировано $(date -Iseconds) скриптом deploy/setup.sh
+# Имена переменных строго по .env.example в репо.
 
 # ----- БАЗА -----
-DATABASE_URL=postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME?schema=public
+DB_USER=$DB_USER
+DB_PASSWORD=$DB_PASS
+DB_NAME=$DB_NAME
+DATABASE_URL="postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME?schema=public"
 
-# ----- АУТЕНТИФИКАЦИЯ -----
-# AUTH_SECRET (он же NEXTAUTH_SECRET) — для подписи JWT, минимум 32 символа
-AUTH_SECRET=$AUTH_SECRET
-NEXTAUTH_SECRET=$AUTH_SECRET
-# Публичный URL приложения — ОБЯЗАТЕЛЬНО HTTPS для Telegram webhook
-APP_PUBLIC_URL=http://$PUBLIC_IP
-NEXTAUTH_URL=http://$PUBLIC_IP
-
-# ----- WHATSAPP WORKER -----
-# Токен между Next.js ↔ whatsapp-worker (Bearer auth)
-WHATSAPP_WORKER_URL=http://127.0.0.1:3010
-WHATSAPP_WORKER_TOKEN=$WHATSAPP_WORKER_TOKEN
+# ----- АВТОРИЗАЦИЯ (NextAuth v5) -----
+AUTH_SECRET="$AUTH_SECRET"
+AUTH_URL="https://$APP_DOMAIN"
+APP_PUBLIC_URL="https://$APP_DOMAIN"
 
 # ----- ONLYOFFICE -----
-# Должен совпадать с JWT_SECRET в docker-compose сервиса OnlyOffice
-ONLYOFFICE_URL=http://127.0.0.1:8080
-ONLYOFFICE_JWT_SECRET=$ONLYOFFICE_JWT_SECRET
+ONLYOFFICE_PUBLIC_URL="https://$OO_DOMAIN"
+ONLYOFFICE_JWT_SECRET="$ONLYOFFICE_JWT_SECRET"
+
+# ----- WHATSAPP WORKER -----
+WHATSAPP_WORKER_URL="http://127.0.0.1:3100"
+WHATSAPP_WORKER_TOKEN="$WHATSAPP_WORKER_TOKEN"
+
+# ----- GOOGLE OAUTH (заполнить вручную из console.cloud.google.com) -----
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+GOOGLE_REDIRECT_URI="https://$APP_DOMAIN/api/google/callback"
+
+# ----- ТЕЛЕФОНИЯ Play -----
+PLAY_API_BASE="https://api.play.pl/v1"
+PLAY_API_KEY=""
+SAVE_CALL_RECORDS="false"
+
+# ----- PUSH-УВЕДОМЛЕНИЯ -----
+VAPID_PUBLIC_KEY="$VAPID_PUBLIC_KEY"
+VAPID_PRIVATE_KEY="$VAPID_PRIVATE_KEY"
+VAPID_SUBJECT="mailto:anna@azgroup.pl"
+
+# ----- EMAIL SMTP (опционально) -----
+SMTP_HOST=""
+SMTP_PORT="587"
+SMTP_USER=""
+SMTP_PASS=""
+SMTP_FROM="AZ Group CRM <noreply@azgroup.pl>"
+SMTP_SECURE="false"
 
 # ----- CRON -----
-# Bearer для /api/cron/* (используется в crontab или GitHub Actions)
-CRON_SECRET=$CRON_SECRET
+CRON_SECRET="$CRON_SECRET"
 
-# ----- GOOGLE OAUTH (заполни вручную из Google Cloud Console) -----
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-
-# ----- WEB-PUSH (сгенерируй: npm run vapid:generate) -----
-NEXT_PUBLIC_VAPID_PUBLIC_KEY=
-VAPID_PRIVATE_KEY=
-VAPID_SUBJECT=mailto:admin@azgroup.pl
+# ----- ХРАНИЛИЩЕ -----
+STORAGE_ROOT="$APP_DIR/storage"
 
 # ----- TELEGRAM -----
-# Токены ботов задаются через UI (Settings → Channels), не в .env
+# Токены ботов задаются через UI (Settings → Каналы связи), не в .env
 ENV
   chown $DEPLOY_USER:$DEPLOY_USER "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 else
-  echo "==> $ENV_FILE уже существует — НЕ трогаю. Проверь сам что секреты заданы."
+  echo "==> $ENV_FILE уже существует — НЕ трогаю."
 fi
 
-echo "==> nginx-конфиг"
-cat > /etc/nginx/sites-available/azcrm <<'NGINX'
+echo "==> nginx-конфиг (HTTPS через certbot после; пока HTTP-проксирование)"
+cat > /etc/nginx/sites-available/azcrm <<NGINX
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
+    listen 80;
+    listen [::]:80;
+    server_name $APP_DOMAIN;
 
     client_max_body_size 50M;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
         proxy_read_timeout 300s;
     }
 
     location /api/files/ {
         proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         client_max_body_size 50M;
         proxy_request_buffering off;
     }
@@ -184,34 +203,22 @@ fi
 echo "==> PM2 systemd autostart"
 env PATH=$PATH:/usr/bin pm2 startup systemd -u $DEPLOY_USER --hp /home/$DEPLOY_USER || true
 
-PUBLIC_IP=$(curl -s https://api.ipify.org || echo "IP сервера")
-
 echo ""
 echo "=========================================================="
 echo "  Установка завершена."
+[ $DB_EXISTS -eq 0 ] && echo "  ✓ БД создана:    $DB_NAME"
+[ -f "$ENV_FILE" ]    && echo "  ✓ .env создан:   $ENV_FILE (домен $APP_DOMAIN)"
 echo ""
-if [ $DB_EXISTS -eq 0 ]; then
-  echo "  ✓ БД создана:    $DB_NAME (user $DB_USER)"
-fi
-if [ -f "$ENV_FILE" ]; then
-  echo "  ✓ .env создан:   $ENV_FILE"
-  echo "    (DATABASE_URL, AUTH_SECRET, ONLYOFFICE_JWT_SECRET,"
-  echo "     WHATSAPP_WORKER_TOKEN, CRON_SECRET — все заполнены)"
-fi
+echo "  Дозаполнить вручную в .env:"
+echo "    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (console.cloud.google.com)"
 echo ""
-echo "  ВРУЧНУЮ дозаполнить в $ENV_FILE:"
-echo "    • APP_PUBLIC_URL — твой реальный домен (https://crm.example.com)"
-echo "    • GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET — из Google Cloud Console"
-echo "    • VAPID-ключи — выполни 'npm run vapid:generate' и вставь"
+echo "  HTTPS ставится отдельно:  certbot --nginx -d $APP_DOMAIN -d $OO_DOMAIN"
 echo ""
-echo "  GitHub Secrets (Settings → Secrets and variables → Actions):"
-echo "    SSH_HOST = $PUBLIC_IP"
+echo "  GitHub Secrets для деплоя:"
+echo "    SSH_HOST = $(curl -s https://api.ipify.org || echo 'IP')"
 echo "    SSH_USER = $DEPLOY_USER"
-echo "    SSH_KEY  = (приватный ключ ниже, целиком)"
-echo ""
-echo "  ----- НАЧАЛО ПРИВАТНОГО КЛЮЧА -----"
+echo "    SSH_KEY  = (приватный ключ ниже)"
+echo "  ----- BEGIN -----"
 cat "$KEY_PATH"
-echo "  ----- КОНЕЦ ПРИВАТНОГО КЛЮЧА -----"
-echo ""
-echo "  Дальше: push в main → авто-деплой → 'pm2 status' для проверки."
+echo "  -----  END  -----"
 echo "=========================================================="
