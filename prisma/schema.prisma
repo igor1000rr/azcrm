@@ -1074,6 +1074,15 @@ model Expense {
 // ============================================================
 // КОНФИГ ЗАРПЛАТЫ МЕНЕДЖЕРА
 // ============================================================
+// Структура зарплаты (по требованию Anna):
+//   Зп чистая    = ставка × часы + премии
+//   Грязными свои = зп чистая + ZUS + PIT
+//
+// Anna вводит: hourlyRate (ставка/час), zus, pit
+// Часы берутся из WorkLog, премии — из Commission за период.
+//
+// Поля fixedSalary и taxAmount оставлены для совместимости со старыми
+// данными (если были введены), но в новом UI не используются.
 
 model PayrollConfig {
   id          String   @id @default(cuid())
@@ -1081,8 +1090,16 @@ model PayrollConfig {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   hourlyRate  Decimal  @default(0) @db.Decimal(10, 2)
+
+  // ZUS — польский соцстрах. Вычитается из «грязных своих» при расчёте зп чистой.
+  zus         Decimal  @default(0) @db.Decimal(10, 2)
+  // PIT — польский подоходный налог.
+  pit         Decimal  @default(0) @db.Decimal(10, 2)
+
+  // Legacy поля — больше не используются в UI, оставлены для существующих данных
   fixedSalary Decimal  @default(0) @db.Decimal(10, 2)
   taxAmount   Decimal  @default(0) @db.Decimal(10, 2)
+
   notes       String?  @db.Text
 
   updatedAt   DateTime @updatedAt
