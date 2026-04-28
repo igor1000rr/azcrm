@@ -12,11 +12,11 @@ const mockDb = {
 };
 const mockAudit = vi.fn();
 const mockBcryptHash = vi.fn(async (p: string) => `HASHED:${p}`);
-const mockRequireAdmin = vi.fn(async () => ({ id: 'u-admin', email: 'a@a', name: 'A', role: 'ADMIN' }));
+const mockRequireAdmin = vi.fn(async () => ({ id: 'u-admin', email: 'admin@example.com', name: 'A', role: 'ADMIN' }));
 
 vi.mock('@/lib/db', () => ({ db: mockDb }));
 vi.mock('@/lib/auth', () => ({
-  requireUser: vi.fn(async () => ({ id: 'u-admin', email: 'a@a', name: 'A', role: 'ADMIN' })),
+  requireUser: vi.fn(async () => ({ id: 'u-admin', email: 'admin@example.com', name: 'A', role: 'ADMIN' })),
   requireAdmin: mockRequireAdmin,
 }));
 vi.mock('@/lib/audit', () => ({ audit: mockAudit }));
@@ -31,28 +31,28 @@ beforeEach(() => {
   mockBcryptHash.mockReset();
   mockBcryptHash.mockImplementation(async (p: string) => `HASHED:${p}`);
   mockRequireAdmin.mockReset();
-  mockRequireAdmin.mockImplementation(async () => ({ id: 'u-admin', email: 'a@a', name: 'A', role: 'ADMIN' }));
+  mockRequireAdmin.mockImplementation(async () => ({ id: 'u-admin', email: 'admin@example.com', name: 'A', role: 'ADMIN' }));
 });
 
 describe('upsertUser — создание', () => {
   it('zod: invalid email → throw', async () => {
-    await expect(upsertUser({ email: 'not-email', name: 'X', role: 'SALES', password: '123456' } as never))
+    await expect(upsertUser({ email: 'not-email', name: 'Test', role: 'SALES', password: '123456' } as never))
       .rejects.toThrow();
   });
   it('zod: name <2 символов → throw', async () => {
-    await expect(upsertUser({ email: 'a@b.c', name: 'A', role: 'SALES', password: '123456' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'A', role: 'SALES', password: '123456' } as never))
       .rejects.toThrow();
   });
   it('zod: invalid role → throw', async () => {
-    await expect(upsertUser({ email: 'a@b.c', name: 'AA', role: 'GUEST', password: '123456' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'AA', role: 'GUEST', password: '123456' } as never))
       .rejects.toThrow();
   });
   it('создание без пароля → throw', async () => {
-    await expect(upsertUser({ email: 'a@b.c', name: 'AA', role: 'SALES' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'AA', role: 'SALES' } as never))
       .rejects.toThrow('Пароль должен');
   });
   it('создание с паролем <6 символов → throw', async () => {
-    await expect(upsertUser({ email: 'a@b.c', name: 'AA', role: 'SALES', password: '12345' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'AA', role: 'SALES', password: '12345' } as never))
       .rejects.toThrow('Пароль должен');
   });
   it('создание → bcrypt.hash + user.create + audit user.create', async () => {
@@ -72,14 +72,14 @@ describe('upsertUser — создание', () => {
 describe('upsertUser — обновление', () => {
   it('без пароля → обновляет без passwordHash', async () => {
     await upsertUser({
-      id: 'u-1', email: 'x@y.z', name: 'X', role: 'SALES',
+      id: 'u-1', email: 'test@example.com', name: 'X', role: 'SALES',
     } as never);
     const call = mockDb.user.update.mock.calls[0][0];
     expect(call.data.passwordHash).toBeUndefined();
   });
   it('с паролем >=6 → хеширует и обновляет hash', async () => {
     await upsertUser({
-      id: 'u-1', email: 'x@y.z', name: 'X', role: 'SALES', password: 'newpass',
+      id: 'u-1', email: 'test@example.com', name: 'X', role: 'SALES', password: 'newpass',
     } as never);
     expect(mockBcryptHash).toHaveBeenCalledWith('newpass', 10);
     const call = mockDb.user.update.mock.calls[0][0];
@@ -87,7 +87,7 @@ describe('upsertUser — обновление', () => {
   });
   it('с коротким паролем (<6) → игнорируется при обновлении', async () => {
     await upsertUser({
-      id: 'u-1', email: 'x@y.z', name: 'X', role: 'SALES', password: '12',
+      id: 'u-1', email: 'test@example.com', name: 'X', role: 'SALES', password: '12',
     } as never);
     expect(mockBcryptHash).not.toHaveBeenCalled();
     const call = mockDb.user.update.mock.calls[0][0];

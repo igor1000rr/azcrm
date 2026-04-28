@@ -6,7 +6,10 @@ type AnyFn = ReturnType<typeof vi.fn>;
 const mockDb = {
   lead:          { findUnique: vi.fn() as AnyFn, update: vi.fn() as AnyFn },
   calendarEvent: {
-    findFirst: vi.fn() as AnyFn, create: vi.fn() as AnyFn, deleteMany: vi.fn() as AnyFn,
+    findFirst:  vi.fn() as AnyFn,
+    create:     vi.fn() as AnyFn,
+    deleteMany: vi.fn() as AnyFn,
+    updateMany: vi.fn() as AnyFn,
   },
   leadEvent: { create: vi.fn() as AnyFn },
   $transaction: vi.fn(async (arg: unknown) => {
@@ -20,8 +23,8 @@ const mockCreateGoogleEvent = vi.fn(async () => 'gcal-id-123');
 
 vi.mock('@/lib/db', () => ({ db: mockDb }));
 vi.mock('@/lib/auth', () => ({
-  requireUser: vi.fn(async () => ({ id: 'u-1', email: 'u@a', name: 'U', role: 'LEGAL' })),
-  requireAdmin: vi.fn(async () => ({ id: 'u-admin', email: 'a@a', name: 'A', role: 'ADMIN' })),
+  requireUser: vi.fn(async () => ({ id: 'u-1', email: 'u@example.com', name: 'U', role: 'LEGAL' })),
+  requireAdmin: vi.fn(async () => ({ id: 'u-admin', email: 'a@example.com', name: 'A', role: 'ADMIN' })),
 }));
 vi.mock('@/lib/permissions', () => ({
   canEditLead: mockCanEditLead,
@@ -34,7 +37,6 @@ vi.mock('@/lib/google', () => ({
   deleteGoogleEvent: mockDeleteGoogleEvent,
   createGoogleEvent: mockCreateGoogleEvent,
 }));
-// Прочие зависимости actions.ts (файл объёмный, он импортирует много чего)
 vi.mock('@/lib/notify',    () => ({ notify: vi.fn(), notifyManagers: vi.fn() }));
 vi.mock('@/lib/audit',     () => ({ audit: vi.fn() }));
 vi.mock('@/lib/whatsapp',  () => ({ workerSend: vi.fn(), workerDisconnect: vi.fn() }));
@@ -52,7 +54,10 @@ beforeEach(() => {
   });
   mockCanEditLead.mockReset();
   mockCanEditLead.mockReturnValue(true);
+  // ВАЖНО: после mockReset() реализация сбрасывается, вызов возвращает undefined.
+  // setFingerprintDate вызывает deleteGoogleEvent(...).catch(...) — на undefined .catch упадёт.
   mockDeleteGoogleEvent.mockReset();
+  mockDeleteGoogleEvent.mockResolvedValue(undefined);
   mockCreateGoogleEvent.mockReset();
   mockCreateGoogleEvent.mockResolvedValue('gcal-id-123');
 });
@@ -109,6 +114,13 @@ describe('setFingerprintDate', () => {
     expect(mockCreateGoogleEvent).toHaveBeenCalledWith('u-legal', expect.objectContaining({
       summary: expect.stringContaining('Отпечатки'),
     }));
+    // После получения googleId → updateMany для сохранения связи
+    expect(mockDb.calendarEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { leadId: 'l-1', kind: 'FINGERPRINT' },
+        data:  { googleId: 'gcal-id-123' },
+      }),
+    );
   });
 
   it('date указана но legalManagerId=null → NO Google sync', async () => {
