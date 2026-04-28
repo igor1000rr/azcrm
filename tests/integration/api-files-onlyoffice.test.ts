@@ -51,7 +51,6 @@ vi.mock('@/lib/onlyoffice', async () => ({
   verifyFileAccessToken: mockVerifyFileAccessToken,
   verifyJwt:             mockVerifyJwt,
   buildEditorConfig:     mockBuildEditorConfig,
-  // Имитируем реальный enum
   OOCallbackStatus: {
     NO_CHANGES:        0,
     EDITING:           1,
@@ -104,7 +103,6 @@ beforeEach(() => {
   mockFsStat.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 });
 
-// =================== files/[bucket]/[...path] ===================
 async function callFiles(bucket: string, segments: string[], opts: {
   url?: string;
   searchParams?: Record<string, string>;
@@ -129,45 +127,42 @@ async function callFiles(bucket: string, segments: string[], opts: {
 
 describe('GET /api/files/[bucket]/[...path] — security', () => {
   it('неизвестный bucket → 404', async () => {
-    const res = await callFiles('hack', ['x.pdf']) as { status: number };
+    const res = await callFiles('hack', ['x.pdf']) as unknown as { status: number };
     expect(res.status).toBe(404);
   });
   it('public bucket avatars — без сессии окей (доходит до fs.stat)', async () => {
     mockFsStat.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    const res = await callFiles('avatars', ['user-1.jpg'], { authenticated: false }) as { status: number };
-    // файла нет → 404, но НЕ 401 и не 403
+    const res = await callFiles('avatars', ['user-1.jpg'], { authenticated: false }) as unknown as { status: number };
     expect(res.status).toBe(404);
-    // session НЕ запрашивалась
     expect(mockAuth).not.toHaveBeenCalled();
   });
   it('non-public bucket без сессии → 401', async () => {
-    const res = await callFiles('uploads', ['x.pdf'], { authenticated: false }) as { status: number };
+    const res = await callFiles('uploads', ['x.pdf'], { authenticated: false }) as unknown as { status: number };
     expect(res.status).toBe(401);
   });
   it('blueprints — только ADMIN, SALES → 403', async () => {
-    const res = await callFiles('blueprints', ['template.docx'], { role: 'SALES' }) as { status: number };
+    const res = await callFiles('blueprints', ['template.docx'], { role: 'SALES' }) as unknown as { status: number };
     expect(res.status).toBe(403);
   });
   it('expenses — только ADMIN, LEGAL → 403', async () => {
-    const res = await callFiles('expenses', ['receipt.jpg'], { role: 'LEGAL' }) as { status: number };
+    const res = await callFiles('expenses', ['receipt.jpg'], { role: 'LEGAL' }) as unknown as { status: number };
     expect(res.status).toBe(403);
   });
   it('path traversal с .. → 400', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'u-1', role: 'ADMIN' } } as never);
-    const res = await callFiles('uploads', ['..', 'etc', 'passwd']) as { status: number };
+    const res = await callFiles('uploads', ['..', 'etc', 'passwd']) as unknown as { status: number };
     expect(res.status).toBe(400);
   });
   it('null-byte в пути → 400', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'u-1', role: 'ADMIN' } } as never);
-    const res = await callFiles('uploads', ['file\0.pdf']) as { status: number };
+    const res = await callFiles('uploads', ['file\0.pdf']) as unknown as { status: number };
     expect(res.status).toBe(400);
   });
   it('ooToken верный для docs → пускает без сессии', async () => {
     mockVerifyFileAccessToken.mockReturnValue(true);
     const res = await callFiles('docs', ['secret.docx'], {
       authenticated: false, searchParams: { ooToken: 'valid-jwt' },
-    }) as { status: number };
-    // session не запрошена, файл не существует → 404 но НЕ 401
+    }) as unknown as { status: number };
     expect(res.status).toBe(404);
     expect(mockAuth).not.toHaveBeenCalled();
     expect(mockVerifyFileAccessToken).toHaveBeenCalledWith('valid-jwt', '/api/files/docs/secret.docx');
@@ -176,31 +171,29 @@ describe('GET /api/files/[bucket]/[...path] — security', () => {
     mockVerifyFileAccessToken.mockReturnValue(false);
     const res = await callFiles('docs', ['secret.docx'], {
       authenticated: false, searchParams: { ooToken: 'invalid' },
-    }) as { status: number };
+    }) as unknown as { status: number };
     expect(res.status).toBe(401);
   });
   it('ooToken верный НО для другого bucket (uploads, не docs) → НЕ принимается', async () => {
     mockVerifyFileAccessToken.mockReturnValue(true);
     const res = await callFiles('uploads', ['private.pdf'], {
       authenticated: false, searchParams: { ooToken: 'valid-but-wrong-bucket' },
-    }) as { status: number };
+    }) as unknown as { status: number };
     expect(res.status).toBe(401);
-    // verifyFileAccessToken даже не вызывается для non-docs
     expect(mockVerifyFileAccessToken).not.toHaveBeenCalled();
   });
 });
 
-// =================== onlyoffice/config ===================
 describe('GET /api/onlyoffice/config', () => {
   it('нет docId → 400', async () => {
     const { GET } = await import('@/app/api/onlyoffice/config/route');
-    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config' }) as never) as MockResponse;
+    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config' }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('документ не найден → 404', async () => {
     mockDb.internalDocument.findUnique.mockResolvedValue(null);
     const { GET } = await import('@/app/api/onlyoffice/config/route');
-    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config?docId=d-x' }) as never) as MockResponse;
+    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config?docId=d-x' }) as never) as unknown as MockResponse;
     expect(res.status).toBe(404);
   });
   it('нет прав через canViewLead → 403', async () => {
@@ -210,7 +203,7 @@ describe('GET /api/onlyoffice/config', () => {
     });
     mockCanViewLead.mockReturnValue(false);
     const { GET } = await import('@/app/api/onlyoffice/config/route');
-    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config?docId=d-1' }) as never) as MockResponse;
+    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config?docId=d-1' }) as never) as unknown as MockResponse;
     expect(res.status).toBe(403);
   });
   it('успех → buildEditorConfig вызывается с documentKey включающим version+updatedAt', async () => {
@@ -220,11 +213,11 @@ describe('GET /api/onlyoffice/config', () => {
       version: 3, updatedAt, lead: { salesManagerId: 'u-1', legalManagerId: null },
     });
     const { GET } = await import('@/app/api/onlyoffice/config/route');
-    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config?docId=d-1' }) as never) as MockResponse;
+    const res = await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config?docId=d-1' }) as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockBuildEditorConfig).toHaveBeenCalledWith(expect.objectContaining({
       documentId:  'd-1',
-      documentKey: `d-1-v3-${updatedAt.getTime()}`, // кэш-бастер с version + updatedAt
+      documentKey: `d-1-v3-${updatedAt.getTime()}`,
       fileName:    'Договор',
     }));
   });
@@ -235,16 +228,15 @@ describe('GET /api/onlyoffice/config', () => {
     });
     const { GET } = await import('@/app/api/onlyoffice/config/route');
     await GET(makeReq({ url: 'http://localhost/api/onlyoffice/config?docId=d-1&mode=view' }) as never);
-    const call = mockBuildEditorConfig.mock.calls[0][0];
+    const call = mockBuildEditorConfig.mock.calls[0]![0];
     expect(call.mode).toBe('view');
   });
 });
 
-// =================== onlyoffice/callback ===================
 describe('POST /api/onlyoffice/callback', () => {
   it('нет docId → 400', async () => {
     const { POST } = await import('@/app/api/onlyoffice/callback/route');
-    const res = await POST(makeReq({ url: 'http://localhost/api/onlyoffice/callback' }) as never) as MockResponse;
+    const res = await POST(makeReq({ url: 'http://localhost/api/onlyoffice/callback' }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('JWT в Authorization header invalid → 401', async () => {
@@ -254,7 +246,7 @@ describe('POST /api/onlyoffice/callback', () => {
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
       headers: { authorization: 'Bearer fake-jwt' },
       body: { status: 0 },
-    }) as never) as MockResponse;
+    }) as never) as unknown as MockResponse;
     expect(res.status).toBe(401);
   });
   it('JWT в body.token invalid → 401', async () => {
@@ -263,7 +255,7 @@ describe('POST /api/onlyoffice/callback', () => {
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
       body: { status: 0, token: 'fake' },
-    }) as never) as MockResponse;
+    }) as never) as unknown as MockResponse;
     expect(res.status).toBe(401);
   });
   it('без JWT вообще — проходит (текущее поведение — dev/disabled JWT)', async () => {
@@ -275,8 +267,8 @@ describe('POST /api/onlyoffice/callback', () => {
     const { POST } = await import('@/app/api/onlyoffice/callback/route');
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
-      body: { status: 0 }, // NO_CHANGES
-    }) as never) as MockResponse;
+      body: { status: 0 },
+    }) as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
   });
   it('документ не найден → 404', async () => {
@@ -285,7 +277,7 @@ describe('POST /api/onlyoffice/callback', () => {
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-x',
       body: { status: 0 },
-    }) as never) as MockResponse;
+    }) as never) as unknown as MockResponse;
     expect(res.status).toBe(404);
   });
   it('status=2 (READY_TO_SAVE) без url → 400', async () => {
@@ -297,8 +289,8 @@ describe('POST /api/onlyoffice/callback', () => {
     const { POST } = await import('@/app/api/onlyoffice/callback/route');
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
-      body: { status: 2 }, // нет url
-    }) as never) as MockResponse;
+      body: { status: 2 },
+    }) as never) as unknown as MockResponse;
     expect(res.status).toBe(400);
   });
   it('status=2 + url → скачать, сохранить старую версию как parent + version+1', async () => {
@@ -312,7 +304,7 @@ describe('POST /api/onlyoffice/callback', () => {
     const res = await POST(makeReq({
       url: 'http://localhost/api/onlyoffice/callback?docId=d-1',
       body: { status: 2, url: 'http://oo-server/output.docx' },
-    }) as never) as MockResponse;
+    }) as never) as unknown as MockResponse;
     expect(res.status).toBe(200);
     expect(mockDownloadAndSave).toHaveBeenCalledWith('http://oo-server/output.docx', 'docs', expect.any(String));
     expect(mockDb.internalDocument.create).toHaveBeenCalledWith(
