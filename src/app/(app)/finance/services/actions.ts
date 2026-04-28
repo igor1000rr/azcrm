@@ -32,7 +32,23 @@ const serviceSchema = z.object({
   isActive:               z.boolean().default(true),
 });
 
-export async function upsertService(input: z.infer<typeof serviceSchema>) {
+// Тип того что разрешено передавать в форму. Числовые поля принимают
+// либо number (когда вызывают программно), либо string (как в форме —
+// текстовый input с inputMode=decimal, поддерживает запятую '5,5').
+// Сам Zod через preprocess нормализует в number перед валидацией.
+export interface UpsertServiceInput {
+  id?: string;
+  name: string;
+  description?: string;
+  basePrice?: string | number;
+  salesCommissionPercent?: string | number;
+  legalCommissionPercent?: string | number;
+  funnelId?: string;
+  position?: number;
+  isActive?: boolean;
+}
+
+export async function upsertService(input: UpsertServiceInput) {
   const user = await requireAdmin();
   const data = serviceSchema.parse(input);
 
