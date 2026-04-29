@@ -102,6 +102,7 @@ export default async function InboxPage({ searchParams }: PageProps) {
           leadId:        t.lead?.id ?? null,
           funnelName:    t.lead?.funnel.name ?? null,
         }))}
+        activeChannelId={params.channel ?? null}
         activeThreadId={params.thread ?? null}
         activeMessages={activeMessages}
         activeThread={activeThread ? {
