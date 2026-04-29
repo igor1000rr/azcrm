@@ -8,6 +8,12 @@
 //
 // Список лидов для привязки к встрече — только видимые юзеру (leadVisibilityFilter):
 // SALES не должен видеть клиентов LEGAL в селекторе — это утечка ПДн.
+//
+// Резолвинг участников:
+//   У CalendarEventParticipant в schema.prisma НЕТ Prisma-relation на User
+//   (только колонка userId). Поэтому include: { user: ... } падает в рантайме
+//   с PrismaValidationError. Загружаем юзеров отдельным запросом и матчим
+//   по userId через Map.
 
 import { Topbar } from '@/components/topbar';
 import { CalendarMonthView } from './calendar-view';
@@ -78,11 +84,9 @@ export default async function CalendarPage({ searchParams }: PageProps) {
           },
         },
         owner: { select: { id: true, name: true } },
-        participants: {
-          include: {
-            user: { select: { id: true, name: true } },
-          },
-        },
+        // Только userId — у CalendarEventParticipant нет relation на User
+        // в схеме, поэтому include: { user: ... } упал бы. Имена резолвим ниже.
+        participants: { select: { userId: true } },
       },
     }),
     db.user.findMany({
@@ -101,6 +105,22 @@ export default async function CalendarPage({ searchParams }: PageProps) {
       take: 200,
     }),
   ]);
+
+  // Резолвим имена участников. Большинство — активные сотрудники (есть в team),
+  // но если юзера деактивировали после создания встречи — его в team нет.
+  // Поэтому загружаем по полному списку userId одним запросом (включая неактивных).
+  const participantUserIds = [
+    ...new Set(events.flatMap((e) => e.participants.map((p) => p.userId))),
+  ];
+
+  let participantUsers: { id: string; name: string }[] = [];
+  if (participantUserIds.length > 0) {
+    participantUsers = await db.user.findMany({
+      where:  { id: { in: participantUserIds } },
+      select: { id: true, name: true },
+    });
+  }
+  const userById = new Map(participantUsers.map((u) => [u.id, u]));
 
   return (
     <>
@@ -121,7 +141,9 @@ export default async function CalendarPage({ searchParams }: PageProps) {
           ownerName:      e.owner?.name ?? null,
           leadId:         e.leadId,
           leadClientName: e.lead?.client.fullName ?? null,
-          participants:   e.participants.map((p) => ({ id: p.user.id, name: p.user.name })),
+          participants:   e.participants
+            .map((p) => userById.get(p.userId))
+            .filter((u): u is { id: string; name: string } => Boolean(u)),
         }))}
         team={team}
         leads={leads.map((l) => ({
