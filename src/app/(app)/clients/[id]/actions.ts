@@ -31,7 +31,25 @@ const clientSchema = z.object({
     z.null(),
   ]).optional(),
   legalStayUntil: z.string().nullable().optional().or(z.literal('')),
+  // Anna идея №7 «Календарь сроков виз и документов» — паспорт истекает.
+  // Cron шлёт менеджеру напоминания за 90/30/14 дней до этой даты.
+  passportExpiresAt: z.string().nullable().optional().or(z.literal('')),
 });
+
+/** Парсит строку даты (yyyy-mm-dd или ISO) в Date или null. Бросает ошибку при невалидной. */
+function parseOptionalDate(s: string | null | undefined, errMsg: string): Date | null {
+  if (!s) return null;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) throw new Error(errMsg);
+  return d;
+}
+
+/** Сравнивает две даты по ISO-строке (или обе null). true если разные. */
+function datesDiffer(a: Date | null, b: Date | null): boolean {
+  if (a === null && b === null) return false;
+  if (a === null || b === null) return true;
+  return a.getTime() !== b.getTime();
+}
 
 export async function updateClient(input: z.infer<typeof clientSchema>) {
   const user = await requireUser();
@@ -70,29 +88,46 @@ export async function updateClient(input: z.infer<typeof clientSchema>) {
   // иначе enum-значение. Используем простой `|| null` т.к. после truthy-check
   // ts-узкий тип не пересекается с '' (а сравнение `!== ''` после && — TS2367).
   const stayType = data.legalStayType || null;
-  const stayUntil = data.legalStayUntil && data.legalStayUntil !== ''
-    ? new Date(data.legalStayUntil)
-    : null;
-  if (stayUntil && isNaN(stayUntil.getTime())) {
-    throw new Error('Некорректная дата окончания побыта');
+  const stayUntil = parseOptionalDate(data.legalStayUntil, 'Некорректная дата окончания побыта');
+  const passportExp = parseOptionalDate(data.passportExpiresAt, 'Некорректная дата истечения паспорта');
+
+  // Anna идея №7: при смене даты истечения сбрасываем флаги отправленных
+  // напоминаний — иначе при продлении карты на 5 лет ни одно напоминание
+  // не уйдёт, т.к. флаги легальной серии уже все true. После сброса cron
+  // выпустит свежую серию 90/30/14 для нового срока.
+  const stayChanged     = datesDiffer(client.legalStayUntil, stayUntil);
+  const passportChanged = datesDiffer(client.passportExpiresAt, passportExp);
+
+  const reminderResets: Record<string, false> = {};
+  if (stayChanged) {
+    reminderResets.legalStayReminder90Sent = false;
+    reminderResets.legalStayReminder30Sent = false;
+    reminderResets.legalStayReminder14Sent = false;
+  }
+  if (passportChanged) {
+    reminderResets.passportReminder90Sent = false;
+    reminderResets.passportReminder30Sent = false;
+    reminderResets.passportReminder14Sent = false;
   }
 
   await db.client.update({
     where: { id: data.id },
     data: {
-      fullName:       data.fullName,
-      phone:          newPhone,
-      altPhone:       data.altPhone || null,
-      altPhone2:      data.altPhone2 || null,
-      altPhone3:      data.altPhone3 || null,
-      email:          data.email || null,
-      birthDate:      data.birthDate ? new Date(data.birthDate) : null,
-      nationality:    data.nationality || null,
-      addressPL:      data.addressPL || null,
-      addressHome:    data.addressHome || null,
-      cityId:         data.cityId || null,
-      legalStayType:  stayType,
-      legalStayUntil: stayUntil,
+      fullName:          data.fullName,
+      phone:             newPhone,
+      altPhone:          data.altPhone || null,
+      altPhone2:         data.altPhone2 || null,
+      altPhone3:         data.altPhone3 || null,
+      email:             data.email || null,
+      birthDate:         data.birthDate ? new Date(data.birthDate) : null,
+      nationality:       data.nationality || null,
+      addressPL:         data.addressPL || null,
+      addressHome:       data.addressHome || null,
+      cityId:            data.cityId || null,
+      legalStayType:     stayType,
+      legalStayUntil:    stayUntil,
+      passportExpiresAt: passportExp,
+      ...reminderResets,
     },
   });
 
@@ -104,7 +139,9 @@ export async function updateClient(input: z.infer<typeof clientSchema>) {
     before,
     after:      {
       fullName: data.fullName, phone: newPhone, email: data.email,
-      legalStayType: stayType, legalStayUntil: stayUntil?.toISOString() ?? null,
+      legalStayType:     stayType,
+      legalStayUntil:    stayUntil?.toISOString() ?? null,
+      passportExpiresAt: passportExp?.toISOString() ?? null,
     },
   });
 
