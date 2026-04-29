@@ -60,18 +60,33 @@ export function InboxView({
 
   // Блокируем скролл всей страницы пока открыт inbox: листать должно только
   // содержимое колонок (треды/сообщения), а composer внизу — всегда виден.
-  // Без этого на iPad Safari (viewportFit: cover) body выходит за viewport и
-  // форма ввода уезжает под нижний край экрана.
+  // Используем position:fixed на body вместо overflow:hidden — это надёжнее на
+  // iPad Safari (fixed гарантирует что body не выходит за visible viewport,
+  // в т.ч. при viewportFit: cover; при overflow:hidden body иногда оставался
+  // в проскролленной позиции и "съедал" Topbar сверху).
   useEffect(() => {
     const html = document.documentElement;
     const body = document.body;
-    const prevHtmlOverflow = html.style.overflow;
-    const prevBodyOverflow = body.style.overflow;
+    const scrollY = window.scrollY;
+    const prev = {
+      htmlOverflow: html.style.overflow,
+      bodyPosition: body.style.position,
+      bodyTop:      body.style.top,
+      bodyWidth:    body.style.width,
+      bodyOverflow: body.style.overflow,
+    };
     html.style.overflow = 'hidden';
+    body.style.position = 'fixed';
+    body.style.top      = `-${scrollY}px`;
+    body.style.width    = '100%';
     body.style.overflow = 'hidden';
     return () => {
-      html.style.overflow = prevHtmlOverflow;
-      body.style.overflow = prevBodyOverflow;
+      html.style.overflow = prev.htmlOverflow;
+      body.style.position = prev.bodyPosition;
+      body.style.top      = prev.bodyTop;
+      body.style.width    = prev.bodyWidth;
+      body.style.overflow = prev.bodyOverflow;
+      window.scrollTo(0, scrollY);
     };
   }, []);
 
@@ -118,11 +133,12 @@ export function InboxView({
   }, [router]);
 
   return (
-    // 100dvh — реальная динамическая высота viewport. С body-lock выше она не
-    // "пляшет", потому что страница не скроллится и URL-bar в iPad/iOS Safari
-    // не прячется. min-h-0 нужно чтобы flex-children (треды, чат) могли
-    // скроллиться внутри своих контейнеров, а не выпирать наружу.
-    <div className="flex-1 flex h-[calc(100dvh-52px)] min-h-0 overflow-hidden">
+    // 100svh (small viewport height) гарантированно ≤ visible viewport на
+    // iPad Safari (в отличие от 100dvh, который при viewportFit:cover может
+    // быть больше). С body-lock URL-bar не прячется — высота стабильна.
+    // min-h-0 нужно чтобы flex-children (треды, чат) могли скроллиться внутри
+    // своих контейнеров, а не выпирать наружу.
+    <div className="flex-1 flex h-[calc(100svh-52px)] min-h-0 overflow-hidden">
       {/* Левая колонка — каналы */}
       <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0 min-h-0">
         <div className="px-4 py-3 border-b border-line">
