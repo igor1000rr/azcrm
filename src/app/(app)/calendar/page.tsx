@@ -5,11 +5,15 @@
 //   - ADMIN видит всё
 //   - остальные видят: свои (ownerId), общие (ownerId=null), или приглашены
 //     (через participants)
+//
+// Список лидов для привязки к встрече — только видимые юзеру (leadVisibilityFilter):
+// SALES не должен видеть клиентов LEGAL в селекторе — это утечка ПДн.
 
 import { Topbar } from '@/components/topbar';
 import { CalendarMonthView } from './calendar-view';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
+import { leadVisibilityFilter } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,8 +51,8 @@ export default async function CalendarPage({ searchParams }: PageProps) {
   const offsetEnd  = dowLast === 0 ? 0 : 7 - dowLast;
   const gridEnd    = new Date(year, monthIndex + 1, offsetEnd, 23, 59, 59, 999);
 
-  // Видимость
-  const where = user.role === 'ADMIN'
+  // Видимость событий
+  const eventVisibility = user.role === 'ADMIN'
     ? {}
     : {
         OR: [
@@ -58,9 +62,13 @@ export default async function CalendarPage({ searchParams }: PageProps) {
         ],
       };
 
+  // Видимость лидов в селекторе «Привязать к клиенту» — только свои (SALES не
+  // должен видеть клиентов LEGAL и наоборот). Админ — видит все.
+  const leadVis = leadVisibilityFilter(user);
+
   const [events, team, leads] = await Promise.all([
     db.calendarEvent.findMany({
-      where: { ...where, startsAt: { gte: gridStart, lte: gridEnd } },
+      where: { ...eventVisibility, startsAt: { gte: gridStart, lte: gridEnd } },
       orderBy: { startsAt: 'asc' },
       include: {
         lead: {
@@ -83,7 +91,7 @@ export default async function CalendarPage({ searchParams }: PageProps) {
       orderBy: { name: 'asc' },
     }),
     db.lead.findMany({
-      where: { isArchived: false },
+      where: { ...leadVis, isArchived: false },
       select: {
         id: true,
         client: { select: { fullName: true, phone: true } },

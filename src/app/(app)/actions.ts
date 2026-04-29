@@ -855,6 +855,16 @@ export async function addExtraCall(input: {
   return { id: event.id };
 }
 
+/**
+ * Удалить событие календаря.
+ *
+ * Права:
+ *   - Если событие привязано к лиду — нужно право на редактирование этого лида
+ *     (canEditLead: ADMIN или ответственный менеджер).
+ *   - Если без связи с лидом (напр. внутренняя встреча) — только владелец
+ *     события или админ. Без этой проверки любой залогиненный юзер мог бы удалить
+ *     чужую встречу.
+ */
 export async function deleteCalendarEvent(eventId: string) {
   const user = await requireUser();
 
@@ -866,7 +876,13 @@ export async function deleteCalendarEvent(eventId: string) {
     },
   });
   if (!ev) throw new Error('Событие не найдено');
-  if (ev.lead) assert(canEditLead(user, ev.lead));
+
+  if (ev.lead) {
+    assert(canEditLead(user, ev.lead));
+  } else {
+    // Встреча без привязки к лиду: удалить может владелец или админ.
+    assert(user.role === 'ADMIN' || ev.ownerId === user.id);
+  }
 
   // Асинхронно удалить из Google
   if (ev.googleId && ev.ownerId) {
