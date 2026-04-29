@@ -213,6 +213,8 @@ export default async function LeadPage({ params }: PageProps) {
           // Легальный побыт — тип и срок (Anna 29.04.2026)
           legalStayType:  lead.client.legalStayType,
           legalStayUntil: lead.client.legalStayUntil?.toISOString() ?? null,
+          // Срок паспорта (Anna идея №7 «Календарь сроков виз и документов»)
+          passportExpiresAt: lead.client.passportExpiresAt?.toISOString() ?? null,
         }}
         city={lead.city ? { id: lead.city.id, name: lead.city.name } : null}
         workCity={lead.workCity ? { id: lead.workCity.id, name: lead.workCity.name } : null}
