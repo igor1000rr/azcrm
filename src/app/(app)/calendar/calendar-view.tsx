@@ -4,22 +4,32 @@
 //
 // Структура:
 //   - Шапка: ← / → / Сегодня / название месяца / кнопка "Новая встреча"
+//   - Баннер pending submissions (Anna 30.04.2026) — лиды без даты подачи в уженд
 //   - Сетка 7×N: дни недели + ячейки дней с событиями
 //   - Модалка создания встречи (по клику на день или на кнопку)
 //   - Модалка деталей события (по клику на событие в ячейке)
+//
+// Подсветка «волшебная штучка» (Anna 30.04.2026):
+//   - event.submitted === false → красная пунктирная рамка + ⚠ маркер
+//     в начале строки события. Это значит у привязанного лида не
+//     поставлена дата подачи внеска (submittedAt = null).
+//   - event.submitted === null → событие без привязки к лиду (внутр. встреча),
+//     никакой подсветки.
+//   - event.submitted === true → внесок уже подан, штатный вид.
 
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   ChevronLeft, ChevronRight, Plus,
-  MapPin, Users, Trash2,
+  MapPin, Users, Trash2, AlertTriangle,
+  ChevronDown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
 import { Input, Textarea, Select, FormField } from '@/components/ui/input';
 import { Avatar } from '@/components/ui/avatar';
-import { cn, formatTime } from '@/lib/utils';
+import { cn, formatTime, formatDate, daysUntil } from '@/lib/utils';
 import { createCalendarMeeting } from './actions';
 import { deleteCalendarEvent } from '../actions';
 import type { UserRole, CalendarKind } from '@prisma/client';
@@ -36,7 +46,17 @@ interface EventLite {
   ownerName:      string | null;
   leadId:         string | null;
   leadClientName: string | null;
+  // Anna 30.04.2026: false = у лида нет даты подачи внеска (подсветка красным),
+  // true = подан, null = событие без привязки к лиду.
+  submitted:      boolean | null;
   participants:   { id: string; name: string }[];
+}
+
+interface PendingSubmission {
+  id:             string;
+  clientName:     string;
+  funnelName:     string;
+  firstContactAt: string | null;
 }
 
 interface TeamMember { id: string; name: string; role: UserRole }
@@ -49,6 +69,7 @@ interface Props {
   events:      EventLite[];
   team:        TeamMember[];
   leads:       LeadOption[];
+  pendingSubmissions: PendingSubmission[];
 }
 
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
@@ -72,7 +93,7 @@ function toDayKey(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-export function CalendarMonthView({ currentUser, year, monthIndex, events, team, leads }: Props) {
+export function CalendarMonthView({ currentUser, year, monthIndex, events, team, leads, pendingSubmissions }: Props) {
   const router = useRouter();
 
   const today = new Date();
@@ -102,6 +123,12 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
     }
     return map;
   }, [events]);
+
+  // Сколько событий в текущем месяце с непоставленной датой подачи
+  const eventsWithoutSubmission = useMemo(
+    () => events.filter((e) => e.submitted === false).length,
+    [events],
+  );
 
   const [createOpen, setCreateOpen]   = useState(false);
   const [createDate, setCreateDate]   = useState<string | null>(null);
@@ -141,13 +168,25 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
         <h1 className="text-[17px] font-bold tracking-tight text-navy ml-1">
           {MONTHS[monthIndex]} {year}
         </h1>
-        <span className="text-[12px] text-ink-4">{events.length} {plural(events.length, 'событие', 'события', 'событий')}</span>
+        <span className="text-[12px] text-ink-4">
+          {events.length} {plural(events.length, 'событие', 'события', 'событий')}
+          {eventsWithoutSubmission > 0 && (
+            <span className="text-danger font-semibold ml-1.5">
+              · {eventsWithoutSubmission} без поданного внеска
+            </span>
+          )}
+        </span>
         <div className="ml-auto">
           <Button variant="primary" onClick={() => openCreate(todayKey)}>
             <Plus size={12} /> Новая встреча
           </Button>
         </div>
       </div>
+
+      {/* Баннер: лиды без даты подачи внеска */}
+      {pendingSubmissions.length > 0 && (
+        <PendingSubmissionsBanner items={pendingSubmissions} />
+      )}
 
       {/* Сетка календаря */}
       <div className="bg-paper border border-line rounded-lg overflow-hidden">
@@ -211,6 +250,7 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
                 <div className="flex flex-col gap-0.5 flex-1">
                   {visible.map((e) => {
                     const c = KIND_STYLES[e.kind];
+                    const noSubmission = e.submitted === false;
                     return (
                       <button
                         type="button"
@@ -220,9 +260,20 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
                           'w-full text-left px-1.5 py-px rounded text-[10.5px] font-medium truncate border transition-colors',
                           c.bg, c.text, c.border,
                           'hover:brightness-95',
+                          // Подсветка «внесок не подан»: красная пунктирная рамка
+                          // поверх обычного стиля + ring чтобы отличалось даже
+                          // в одинаковых по типу событиях.
+                          noSubmission && 'border-dashed border-danger ring-1 ring-danger/40',
                         )}
-                        title={`${formatTime(e.startsAt)} ${e.title}`}
+                        title={
+                          noSubmission
+                            ? `⚠ Внесок не подан · ${formatTime(e.startsAt)} ${e.title}`
+                            : `${formatTime(e.startsAt)} ${e.title}`
+                        }
                       >
+                        {noSubmission && (
+                          <span className="font-bold text-danger mr-1" aria-hidden>⚠</span>
+                        )}
                         <span className="font-mono mr-1 opacity-80">{formatTime(e.startsAt)}</span>
                         {e.title}
                       </button>
@@ -256,6 +307,9 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
       {/* Подсказка снизу */}
       <div className="text-[11.5px] text-ink-4 mt-3 px-1">
         Нажмите на любой день чтобы создать встречу. На событие — чтобы увидеть детали.
+        {eventsWithoutSubmission > 0 && (
+          <> События с <span className="text-danger font-semibold">красной пунктирной рамкой</span> — клиент без даты подачи внеска.</>
+        )}
       </div>
 
       {/* Модалки */}
@@ -277,6 +331,72 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
           onClose={() => setDetailEvent(null)}
           onDeleted={() => { setDetailEvent(null); router.refresh(); }}
         />
+      )}
+    </div>
+  );
+}
+
+// ====================== БАННЕР: ЛИДЫ БЕЗ ДАТЫ ПОДАЧИ ======================
+
+/** Сворачиваемый баннер со списком лидов которым нужно поставить
+ *  дату подачи внеска. Показывает первые 3, остальные раскрываются по клику.
+ *  Anna 30.04.2026 — «волшебная штучка». */
+function PendingSubmissionsBanner({ items }: { items: PendingSubmission[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? items : items.slice(0, 3);
+
+  return (
+    <div className="bg-danger/[0.04] border border-danger/25 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-2 mb-2">
+        <AlertTriangle size={14} className="text-danger shrink-0" />
+        <h2 className="text-[13px] font-bold text-danger uppercase tracking-[0.04em]">
+          Без поданного внеска
+        </h2>
+        <span className="text-[11px] text-danger font-semibold">{items.length}</span>
+        <span className="text-[11.5px] text-ink-3 ml-auto">сортировка по дате обращения, старые первыми</span>
+      </div>
+      <div className="flex flex-col gap-1">
+        {visible.map((l) => {
+          const days = daysUntil(l.firstContactAt);
+          // days отрицательное: первый контакт был в прошлом
+          const elapsed = days !== null ? Math.abs(days) : null;
+          return (
+            <Link
+              key={l.id}
+              href={`/clients/${l.id}`}
+              className="flex items-center gap-3 px-2.5 py-1.5 rounded-md bg-paper border border-danger/15 hover:border-danger/40 hover:bg-paper transition-colors group"
+            >
+              <span className="text-[10.5px] font-bold text-danger uppercase tracking-[0.05em] shrink-0">⚠</span>
+              <div className="flex-1 min-w-0 flex items-baseline gap-2 flex-wrap">
+                <span className="text-[12.5px] font-semibold text-ink truncate">{l.clientName}</span>
+                <span className="text-[11px] text-ink-4">{l.funnelName}</span>
+              </div>
+              {l.firstContactAt && (
+                <span className="text-[11px] text-ink-3 whitespace-nowrap">
+                  {formatDate(l.firstContactAt)}
+                  {elapsed !== null && elapsed > 0 && (
+                    <span className={cn(
+                      'ml-1.5 font-semibold',
+                      elapsed > 90 ? 'text-danger' : elapsed > 30 ? 'text-warn' : 'text-ink-3',
+                    )}>
+                      {elapsed} {plural(elapsed, 'день', 'дня', 'дней')} назад
+                    </span>
+                  )}
+                </span>
+              )}
+            </Link>
+          );
+        })}
+      </div>
+      {items.length > 3 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="mt-2 inline-flex items-center gap-1 text-[11.5px] text-danger hover:underline font-medium"
+        >
+          <ChevronDown size={11} className={cn('transition-transform', expanded && 'rotate-180')} />
+          {expanded ? 'Свернуть' : `Показать ещё ${items.length - 3}`}
+        </button>
       )}
     </div>
   );
@@ -484,6 +604,7 @@ function EventDetailModal({
   const canDelete = isAdmin || event.ownerId === currentUserId;
   const start = new Date(event.startsAt);
   const c = KIND_STYLES[event.kind];
+  const noSubmission = event.submitted === false;
 
   async function onDelete() {
     if (!confirm('Удалить событие?')) return;
@@ -508,6 +629,22 @@ function EventDetailModal({
         )}
       </>}>
       <div className="flex flex-col gap-3">
+        {/* Предупреждение о неподанном внеске — самое верхнее, чтобы Anna
+            сразу видела причину красной рамки. */}
+        {noSubmission && event.leadId && (
+          <Link
+            href={`/clients/${event.leadId}`}
+            className="flex items-start gap-2.5 p-2.5 rounded-md bg-danger/[0.06] border border-danger/30 hover:bg-danger/[0.1] transition-colors"
+          >
+            <AlertTriangle size={14} className="text-danger mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[12.5px] font-bold text-danger">Внесок не подан в уженд</div>
+              <div className="text-[11.5px] text-ink-2 mt-0.5">
+                Откройте карточку клиента → секция «Сделка» → поставьте дату подачи
+              </div>
+            </div>
+          </Link>
+        )}
         <div>
           <span className={cn(
             'inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border',
