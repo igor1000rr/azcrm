@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition, type DragEvent } from 'react';
+import { useState, useEffect, useTransition, type DragEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -47,6 +47,17 @@ export function FunnelView({
   const [localLeads, setLocalLeads] = useState(leads);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
+
+  // Синхронизация локального состояния с пропсами при смене фильтров.
+  // useState(leads) инициализируется один раз — без useEffect новые
+  // отфильтрованные данные с сервера не попадают в UI и канбан рендерится
+  // из устаревшего localLeads. Anna жаловалась: меняешь город — ничего
+  // не меняется. Причина была здесь.
+  // localLeads нужен только для оптимистичного drag-n-drop (мгновенно
+  // переставить карточку до ответа сервера); во всех остальных случаях
+  // должен совпадать с props.leads.
+  useEffect(() => { setLocalLeads(leads); }, [leads]);
+  useEffect(() => { setSearchValue(currentFilters.q); }, [currentFilters.q]);
 
   function updateUrl(patch: Partial<Filters & { funnel: string }>) {
     const params = new URLSearchParams(window.location.search);
