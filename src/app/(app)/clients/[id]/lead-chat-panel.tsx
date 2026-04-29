@@ -111,22 +111,22 @@ export function LeadChatPanel({
   const selectedAccount = availableAccounts.find((a) => a.id === selectedAccountId);
 
   return (
-    <div className="bg-paper border border-line rounded-lg flex flex-col overflow-hidden">
+    <div className="bg-paper border border-line rounded-lg flex flex-col overflow-hidden" data-testid="chat-panel">
       {/* Шапка */}
-      <div className="px-4 py-2.5 border-b border-line flex items-center gap-2 bg-bg">
+      <div className="px-4 py-2.5 border-b border-line flex items-center gap-2 bg-bg" data-testid="chat-header">
         <MessageSquare size={14} className="text-ink-3" />
         <h3 className="text-[12.5px] font-bold uppercase tracking-[0.05em] text-ink-2">
           Переписки с {clientName}
         </h3>
-        <span className="ml-auto text-[11px] text-ink-4">
+        <span className="ml-auto text-[11px] text-ink-4" data-testid="chat-stats">
           {messages.length} {pluralizeMsg(messages.length)} · {countChannels(messages)} {pluralizeChannel(countChannels(messages))}
         </span>
       </div>
 
       {/* Лента сообщений — фиксированная высота с прокруткой */}
-      <div className="h-[480px] overflow-y-auto thin-scroll px-3 py-3 bg-bg">
+      <div className="h-[480px] overflow-y-auto thin-scroll px-3 py-3 bg-bg" data-testid="messages-list">
         {grouped.length === 0 ? (
-          <div className="h-full grid place-items-center text-center text-[13px] text-ink-4">
+          <div className="h-full grid place-items-center text-center text-[13px] text-ink-4" data-testid="empty-state">
             <div>
               <MessageSquare size={32} className="mx-auto text-ink-5 mb-2" />
               <div>Переписок с этим клиентом пока нет</div>
@@ -135,9 +135,9 @@ export function LeadChatPanel({
           </div>
         ) : (
           grouped.map((g) => (
-            <div key={g.date}>
+            <div key={g.date} data-testid={`day-group-${g.date}`}>
               <div className="text-center my-3">
-                <span className="text-[10.5px] px-2.5 py-0.5 bg-paper border border-line rounded-full text-ink-3 font-medium">
+                <span className="text-[10.5px] px-2.5 py-0.5 bg-paper border border-line rounded-full text-ink-3 font-medium" data-testid={`day-label-${g.date}`}>
                   {formatDateLabel(g.date)}
                 </span>
               </div>
@@ -151,9 +151,9 @@ export function LeadChatPanel({
       </div>
 
       {/* Композер с селектором канала */}
-      <form onSubmit={send} className="border-t border-line px-3 py-2.5">
+      <form onSubmit={send} className="border-t border-line px-3 py-2.5" data-testid="composer">
         {availableAccounts.length === 0 ? (
-          <div className="text-[12px] text-ink-4 text-center py-2">
+          <div className="text-[12px] text-ink-4 text-center py-2" data-testid="no-channels">
             Нет доступных каналов для отправки сообщения
           </div>
         ) : (
@@ -166,7 +166,7 @@ export function LeadChatPanel({
                 onChange={setSelectedAccountId}
               />
               {selectedAccount && !selectedAccount.isConnected && (
-                <span className="text-[10.5px] text-warn">канал не подключён</span>
+                <span className="text-[10.5px] text-warn" data-testid="not-connected-warn">канал не подключён</span>
               )}
             </div>
             <div className="flex items-end gap-2">
@@ -183,9 +183,11 @@ export function LeadChatPanel({
                 placeholder="Напишите сообщение..."
                 className="flex-1 resize-none px-3 py-2 text-[13px] bg-bg border border-line rounded-md focus:bg-paper focus:border-navy focus:outline-none max-h-[120px]"
                 disabled={!selectedAccountId || (selectedAccount && !selectedAccount.isConnected)}
+                data-testid="msg-input"
               />
               <button
                 type="submit"
+                data-testid="send-btn"
                 disabled={!body.trim() || sending || !selectedAccountId || (selectedAccount && !selectedAccount.isConnected)}
                 className={cn(
                   'h-9 px-3 rounded-md flex items-center gap-1.5 text-[12.5px] font-semibold transition-colors',
@@ -234,6 +236,7 @@ function ChannelSelect({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        data-testid="channel-select-btn"
         className="flex items-center gap-1.5 px-2 py-1 text-[12px] bg-bg border border-line rounded-md hover:bg-paper hover:border-ink-5 transition-colors"
       >
         {selected ? (
@@ -241,7 +244,7 @@ function ChannelSelect({
             <span className={cn(
               'w-1.5 h-1.5 rounded-full shrink-0',
               selected.isConnected ? 'bg-success' : 'bg-warn',
-            )} />
+            )} data-testid="selected-status-dot" />
             <span className="font-semibold text-ink">{selected.label}</span>
             {selected.isShared && (
               <span className="text-[10px] text-ink-4 px-1 bg-bg-alt rounded">общий</span>
@@ -254,11 +257,12 @@ function ChannelSelect({
       </button>
 
       {open && (
-        <div className="absolute z-30 top-full left-0 mt-1 min-w-[220px] bg-paper border border-line rounded-md shadow-lg py-1">
+        <div className="absolute z-30 top-full left-0 mt-1 min-w-[220px] bg-paper border border-line rounded-md shadow-lg py-1" data-testid="channel-dropdown">
           {accounts.map((a) => (
             <button
               key={a.id}
               type="button"
+              data-testid={`channel-option-${a.id}`}
               onClick={() => { onChange(a.id); setOpen(false); }}
               className={cn(
                 'w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-left hover:bg-bg',
@@ -287,7 +291,7 @@ function ChannelSelect({
 function Bubble({ m }: { m: LeadChatMessage }) {
   const isOut = m.direction === 'OUT';
   return (
-    <div className={cn('flex mb-1', isOut ? 'justify-end' : 'justify-start')}>
+    <div className={cn('flex mb-1', isOut ? 'justify-end' : 'justify-start')} data-testid={`bubble-${m.id}`}>
       <div className={cn(
         'max-w-[85%] sm:max-w-[70%] px-3 py-1.5 rounded-2xl text-[13px] break-words',
         isOut
@@ -298,20 +302,21 @@ function Bubble({ m }: { m: LeadChatMessage }) {
         <div className={cn(
           'text-[9.5px] font-semibold uppercase tracking-[0.04em] mb-0.5',
           isOut ? 'text-white/70' : 'text-ink-4',
-        )}>
+        )} data-testid={`bubble-label-${m.id}`}>
           {m.accountLabel}
           {m.senderName && isOut && ` · ${m.senderName}`}
         </div>
 
         {m.type === 'IMAGE' && m.mediaUrl && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={m.mediaUrl} alt="" className="rounded mb-1 max-w-full" />
+          <img src={m.mediaUrl} alt="" className="rounded mb-1 max-w-full" data-testid={`bubble-img-${m.id}`} />
         )}
         {m.type === 'DOCUMENT' && m.mediaUrl && (
           <a
             href={m.mediaUrl}
             target="_blank"
             rel="noreferrer"
+            data-testid={`bubble-doc-${m.id}`}
             className={cn(
               'flex items-center gap-2 text-[12px] underline mb-1',
               isOut ? 'text-white/90' : 'text-info',
@@ -320,11 +325,11 @@ function Bubble({ m }: { m: LeadChatMessage }) {
             <FileText size={12} /> {m.mediaName || 'Документ'}
           </a>
         )}
-        {m.body && <div className="whitespace-pre-wrap">{m.body}</div>}
+        {m.body && <div className="whitespace-pre-wrap" data-testid={`bubble-body-${m.id}`}>{m.body}</div>}
         <div className={cn(
           'text-[10px] mt-0.5 text-right opacity-70',
           isOut ? 'text-white/70' : 'text-ink-4',
-        )}>
+        )} data-testid={`bubble-meta-${m.id}`}>
           {formatTime(m.createdAt)}
           {isOut && (
             <span className="ml-1">
