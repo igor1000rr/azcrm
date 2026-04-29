@@ -18,14 +18,15 @@
 // Pending submissions (Anna 30.04.2026):
 //   Загружаем список лидов где submittedAt = null И есть firstContactAt.
 //   Передаём в CalendarMonthView для предупреждающего баннера сверху.
-//   Также обогащаем events флагом submitted (false если у привязанного
-//   лида нет даты подачи) — для подсветки на сетке.
+//   Также обогащаем events флагом submitted (через computeSubmissionStatus) —
+//   для подсветки на сетке.
 
 import { Topbar } from '@/components/topbar';
 import { CalendarMonthView } from './calendar-view';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { leadVisibilityFilter } from '@/lib/permissions';
+import { computeSubmissionStatus } from '@/lib/calendar-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -170,9 +171,9 @@ export default async function CalendarPage({ searchParams }: PageProps) {
           ownerName:      e.owner?.name ?? null,
           leadId:         e.leadId,
           leadClientName: e.lead?.client.fullName ?? null,
-          // Anna 30.04.2026: для событий с привязанным лидом отдаём флаг
-          // подачи внеска. null = событие не привязано к лиду (внутр. встреча).
-          submitted:      e.lead ? e.lead.submittedAt !== null : null,
+          // Anna 30.04.2026: флаг подачи внеска для подсветки на клиенте.
+          // Логика вынесена в computeSubmissionStatus (lib/calendar-helpers).
+          submitted:      computeSubmissionStatus(e.lead),
           participants:   e.participants
             .map((p) => userById.get(p.userId))
             .filter((u): u is { id: string; name: string } => Boolean(u)),
