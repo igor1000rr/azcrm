@@ -190,6 +190,8 @@ export default async function LeadPage({ params }: PageProps) {
           firstContactAt: lead.firstContactAt?.toISOString() ?? null,
           fingerprintDate: lead.fingerprintDate?.toISOString() ?? null,
           fingerprintLocation: lead.fingerprintLocation,
+          // Дата подачи в уженд (Anna 30.04.2026 — «волшебная штучка»)
+          submittedAt:  lead.submittedAt?.toISOString() ?? null,
           isArchived:   lead.isArchived,
           summary:      lead.summary,
           paid,

@@ -14,6 +14,12 @@
 //   (только колонка userId). Поэтому include: { user: ... } падает в рантайме
 //   с PrismaValidationError. Загружаем юзеров отдельным запросом и матчим
 //   по userId через Map.
+//
+// Pending submissions (Anna 30.04.2026):
+//   Загружаем список лидов где submittedAt = null И есть firstContactAt.
+//   Передаём в CalendarMonthView для предупреждающего баннера сверху.
+//   Также обогащаем events флагом submitted (false если у привязанного
+//   лида нет даты подачи) — для подсветки на сетке.
 
 import { Topbar } from '@/components/topbar';
 import { CalendarMonthView } from './calendar-view';
@@ -72,7 +78,7 @@ export default async function CalendarPage({ searchParams }: PageProps) {
   // должен видеть клиентов LEGAL и наоборот). Админ — видит все.
   const leadVis = leadVisibilityFilter(user);
 
-  const [events, team, leads] = await Promise.all([
+  const [events, team, leads, pendingLeads] = await Promise.all([
     db.calendarEvent.findMany({
       where: { ...eventVisibility, startsAt: { gte: gridStart, lte: gridEnd } },
       orderBy: { startsAt: 'asc' },
@@ -80,6 +86,8 @@ export default async function CalendarPage({ searchParams }: PageProps) {
         lead: {
           select: {
             id: true,
+            // Anna 30.04.2026: подсветка событий клиентов без даты подачи внеска
+            submittedAt: true,
             client: { select: { fullName: true } },
           },
         },
@@ -103,6 +111,27 @@ export default async function CalendarPage({ searchParams }: PageProps) {
       },
       orderBy: { updatedAt: 'desc' },
       take: 200,
+    }),
+    // Pending submissions — лиды без даты подачи внеска для предупреждающего
+    // баннера. Условия: лид активен, submittedAt = null, был хотя бы один
+    // контакт (firstContactAt не null — иначе это совсем свежий лид которому
+    // ещё рано подаваться). Сортировка — старые первыми, чтобы Anna видела
+    // самые «горящие». Лимит 100 — больше в баннер не поместится по UX.
+    db.lead.findMany({
+      where: {
+        ...leadVis,
+        isArchived:     false,
+        submittedAt:    null,
+        firstContactAt: { not: null },
+      },
+      select: {
+        id:             true,
+        firstContactAt: true,
+        client:         { select: { fullName: true } },
+        funnel:         { select: { name: true } },
+      },
+      orderBy: { firstContactAt: 'asc' },
+      take: 100,
     }),
   ]);
 
@@ -141,6 +170,9 @@ export default async function CalendarPage({ searchParams }: PageProps) {
           ownerName:      e.owner?.name ?? null,
           leadId:         e.leadId,
           leadClientName: e.lead?.client.fullName ?? null,
+          // Anna 30.04.2026: для событий с привязанным лидом отдаём флаг
+          // подачи внеска. null = событие не привязано к лиду (внутр. встреча).
+          submitted:      e.lead ? e.lead.submittedAt !== null : null,
           participants:   e.participants
             .map((p) => userById.get(p.userId))
             .filter((u): u is { id: string; name: string } => Boolean(u)),
@@ -151,6 +183,12 @@ export default async function CalendarPage({ searchParams }: PageProps) {
           name:       l.client.fullName,
           phone:      l.client.phone,
           funnelName: l.funnel.name,
+        }))}
+        pendingSubmissions={pendingLeads.map((l) => ({
+          id:             l.id,
+          clientName:     l.client.fullName,
+          funnelName:     l.funnel.name,
+          firstContactAt: l.firstContactAt?.toISOString() ?? null,
         }))}
       />
     </>
