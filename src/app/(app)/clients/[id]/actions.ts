@@ -66,8 +66,10 @@ export async function updateClient(input: z.infer<typeof clientSchema>) {
     }
   }
 
-  // Резолвим легальный побыт: '' → null, иначе оставляем enum-значение.
-  const stayType = data.legalStayType && data.legalStayType !== '' ? data.legalStayType : null;
+  // Резолвим легальный побыт. legalStayType: '' / null / undefined → null,
+  // иначе enum-значение. Используем простой `|| null` т.к. после truthy-check
+  // ts-узкий тип не пересекается с '' (а сравнение `!== ''` после && — TS2367).
+  const stayType = data.legalStayType || null;
   const stayUntil = data.legalStayUntil && data.legalStayUntil !== ''
     ? new Date(data.legalStayUntil)
     : null;

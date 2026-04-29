@@ -34,6 +34,11 @@ import { createCalendarMeeting } from './actions';
 import { deleteCalendarEvent } from '../actions';
 import type { UserRole, CalendarKind } from '@prisma/client';
 
+// Типы которые модалка может СОЗДАВАТЬ (FINGERPRINT и EXTRA_CALL создаются
+// внутри карточки лида через setFingerprintDate/addExtraCall — у них своя
+// логика). Должны совпадать с z.enum в createCalendarMeeting (calendar/actions.ts).
+type MeetingKind = 'INTERNAL_MEETING' | 'CONSULTATION' | 'CUSTOM';
+
 interface EventLite {
   id:             string;
   title:          string;
@@ -418,7 +423,10 @@ function CreateMeetingModal({
   const initial = initialDate || today;
 
   const [title, setTitle]                 = useState('');
-  const [kind, setKind]                   = useState<CalendarKind>('INTERNAL_MEETING');
+  // Узкий тип — модалка создаёт только эти 3 типа встреч (FINGERPRINT и
+  // EXTRA_CALL — отдельные actions внутри карточки лида). Совпадает с zod
+  // схемой createCalendarMeeting в calendar/actions.ts.
+  const [kind, setKind]                   = useState<MeetingKind>('INTERNAL_MEETING');
   const [date, setDate]                   = useState(initial);
   const [time, setTime]                   = useState('10:00');
   const [duration, setDuration]           = useState(30);
@@ -492,7 +500,7 @@ function CreateMeetingModal({
         </FormField>
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Тип">
-            <Select value={kind} onChange={(e) => setKind(e.target.value as CalendarKind)}>
+            <Select value={kind} onChange={(e) => setKind(e.target.value as MeetingKind)}>
               <option value="INTERNAL_MEETING">Внутренняя встреча</option>
               <option value="CONSULTATION">Консультация с клиентом</option>
               <option value="CUSTOM">Прочее</option>
