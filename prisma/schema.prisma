@@ -760,6 +760,26 @@ enum CallDirection {
   MISSED
 }
 
+// Anna идея №12 «Расшифровка и анализ телефонных разговоров».
+// Тональность определяется LLM по тексту транскрипта.
+enum CallSentiment {
+  POSITIVE        // довольный клиент, всё устраивает
+  NEUTRAL         // обычный разговор, без ярких эмоций
+  NEGATIVE        // раздражён, недоволен — требует внимания руководителя
+  PRICE_QUESTION  // интересуется ценой / условиями (горячий лид!)
+}
+
+// Жизненный цикл транскрипции одного звонка.
+// PENDING → PROCESSING → DONE / FAILED. SKIPPED для звонков без записи
+// или короче 5 секунд.
+enum TranscriptStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+  SKIPPED
+}
+
 model Call {
   id          String        @id @default(cuid())
   clientId    String?
@@ -779,10 +799,38 @@ model Call {
   metadata    Json?
   createdAt   DateTime      @default(now())
 
+  // ============ ТРАНСКРИПЦИЯ + АНАЛИЗ (Anna идея №12) ============
+  // Whisper API → текст разговора, дальше LLM → sentiment + summary + tags.
+  // Запускается из cron /api/cron/transcribe-calls раз в N минут — лимит
+  // на запуск чтобы не бить по rate limits провайдера.
+
+  // Полный текст разговора. Поиск по нему — главная фишка («искать
+  // по всем разговорам как по тексту»).
+  transcript          String?           @db.Text
+  // Статус обработки. PENDING — ждёт cron, DONE — уже разобран,
+  // SKIPPED — нет recordLocalUrl или durationSec < 5 сек.
+  transcriptStatus    TranscriptStatus  @default(PENDING)
+  transcriptError     String?           @db.Text
+  transcribedAt       DateTime?
+
+  // LLM-анализ результат. sentiment — главный фильтр для дашборда
+  // «проблемные звонки» (= sentiment=NEGATIVE).
+  sentiment           CallSentiment?
+  // -1.0 (очень негативный) .. +1.0 (очень позитивный) — для сортировки
+  sentimentScore      Float?
+  // Краткое резюме разговора 1-2 предложения, чтобы Anna видела суть
+  // в списке без открытия плеера.
+  analysisSummary     String?           @db.Text
+  // Теги вида ['жалоба-сроки', 'спросил-цену', 'упомянул-конкурента']
+  // Удобно для фильтров и аналитики.
+  analysisTags        String[]          @default([])
+
   @@index([clientId])
   @@index([leadId])
   @@index([startedAt])
   @@index([fromNumber])
+  @@index([sentiment])           // фильтр для дашборда «проблемные»
+  @@index([transcriptStatus])    // cron-выборка PENDING звонков
 }
 
 // ============================================================
@@ -905,6 +953,9 @@ enum NotificationKind {
   // до истечения визы / карты побыта / паспорта система шлёт уведомление
   // менеджеру (тому кто ведёт последний активный лид клиента).
   DOCUMENT_EXPIRY_REMINDER
+  // Anna идея №12: «проблемный звонок» — после транскрипции LLM определил
+  // sentiment=NEGATIVE → шлём уведомление руководителю чтобы он послушал.
+  NEGATIVE_CALL_ALERT
   CUSTOM
 }
 
