@@ -58,6 +58,23 @@ export function InboxView({
 }: InboxViewProps) {
   const router = useRouter();
 
+  // Блокируем скролл всей страницы пока открыт inbox: листать должно только
+  // содержимое колонок (треды/сообщения), а composer внизу — всегда виден.
+  // Без этого на iPad Safari (viewportFit: cover) body выходит за viewport и
+  // форма ввода уезжает под нижний край экрана.
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtmlOverflow = html.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    html.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+    };
+  }, []);
+
   // Авто-обновление: раз в 5 секунд тихо перезапрашиваем server-state
   // через router.refresh() — это RSC-friendly, без full page reload.
   // Когда вкладка не в фокусе — пауза (Page Visibility API), чтобы не
@@ -101,10 +118,11 @@ export function InboxView({
   }, [router]);
 
   return (
-    // 100svh (small viewport height) надёжнее 100dvh в Safari — не пляшет
-    // вместе с URL-bar. min-h-0 нужно чтобы flex-children (треды, чат)
-    // могли скроллиться внутри, а не выпирать наружу формой ввода.
-    <div className="flex-1 flex h-[calc(100svh-52px)] min-h-0 overflow-hidden">
+    // 100dvh — реальная динамическая высота viewport. С body-lock выше она не
+    // "пляшет", потому что страница не скроллится и URL-bar в iPad/iOS Safari
+    // не прячется. min-h-0 нужно чтобы flex-children (треды, чат) могли
+    // скроллиться внутри своих контейнеров, а не выпирать наружу.
+    <div className="flex-1 flex h-[calc(100dvh-52px)] min-h-0 overflow-hidden">
       {/* Левая колонка — каналы */}
       <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0 min-h-0">
         <div className="px-4 py-3 border-b border-line">
@@ -385,8 +403,9 @@ function ChatPane({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Композер — shrink-0 + sticky bottom-0 как страховка если родитель плывёт */}
-      <form onSubmit={send} className="bg-paper border-t border-line px-3 py-2.5 shrink-0 sticky bottom-0 z-10">
+      {/* Композер — shrink-0 + sticky bottom-0 как страховка если родитель плывёт.
+          pb-[env(safe-area-inset-bottom)] — отступ под home indicator на iPhone/iPad. */}
+      <form onSubmit={send} className="bg-paper border-t border-line px-3 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] shrink-0 sticky bottom-0 z-10">
         <div className="flex items-end gap-2">
           <button
             type="button"
