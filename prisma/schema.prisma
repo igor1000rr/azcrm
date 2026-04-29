@@ -166,6 +166,16 @@ model Stage {
 // КЛИЕНТ (физ. лицо) — общая карточка для всех его дел
 // ============================================================
 
+// Тип текущего легального пребывания клиента в Польше.
+// Anna 29.04.2026: «нужен пункт легальный побыт + календарик + выбор
+// варианта — карта / виза / безвиз». Хранится на клиенте (а не на лиде):
+// побыт привязан к человеку, общий для всех его дел.
+enum LegalStayType {
+  KARTA      // карта побыта
+  VISA       // виза
+  VISA_FREE  // безвиз
+}
+
 model Client {
   id            String   @id @default(cuid())
   fullName      String
@@ -189,6 +199,11 @@ model Client {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  // Легальный побыт — текущий статус пребывания клиента в Польше.
+  // Используется для напоминаний за месяц до окончания (новые карточки/визы).
+  legalStayType  LegalStayType?
+  legalStayUntil DateTime?
+
   leads         Lead[]
   files         ClientFile[]
   calls         Call[]
@@ -197,6 +212,7 @@ model Client {
   @@index([phone])
   @@index([fullName])
   @@index([ownerId])
+  @@index([legalStayUntil])
 }
 
 // ============================================================

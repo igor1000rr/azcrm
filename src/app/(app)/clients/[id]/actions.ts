@@ -10,18 +10,27 @@ import { normalizePhone } from '@/lib/utils';
 import { audit } from '@/lib/audit';
 
 const clientSchema = z.object({
-  id:          z.string(),
-  fullName:    z.string().min(2).max(200),
-  phone:       z.string().min(5),
-  altPhone:    z.string().nullable().optional(),
-  altPhone2:   z.string().nullable().optional(),
-  altPhone3:   z.string().nullable().optional(),
-  email:       z.string().email().nullable().optional().or(z.literal('')),
-  birthDate:   z.string().nullable().optional(),
-  nationality: z.string().nullable().optional(),
-  addressPL:   z.string().nullable().optional(),
-  addressHome: z.string().nullable().optional(),
-  cityId:      z.string().nullable().optional(),
+  id:             z.string(),
+  fullName:       z.string().min(2).max(200),
+  phone:          z.string().min(5),
+  altPhone:       z.string().nullable().optional(),
+  altPhone2:      z.string().nullable().optional(),
+  altPhone3:      z.string().nullable().optional(),
+  email:          z.string().email().nullable().optional().or(z.literal('')),
+  birthDate:      z.string().nullable().optional(),
+  nationality:    z.string().nullable().optional(),
+  addressPL:      z.string().nullable().optional(),
+  addressHome:    z.string().nullable().optional(),
+  cityId:         z.string().nullable().optional(),
+  // Легальный побыт — тип пребывания и срок окончания.
+  // Anna 29.04.2026: «карточка клиента → легальный побыт → календарик +
+  // выбор (карта / виза / безвиз)».
+  legalStayType:  z.union([
+    z.enum(['KARTA', 'VISA', 'VISA_FREE']),
+    z.literal(''),
+    z.null(),
+  ]).optional(),
+  legalStayUntil: z.string().nullable().optional().or(z.literal('')),
 });
 
 export async function updateClient(input: z.infer<typeof clientSchema>) {
@@ -57,20 +66,31 @@ export async function updateClient(input: z.infer<typeof clientSchema>) {
     }
   }
 
+  // Резолвим легальный побыт: '' → null, иначе оставляем enum-значение.
+  const stayType = data.legalStayType && data.legalStayType !== '' ? data.legalStayType : null;
+  const stayUntil = data.legalStayUntil && data.legalStayUntil !== ''
+    ? new Date(data.legalStayUntil)
+    : null;
+  if (stayUntil && isNaN(stayUntil.getTime())) {
+    throw new Error('Некорректная дата окончания побыта');
+  }
+
   await db.client.update({
     where: { id: data.id },
     data: {
-      fullName:    data.fullName,
-      phone:       newPhone,
-      altPhone:    data.altPhone || null,
-      altPhone2:   data.altPhone2 || null,
-      altPhone3:   data.altPhone3 || null,
-      email:       data.email || null,
-      birthDate:   data.birthDate ? new Date(data.birthDate) : null,
-      nationality: data.nationality || null,
-      addressPL:   data.addressPL || null,
-      addressHome: data.addressHome || null,
-      cityId:      data.cityId || null,
+      fullName:       data.fullName,
+      phone:          newPhone,
+      altPhone:       data.altPhone || null,
+      altPhone2:      data.altPhone2 || null,
+      altPhone3:      data.altPhone3 || null,
+      email:          data.email || null,
+      birthDate:      data.birthDate ? new Date(data.birthDate) : null,
+      nationality:    data.nationality || null,
+      addressPL:      data.addressPL || null,
+      addressHome:    data.addressHome || null,
+      cityId:         data.cityId || null,
+      legalStayType:  stayType,
+      legalStayUntil: stayUntil,
     },
   });
 
@@ -80,7 +100,10 @@ export async function updateClient(input: z.infer<typeof clientSchema>) {
     entityType: 'Client',
     entityId:   data.id,
     before,
-    after:      { fullName: data.fullName, phone: newPhone, email: data.email },
+    after:      {
+      fullName: data.fullName, phone: newPhone, email: data.email,
+      legalStayType: stayType, legalStayUntil: stayUntil?.toISOString() ?? null,
+    },
   });
 
   const leads = await db.lead.findMany({
