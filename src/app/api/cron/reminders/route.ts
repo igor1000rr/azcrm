@@ -4,12 +4,18 @@
 //
 // crontab пример:
 //   */30 * * * * curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" https://crm.azgroup.pl/api/cron/reminders
+//
+// Что делает:
+//   1. Шлёт WhatsApp клиенту за 7 и 1 день до отпечатков (FINGERPRINT events)
+//   2. Шлёт push-уведомление менеджеру за 90/30/14 дней до истечения
+//      legalStayUntil / passportExpiresAt клиента (Anna идея №7)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { workerSendMessage } from '@/lib/whatsapp';
 import { formatTime } from '@/lib/utils';
 import { checkCronAuth } from '@/lib/cron-auth';
+import { checkExpiringDocuments } from '@/lib/document-reminders';
 
 export async function POST(req: NextRequest) {
   const fail = checkCronAuth(req);
@@ -116,11 +122,19 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // === Документы клиентов: визы, карты побыта, паспорта ===
+  // Anna идея №7 — за 90/30/14 дней до истечения шлём менеджеру push.
+  const docResult = await checkExpiringDocuments(now).catch((e) => {
+    console.error('expiring documents check failed:', e);
+    return { sent: 0, errors: 1 };
+  });
+
   return NextResponse.json({
     ok: true,
     timestamp: now.toISOString(),
     sent7d,
     sent1d,
-    errors,
+    docReminders: docResult.sent,
+    errors:       errors + docResult.errors,
   });
 }
