@@ -58,38 +58,6 @@ export function InboxView({
 }: InboxViewProps) {
   const router = useRouter();
 
-  // Блокируем скролл всей страницы пока открыт inbox: листать должно только
-  // содержимое колонок (треды/сообщения), а composer внизу — всегда виден.
-  // Используем position:fixed на body вместо overflow:hidden — это надёжнее на
-  // iPad Safari (fixed гарантирует что body не выходит за visible viewport,
-  // в т.ч. при viewportFit: cover; при overflow:hidden body иногда оставался
-  // в проскролленной позиции и "съедал" Topbar сверху).
-  useEffect(() => {
-    const html = document.documentElement;
-    const body = document.body;
-    const scrollY = window.scrollY;
-    const prev = {
-      htmlOverflow: html.style.overflow,
-      bodyPosition: body.style.position,
-      bodyTop:      body.style.top,
-      bodyWidth:    body.style.width,
-      bodyOverflow: body.style.overflow,
-    };
-    html.style.overflow = 'hidden';
-    body.style.position = 'fixed';
-    body.style.top      = `-${scrollY}px`;
-    body.style.width    = '100%';
-    body.style.overflow = 'hidden';
-    return () => {
-      html.style.overflow = prev.htmlOverflow;
-      body.style.position = prev.bodyPosition;
-      body.style.top      = prev.bodyTop;
-      body.style.width    = prev.bodyWidth;
-      body.style.overflow = prev.bodyOverflow;
-      window.scrollTo(0, scrollY);
-    };
-  }, []);
-
   // Авто-обновление: раз в 5 секунд тихо перезапрашиваем server-state
   // через router.refresh() — это RSC-friendly, без full page reload.
   // Когда вкладка не в фокусе — пауза (Page Visibility API), чтобы не
@@ -133,12 +101,14 @@ export function InboxView({
   }, [router]);
 
   return (
-    // 100svh (small viewport height) гарантированно ≤ visible viewport на
-    // iPad Safari (в отличие от 100dvh, который при viewportFit:cover может
-    // быть больше). С body-lock URL-bar не прячется — высота стабильна.
-    // min-h-0 нужно чтобы flex-children (треды, чат) могли скроллиться внутри
-    // своих контейнеров, а не выпирать наружу.
-    <div className="flex-1 flex h-[calc(100svh-52px)] min-h-0 overflow-hidden">
+    // position:fixed жёстко привязывает корень inbox-view к видимой области
+    // viewport, без зависимости от body-скролла и от viewport units (svh/dvh
+    // на iPad Safari при viewportFit:cover ведут себя непредсказуемо).
+    //   top:52px  — под Topbar (sticky 52px высотой)
+    //   left:0    — на mobile, md:left-[232px] — за Sidebar (232px на md+)
+    //   right:0, bottom:0 — до правого/нижнего края экрана
+    // Composer внутри (sticky bottom-0) всегда виден ровно над home indicator.
+    <div className="fixed top-[52px] left-0 md:left-[232px] right-0 bottom-0 flex min-h-0 overflow-hidden bg-bg z-30">
       {/* Левая колонка — каналы */}
       <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0 min-h-0">
         <div className="px-4 py-3 border-b border-line">
