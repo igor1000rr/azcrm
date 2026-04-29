@@ -102,6 +102,112 @@ describe('updateClient', () => {
   });
 });
 
+// ====================== legalStayType / legalStayUntil ======================
+// Anna 29.04.2026: «карточка клиента → легальный побыт → календарик +
+// выбор (карта / виза / безвиз)». Хранится на Client (общее для всех его дел).
+
+describe('updateClient — legalStayType / legalStayUntil', () => {
+  const findResp = {
+    id: 'cl-1', phone: '+48123456789', fullName: 'X', email: null,
+    leads: [{ salesManagerId: 'u-1', legalManagerId: null }],
+  };
+
+  it("legalStayType='' (не указан) → null в БД", async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({ ...validInput, legalStayType: '', legalStayUntil: '' } as never);
+    expect(mockDb.client.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        legalStayType:  null,
+        legalStayUntil: null,
+      }),
+    }));
+  });
+
+  it('legalStayType=KARTA + дата → enum + Date в БД', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, legalStayType: 'KARTA', legalStayUntil: '2026-12-31',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.legalStayType).toBe('KARTA');
+    expect(data.legalStayUntil).toBeInstanceOf(Date);
+    expect(data.legalStayUntil.toISOString().slice(0, 10)).toBe('2026-12-31');
+  });
+
+  it('VISA_FREE → enum проходит валидацию', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, legalStayType: 'VISA_FREE',
+    } as never);
+    expect(mockDb.client.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ legalStayType: 'VISA_FREE' }),
+    }));
+  });
+
+  it('VISA → enum проходит', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, legalStayType: 'VISA', legalStayUntil: '2027-01-15',
+    } as never);
+    expect(mockDb.client.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ legalStayType: 'VISA' }),
+    }));
+  });
+
+  it('legalStayType с мусорным значением → zod throw', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await expect(updateClient({
+      ...validInput, legalStayType: 'INVALID_TYPE',
+    } as never)).rejects.toThrow();
+    expect(mockDb.client.update).not.toHaveBeenCalled();
+  });
+
+  it('legalStayUntil=невалидная дата → throw "Некорректная дата окончания побыта"', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await expect(updateClient({
+      ...validInput, legalStayUntil: 'not-a-date',
+    } as never)).rejects.toThrow('Некорректная дата окончания побыта');
+    expect(mockDb.client.update).not.toHaveBeenCalled();
+  });
+
+  it('audit after содержит legalStayType (enum) и legalStayUntil (ISO string)', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, legalStayType: 'KARTA', legalStayUntil: '2026-06-01',
+    } as never);
+    expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'client.update',
+      after: expect.objectContaining({
+        legalStayType:  'KARTA',
+        legalStayUntil: expect.stringMatching(/^2026-06-01T/),
+      }),
+    }));
+  });
+
+  it('legalStayType=null + legalStayUntil=null (явно) → оба null в БД', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, legalStayType: null, legalStayUntil: null,
+    } as never);
+    expect(mockDb.client.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        legalStayType:  null,
+        legalStayUntil: null,
+      }),
+    }));
+  });
+
+  it('legalStayType=KARTA БЕЗ даты окончания → enum без даты сохраняется', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, legalStayType: 'KARTA',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.legalStayType).toBe('KARTA');
+    expect(data.legalStayUntil).toBeNull();
+  });
+});
+
 describe('removeClientFile', () => {
   it('файл не найден → throw', async () => {
     mockDb.clientFile.findUnique.mockResolvedValue(null);
