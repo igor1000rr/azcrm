@@ -220,6 +220,56 @@ export async function setWorkCity(leadId: string, cityId: string | null) {
   return { ok: true };
 }
 
+// ====================== ДАТА ПОДАЧИ ВНЕСКА (wniosek) ======================
+
+/**
+ * Anna 30.04.2026: «дата подачи в уженд + волшебная штучка — в календаре
+ * подсвечивать клиента если у него не поставлена дата подачи внеска».
+ *
+ * Редактируется inline в карточке лида. date — ISO yyyy-mm-dd или null.
+ * При null все calendar events связанные с лидом получают красный маркер
+ * «внесок не подан».
+ */
+export async function setSubmittedAt(leadId: string, date: string | null) {
+  const user = await requireUser();
+
+  const lead = await db.lead.findUnique({
+    where: { id: leadId },
+    select: { id: true, salesManagerId: true, legalManagerId: true, submittedAt: true },
+  });
+  if (!lead) throw new Error('Лид не найден');
+  assert(canEditLead(user, lead));
+
+  let newDate: Date | null = null;
+  if (date) {
+    newDate = new Date(date);
+    if (isNaN(newDate.getTime())) {
+      throw new Error('Некорректная дата подачи');
+    }
+  }
+
+  await db.lead.update({
+    where: { id: leadId },
+    data:  { submittedAt: newDate },
+  });
+
+  await audit({
+    userId:     user.id,
+    action:     'lead.set_submitted_at',
+    entityType: 'Lead',
+    entityId:   leadId,
+    before:     { submittedAt: lead.submittedAt?.toISOString() ?? null },
+    after:      { submittedAt: newDate?.toISOString() ?? null },
+  });
+
+  revalidatePath(`/clients/${leadId}`);
+  // Важно: подсветка событий в календаре зависит от submittedAt —
+  // инвалидируем кэш календаря чтобы маркеры сразу пропали/появились.
+  revalidatePath('/calendar');
+
+  return { ok: true };
+}
+
 // ====================== УСЛУГИ НА ЛИДЕ ======================
 
 const leadServicesSchema = z.object({

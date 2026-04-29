@@ -269,6 +269,13 @@ model Lead {
   fingerprintDate   DateTime?
   fingerprintLocation String?
 
+  // Дата подачи внеска (wniosek) в УВ.
+  // Anna 30.04.2026: «волшебная штучка — в календаре подсвечивать клиента
+  // если у него не поставлена дата подачи внеска» — критично для мигр. фирмы:
+  // если отпечатки назначены, а внесок не подан — риск просрочки. null → события
+  // в календаре получают красный маркер.
+  submittedAt   DateTime?
+
   isArchived    Boolean  @default(false)
   closedAt      DateTime?
   summary       String?  @db.Text
@@ -295,6 +302,7 @@ model Lead {
   @@index([serviceId])
   @@index([sourceKind, createdAt])
   @@index([fingerprintDate])
+  @@index([submittedAt])
   @@index([isArchived])
 }
 
