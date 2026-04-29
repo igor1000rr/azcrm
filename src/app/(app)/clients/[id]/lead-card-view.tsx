@@ -41,6 +41,10 @@ interface CurrentUser {
   id: string; email: string; name: string; role: UserRole;
 }
 
+// Тип легального пребывания клиента в Польше (Anna 29.04.2026).
+// Хранится на Client (один на человека, общий для всех его дел).
+type LegalStayType = 'KARTA' | 'VISA' | 'VISA_FREE';
+
 interface CityLite { id: string; name: string }
 interface ServiceLite { id: string; name: string; basePrice: number }
 interface LeadServiceLite {
@@ -67,6 +71,9 @@ interface LeadCardViewProps {
     altPhone2: string | null;
     altPhone3: string | null;
     email: string | null; addressPL: string | null; addressHome: string | null;
+    // Легальный побыт — тип пребывания и срок окончания
+    legalStayType:  LegalStayType | null;
+    legalStayUntil: string | null;
   };
   city:     CityLite | null;
   workCity: CityLite | null;
@@ -122,6 +129,33 @@ interface LeadCardViewProps {
   chatMessages: LeadChatMessage[];
   // Доступные каналы для отправки (ADMIN — все, остальные — свои + общие)
   availableChatAccounts: LeadChatAccount[];
+}
+
+const LEGAL_STAY_LABEL: Record<LegalStayType, string> = {
+  KARTA:     'Карта побыта',
+  VISA:      'Виза',
+  VISA_FREE: 'Безвиз',
+};
+
+/** Отображение «Действует до» с подсветкой по близости срока:
+ *  истёк — красный, < 30 дн — жёлтый, < 90 дн — info, иначе обычный. */
+function StayUntilDisplay({ until }: { until: string | null }) {
+  if (!until) return null;
+  const days = daysUntil(until);
+  const dateStr = formatDate(until);
+  if (days === null) return <>{dateStr}</>;
+  if (days < 0) {
+    return (
+      <span>
+        <span className="line-through text-ink-4">{dateStr}</span>{' '}
+        <span className="text-danger font-semibold">истёк {Math.abs(days)} {plural(Math.abs(days), 'день', 'дня', 'дней')} назад</span>
+      </span>
+    );
+  }
+  if (days === 0) return <span className="text-danger font-semibold">{dateStr} (сегодня)</span>;
+  if (days <= 30) return <span>{dateStr} <span className="text-warn font-semibold">через {days} {plural(days, 'день', 'дня', 'дней')}</span></span>;
+  if (days <= 90) return <span>{dateStr} <span className="text-info">через {days} {plural(days, 'день', 'дня', 'дней')}</span></span>;
+  return <>{dateStr}</>;
 }
 
 export function LeadCardView(props: LeadCardViewProps) {
@@ -210,12 +244,17 @@ function ClientHeader({ client, lead, city, stages, currentUser, whatsappAccount
 function ClientCard({ client, lead }: LeadCardViewProps) {
   const [editing, setEditing] = useState(false);
   const altPhones = [client.altPhone, client.altPhone2, client.altPhone3].filter((p): p is string => Boolean(p && p.trim()));
+  const stayLabel = client.legalStayType ? LEGAL_STAY_LABEL[client.legalStayType] : null;
   return (
     <Section title="Карточка клиента" action={<Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Изменить</Button>}>
       <Field2Cols rows={[
         [{ label: 'ФИО', value: client.fullName }, { label: 'Дата рождения', value: client.birthDate ? formatDate(client.birthDate) : null }],
         [{ label: 'Национальность', value: client.nationality }, { label: 'Телефон', value: <span className="font-mono">{formatPhone(client.phone)}</span> }],
         [{ label: 'Email', value: client.email }, { label: 'Источник лида', value: lead.source }],
+        [
+          { label: 'Легальный побыт', value: stayLabel ? <Badge variant={client.legalStayType === 'KARTA' ? 'success' : client.legalStayType === 'VISA' ? 'warn' : 'default'}>{stayLabel}</Badge> : null },
+          { label: 'Действует до', value: client.legalStayUntil ? <StayUntilDisplay until={client.legalStayUntil} /> : null },
+        ],
       ]} />
       {altPhones.length > 0 && <FieldFull label={`Доп. телефоны (${altPhones.length})`} value={altPhones.map(formatPhone).join('   ·   ')} />}
       <FieldFull label="Адрес проживания в Польше" value={client.addressPL} />
@@ -237,6 +276,8 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
   const [nationality, setNationality] = useState(client.nationality ?? '');
   const [addressPL, setAddressPL] = useState(client.addressPL ?? '');
   const [addressHome, setAddressHome] = useState(client.addressHome ?? '');
+  const [legalStayType, setLegalStayType] = useState<string>(client.legalStayType ?? '');
+  const [legalStayUntil, setLegalStayUntil] = useState(client.legalStayUntil ? client.legalStayUntil.slice(0, 10) : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function save() {
@@ -245,7 +286,10 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
       await updateClient({ id: client.id, fullName, phone,
         altPhone: altPhone || null, altPhone2: altPhone2 || null, altPhone3: altPhone3 || null,
         email, birthDate: birthDate || null, nationality: nationality || null,
-        addressPL: addressPL || null, addressHome: addressHome || null });
+        addressPL: addressPL || null, addressHome: addressHome || null,
+        legalStayType:  (legalStayType || null) as 'KARTA' | 'VISA' | 'VISA_FREE' | null,
+        legalStayUntil: legalStayUntil || null,
+      });
       router.refresh(); onClose();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
@@ -261,6 +305,18 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
         <FormField label="Доп. телефон 3"><Input type="tel" value={altPhone3} onChange={(e) => setAltPhone3(e.target.value)} placeholder="+48..." /></FormField>
         <FormField label="Email"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></FormField>
         <FormField label="Национальность"><Input value={nationality} onChange={(e) => setNationality(e.target.value)} /></FormField>
+        {/* Легальный побыт: тип + срок окончания */}
+        <FormField label="Легальный побыт" hint="Текущий статус пребывания в Польше">
+          <Select value={legalStayType} onChange={(e) => setLegalStayType(e.target.value)}>
+            <option value="">— не указан —</option>
+            <option value="KARTA">Карта побыта</option>
+            <option value="VISA">Виза</option>
+            <option value="VISA_FREE">Безвиз</option>
+          </Select>
+        </FormField>
+        <FormField label="Действует до" hint="Дата окончания текущего побыта">
+          <Input type="date" value={legalStayUntil} onChange={(e) => setLegalStayUntil(e.target.value)} />
+        </FormField>
         <div className="sm:col-span-2"><FormField label="Адрес проживания в Польше"><Input value={addressPL} onChange={(e) => setAddressPL(e.target.value)} /></FormField></div>
         <div className="sm:col-span-2"><FormField label="Адрес проживания на родине"><Input value={addressHome} onChange={(e) => setAddressHome(e.target.value)} /></FormField></div>
       </div>
