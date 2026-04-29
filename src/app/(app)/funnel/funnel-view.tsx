@@ -129,12 +129,23 @@ export function FunnelView({
             </Link>
           </div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-px bg-line">
+        <div className={cn(
+          'grid gap-px bg-line',
+          // Менеджерам (SALES/LEGAL) показываем только "Всего лидов" —
+          // финансы (стоимость/получено/долг/конверсия) видны только админу.
+          currentUserRole === 'ADMIN'
+            ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-5'
+            : 'grid-cols-1',
+        )}>
           <KpiCell label="Всего лидов" value={kpi.leadsCount} foot={`${kpi.decisionCount} закрыто`} />
-          <KpiCell label="Стоимость" value={formatMoney(kpi.totalAmount)} unit="zł" foot={`средний ${formatMoney(kpi.leadsCount ? Math.round(kpi.totalAmount / kpi.leadsCount) : 0)} zł`} />
-          <KpiCell label="Получено" value={formatMoney(kpi.totalPaid)} unit="zł" foot={`${Math.round((kpi.totalPaid / Math.max(kpi.totalAmount, 1)) * 100)}% от суммы`} highlight={kpi.totalPaid > 0 ? 'success' : undefined} />
-          <KpiCell label="Долг" value={formatMoney(kpi.totalDebt)} unit="zł" foot={`${kpi.debtorsCount} ${plural(kpi.debtorsCount, 'клиент', 'клиента', 'клиентов')}`} highlight={kpi.totalDebt > 0 ? 'danger' : undefined} />
-          <KpiCell label="Конверсия" value={kpi.conversion} unit="%" foot={`${kpi.decisionCount} децизий`} />
+          {currentUserRole === 'ADMIN' && (
+            <>
+              <KpiCell label="Стоимость" value={formatMoney(kpi.totalAmount)} unit="zł" foot={`средний ${formatMoney(kpi.leadsCount ? Math.round(kpi.totalAmount / kpi.leadsCount) : 0)} zł`} />
+              <KpiCell label="Получено" value={formatMoney(kpi.totalPaid)} unit="zł" foot={`${Math.round((kpi.totalPaid / Math.max(kpi.totalAmount, 1)) * 100)}% от суммы`} highlight={kpi.totalPaid > 0 ? 'success' : undefined} />
+              <KpiCell label="Долг" value={formatMoney(kpi.totalDebt)} unit="zł" foot={`${kpi.debtorsCount} ${plural(kpi.debtorsCount, 'клиент', 'клиента', 'клиентов')}`} highlight={kpi.totalDebt > 0 ? 'danger' : undefined} />
+              <KpiCell label="Конверсия" value={kpi.conversion} unit="%" foot={`${kpi.decisionCount} децизий`} />
+            </>
+          )}
         </div>
       </div>
 
