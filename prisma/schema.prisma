@@ -200,9 +200,24 @@ model Client {
   updatedAt     DateTime @updatedAt
 
   // Легальный побыт — текущий статус пребывания клиента в Польше.
-  // Используется для напоминаний за месяц до окончания (новые карточки/визы).
+  // Используется для напоминаний за 90/30/14 дней до окончания.
   legalStayType  LegalStayType?
   legalStayUntil DateTime?
+
+  // Дата истечения паспорта (Anna идея №7 «Календарь сроков виз и документов»):
+  // система сама напоминает менеджеру за 90/30/14 дней до окончания —
+  // менеджер первым звонит клиенту с предложением продлить.
+  passportExpiresAt DateTime?
+
+  // Флаги отправленных напоминаний для дедупликации (cron работает раз в 30 мин,
+  // без флагов будет спам). При смене даты в updateClient флаги сбрасываются —
+  // тогда новая серия напоминаний запустится для нового срока.
+  legalStayReminder90Sent Boolean @default(false)
+  legalStayReminder30Sent Boolean @default(false)
+  legalStayReminder14Sent Boolean @default(false)
+  passportReminder90Sent  Boolean @default(false)
+  passportReminder30Sent  Boolean @default(false)
+  passportReminder14Sent  Boolean @default(false)
 
   leads         Lead[]
   files         ClientFile[]
@@ -213,6 +228,7 @@ model Client {
   @@index([fullName])
   @@index([ownerId])
   @@index([legalStayUntil])
+  @@index([passportExpiresAt])
 }
 
 // ============================================================
@@ -885,6 +901,10 @@ enum NotificationKind {
   PAYMENT_RECEIVED
   NEW_MESSAGE
   FINGERPRINT_REMINDER
+  // Anna идея №7: «Календарь сроков виз и документов» — за 90/30/14 дней
+  // до истечения визы / карты побыта / паспорта система шлёт уведомление
+  // менеджеру (тому кто ведёт последний активный лид клиента).
+  DOCUMENT_EXPIRY_REMINDER
   CUSTOM
 }
 
