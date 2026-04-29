@@ -53,7 +53,14 @@ jobs:
             cd /home/igorcrm/azcrm
             npm install --no-audit --no-fund
             cd whatsapp-worker && npm install --no-audit --no-fund && cd ..
-            npx prisma migrate deploy
+            # Синхронизация схемы БД с prisma/schema.prisma.
+            # Используем db push т.к. в проекте нет папки prisma/migrations
+            # (workflow без файлов миграций — изменения схемы коммитятся
+            # сразу в schema.prisma и применяются на сервере push'ем).
+            # Без --accept-data-loss: при удалении колонок упадёт, чтобы
+            # случайно не потерять данные.
+            npx prisma db push --skip-generate
+            npx prisma generate
             npm run build
             pm2 reload ecosystem.config.js --update-env || pm2 start ecosystem.config.js
             pm2 save
