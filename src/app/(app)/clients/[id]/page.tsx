@@ -160,6 +160,30 @@ export default async function LeadPage({ params }: PageProps) {
     orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],   // общие (ownerId=null) первыми
   });
 
+  // ============ ЗВОНКИ ПО ЛИДУ (Anna идея №12) ============
+  // Последние 10 звонков для отображения в карточке. Полный список со
+  // всеми фильтрами и поиском по транскрипту — на /calls.
+  const calls = await db.call.findMany({
+    where: { leadId: lead.id },
+    orderBy: { startedAt: 'desc' },
+    take: 10,
+    select: {
+      id:               true,
+      direction:        true,
+      fromNumber:       true,
+      toNumber:         true,
+      startedAt:        true,
+      durationSec:      true,
+      recordUrl:        true,
+      recordLocalUrl:   true,
+      transcript:       true,
+      transcriptStatus: true,
+      sentiment:        true,
+      analysisSummary:  true,
+      analysisTags:     true,
+    },
+  });
+
   const paid = lead.payments.reduce((sum, p) => sum + Number(p.amount), 0);
   const total = Number(lead.totalAmount);
   const debt = Math.max(0, total - paid);
@@ -325,6 +349,21 @@ export default async function LeadPage({ params }: PageProps) {
           phoneNumber: a.phoneNumber,
           isConnected: a.isConnected,
           isShared:    a.ownerId === null,
+        }))}
+        calls={calls.map((c) => ({
+          id:               c.id,
+          direction:        c.direction,
+          fromNumber:       c.fromNumber,
+          toNumber:         c.toNumber,
+          startedAt:        c.startedAt.toISOString(),
+          durationSec:      c.durationSec,
+          recordUrl:        c.recordUrl,
+          recordLocalUrl:   c.recordLocalUrl,
+          transcript:       c.transcript,
+          transcriptStatus: c.transcriptStatus,
+          sentiment:        c.sentiment,
+          analysisSummary:  c.analysisSummary,
+          analysisTags:     c.analysisTags,
         }))}
       />
     </>
