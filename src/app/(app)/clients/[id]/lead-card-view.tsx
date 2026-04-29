@@ -31,6 +31,7 @@ import {
 import {
   updateClient, removeClientFile,
   setEmployer, setWorkCity, setLeadServices,
+  setSubmittedAt,
 } from './actions';
 import { setAttorney } from './attorney-actions';
 import type { UserRole, PaymentMethod, EventKind, CalendarKind, FileCategory, InternalDocFormat } from '@prisma/client';
@@ -61,6 +62,8 @@ interface LeadCardViewProps {
     employerName: string | null; employerPhone: string | null;
     totalAmount: number; firstContactAt: string | null;
     fingerprintDate: string | null; fingerprintLocation: string | null;
+    // Дата подачи внеска (wniosek) в УВ. null → красный маркер в календаре.
+    submittedAt: string | null;
     isArchived: boolean; summary: string | null;
     paid: number; debt: number; createdAt: string;
   };
@@ -158,6 +161,69 @@ function StayUntilDisplay({ until }: { until: string | null }) {
   return <>{dateStr}</>;
 }
 
+/** Inline-редактор даты подачи в уженд (Anna 30.04.2026).
+ *  null → красная плашка «не подан» + поле выбора даты.
+ *  Дата → отображается + кнопка очистки. Сохранение по onChange. */
+function SubmittedAtField({ leadId, initial }: { leadId: string; initial: string | null }) {
+  const router = useRouter();
+  const [value, setValue] = useState(initial ? initial.slice(0, 10) : '');
+  const [busy, setBusy]   = useState(false);
+  const [err, setErr]     = useState<string | null>(null);
+
+  // Если данные обновились извне (router.refresh после действий) — синхронизируем
+  useEffect(() => { setValue(initial ? initial.slice(0, 10) : ''); }, [initial]);
+
+  async function commit(next: string | null) {
+    setErr(null); setBusy(true);
+    try { await setSubmittedAt(leadId, next); router.refresh(); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  if (!value) {
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <Input
+            type="date"
+            value=""
+            disabled={busy}
+            onChange={(e) => { const v = e.target.value; setValue(v); if (v) commit(v); }}
+            className="text-[12.5px] py-0.5 border-danger/40"
+          />
+          <span className="inline-flex items-center gap-1 text-[10.5px] font-bold text-danger uppercase tracking-[0.05em] whitespace-nowrap">
+            <AlertCircle size={11} /> не подан
+          </span>
+        </div>
+        {err && <div className="text-[11px] text-danger">{err}</div>}
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <Input
+          type="date"
+          value={value}
+          disabled={busy}
+          onChange={(e) => { setValue(e.target.value); if (e.target.value) commit(e.target.value); }}
+          className="text-[12.5px] py-0.5"
+        />
+        <button
+          type="button"
+          onClick={() => { setValue(''); commit(null); }}
+          disabled={busy}
+          className="text-[11px] text-ink-4 hover:text-danger transition-colors"
+          title="Сбросить дату подачи"
+        >
+          сбросить
+        </button>
+      </div>
+      {err && <div className="text-[11px] text-danger">{err}</div>}
+    </div>
+  );
+}
+
 export function LeadCardView(props: LeadCardViewProps) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 p-4 md:p-5 max-w-[1380px] mx-auto w-full">
@@ -211,6 +277,9 @@ function ClientHeader({ client, lead, city, stages, currentUser, whatsappAccount
             {lead.source && <Badge>{lead.source}</Badge>}
             {lead.debt > 0 ? <Badge variant="danger">долг {formatMoney(lead.debt)} zł</Badge>
               : lead.totalAmount > 0 ? <Badge variant="success">оплачено</Badge> : null}
+            {!lead.submittedAt && !lead.isArchived && (
+              <Badge variant="danger" withDot>внесок не подан</Badge>
+            )}
             {lead.isArchived && <Badge variant="default">в архиве</Badge>}
           </div>
           <div className="mt-2.5 text-12 text-ink-3 flex flex-wrap gap-x-3.5 gap-y-1">
@@ -365,7 +434,14 @@ function DealCard({ lead, salesManager, legalManager, city, workCity, cities, te
         ],
         [
           { label: 'Дата первого контакта', value: lead.firstContactAt ? formatDate(lead.firstContactAt) : null },
+          // Anna 30.04.2026: дата подачи внеска в УВ — inline-редактирование.
+          // Если null → отображается как «не подан» (красным) и в календаре
+          // событие этого клиента подсвечивается красным маркером.
+          { label: 'Дата подачи в уженд', value: <SubmittedAtField leadId={lead.id} initial={lead.submittedAt} /> },
+        ],
+        [
           { label: 'Стоимость услуг', value: <span className="font-mono font-bold">{formatMoney(lead.totalAmount)} zł</span> },
+          { label: '', value: null },
         ],
       ]} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-line-2 -mx-4 md:-mx-5 -mb-1 mt-px">
