@@ -759,15 +759,25 @@ function PaymentsCard({ lead, payments, currentUser }: LeadCardViewProps) {
 }
 
 function AddPaymentModal({ open, onClose, leadId, onSaved }: { open: boolean; onClose: () => void; leadId: string; onSaved: () => void }) {
+  // Дата платежа по умолчанию — сегодня (yyyy-mm-dd для <input type="date">).
+  // Anna просила: чтобы можно было разносить старые платежи задним числом.
+  const today = new Date().toISOString().slice(0, 10);
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<PaymentMethod>('CASH');
+  const [paidAt, setPaidAt] = useState(today);
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   async function save() {
     setBusy(true);
     try {
-      await addPayment({ leadId, amount: Number(amount), method, notes: notes || undefined });
-      setAmount(''); setNotes(''); onSaved();
+      await addPayment({
+        leadId,
+        amount: Number(amount),
+        method,
+        paidAt: paidAt || undefined, // пустое поле = сейчас
+        notes: notes || undefined,
+      });
+      setAmount(''); setNotes(''); setPaidAt(today); onSaved();
     } catch (e) { console.error(e); alert((e as Error).message || 'Ошибка'); }
     finally { setBusy(false); }
   }
@@ -783,6 +793,9 @@ function AddPaymentModal({ open, onClose, leadId, onSaved }: { open: boolean; on
             </Select>
           </FormField>
         </div>
+        <FormField label="Дата платежа" required>
+          <Input type="date" value={paidAt} onChange={(e) => setPaidAt(e.target.value)} max={today} />
+        </FormField>
         <FormField label="Примечание"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Аванс, доплата..." /></FormField>
       </div>
     </Modal>
