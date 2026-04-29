@@ -208,6 +208,155 @@ describe('updateClient — legalStayType / legalStayUntil', () => {
   });
 });
 
+// ============== passportExpiresAt + сброс reminder-флагов ==============
+// Anna идея №7 «Календарь сроков виз и документов» — паспорт + флаги.
+
+describe('updateClient — passportExpiresAt', () => {
+  const findResp = {
+    id: 'cl-1', phone: '+48123456789', fullName: 'X', email: null,
+    legalStayUntil: null, passportExpiresAt: null,
+    leads: [{ salesManagerId: 'u-1', legalManagerId: null }],
+  };
+
+  it('passportExpiresAt=ISO дата → Date в БД', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, passportExpiresAt: '2027-08-15',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.passportExpiresAt).toBeInstanceOf(Date);
+    expect(data.passportExpiresAt.toISOString().slice(0, 10)).toBe('2027-08-15');
+  });
+
+  it("passportExpiresAt='' → null в БД", async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({ ...validInput, passportExpiresAt: '' } as never);
+    expect(mockDb.client.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ passportExpiresAt: null }),
+    }));
+  });
+
+  it('passportExpiresAt=невалидная → throw "Некорректная дата истечения паспорта"', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await expect(updateClient({
+      ...validInput, passportExpiresAt: 'not-a-date',
+    } as never)).rejects.toThrow('Некорректная дата истечения паспорта');
+    expect(mockDb.client.update).not.toHaveBeenCalled();
+  });
+
+  it('audit.after содержит passportExpiresAt (ISO)', async () => {
+    mockDb.client.findUnique.mockResolvedValue(findResp);
+    await updateClient({
+      ...validInput, passportExpiresAt: '2028-03-10',
+    } as never);
+    expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({
+      after: expect.objectContaining({
+        passportExpiresAt: expect.stringMatching(/^2028-03-10T/),
+      }),
+    }));
+  });
+});
+
+describe('updateClient — сброс reminder-флагов при смене дат (Anna идея №7)', () => {
+  const baseFind = {
+    id: 'cl-1', phone: '+48123456789', fullName: 'X', email: null,
+    leads: [{ salesManagerId: 'u-1', legalManagerId: null }],
+  };
+
+  it('legalStayUntil не изменился → флаги legalStay НЕ сбрасываются', async () => {
+    mockDb.client.findUnique.mockResolvedValue({
+      ...baseFind,
+      legalStayUntil:    new Date('2026-12-31T00:00:00.000Z'),
+      passportExpiresAt: null,
+    });
+    await updateClient({
+      ...validInput, legalStayType: 'KARTA', legalStayUntil: '2026-12-31',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.legalStayReminder90Sent).toBeUndefined();
+    expect(data.legalStayReminder30Sent).toBeUndefined();
+    expect(data.legalStayReminder14Sent).toBeUndefined();
+  });
+
+  it('legalStayUntil изменился (продление карты) → 3 флага legalStay сброшены в false', async () => {
+    mockDb.client.findUnique.mockResolvedValue({
+      ...baseFind,
+      legalStayUntil:    new Date('2026-12-31T00:00:00.000Z'),
+      passportExpiresAt: null,
+    });
+    await updateClient({
+      ...validInput, legalStayType: 'KARTA', legalStayUntil: '2031-12-31',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.legalStayReminder90Sent).toBe(false);
+    expect(data.legalStayReminder30Sent).toBe(false);
+    expect(data.legalStayReminder14Sent).toBe(false);
+    // флаги passport НЕ должны быть в data — паспорт не менялся
+    expect(data.passportReminder90Sent).toBeUndefined();
+  });
+
+  it('legalStayUntil поставили с null → флаги сброшены (убрали побыт)', async () => {
+    mockDb.client.findUnique.mockResolvedValue({
+      ...baseFind,
+      legalStayUntil:    new Date('2026-12-31T00:00:00.000Z'),
+      passportExpiresAt: null,
+    });
+    await updateClient({
+      ...validInput, legalStayType: '', legalStayUntil: '',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.legalStayReminder90Sent).toBe(false);
+  });
+
+  it('passportExpiresAt изменился → 3 флага passport сброшены, legalStay не трогаем', async () => {
+    mockDb.client.findUnique.mockResolvedValue({
+      ...baseFind,
+      legalStayUntil:    null,
+      passportExpiresAt: new Date('2027-01-01T00:00:00.000Z'),
+    });
+    await updateClient({
+      ...validInput, passportExpiresAt: '2032-01-01',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.passportReminder90Sent).toBe(false);
+    expect(data.passportReminder30Sent).toBe(false);
+    expect(data.passportReminder14Sent).toBe(false);
+    expect(data.legalStayReminder90Sent).toBeUndefined();
+  });
+
+  it('обе даты изменились → 6 флагов сброшены', async () => {
+    mockDb.client.findUnique.mockResolvedValue({
+      ...baseFind,
+      legalStayUntil:    new Date('2026-12-31T00:00:00.000Z'),
+      passportExpiresAt: new Date('2027-01-01T00:00:00.000Z'),
+    });
+    await updateClient({
+      ...validInput,
+      legalStayType: 'KARTA', legalStayUntil: '2031-12-31',
+      passportExpiresAt: '2032-01-01',
+    } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.legalStayReminder90Sent).toBe(false);
+    expect(data.legalStayReminder30Sent).toBe(false);
+    expect(data.legalStayReminder14Sent).toBe(false);
+    expect(data.passportReminder90Sent).toBe(false);
+    expect(data.passportReminder30Sent).toBe(false);
+    expect(data.passportReminder14Sent).toBe(false);
+  });
+
+  it('null → null (поле не было заполнено и осталось null) → флаги НЕ трогаем', async () => {
+    mockDb.client.findUnique.mockResolvedValue({
+      ...baseFind,
+      legalStayUntil:    null,
+      passportExpiresAt: null,
+    });
+    await updateClient({ ...validInput } as never);
+    const data = mockDb.client.update.mock.calls[0][0].data;
+    expect(data.legalStayReminder90Sent).toBeUndefined();
+    expect(data.passportReminder90Sent).toBeUndefined();
+  });
+});
+
 describe('removeClientFile', () => {
   it('файл не найден → throw', async () => {
     mockDb.clientFile.findUnique.mockResolvedValue(null);
