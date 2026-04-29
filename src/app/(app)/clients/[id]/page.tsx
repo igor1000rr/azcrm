@@ -197,17 +197,20 @@ export default async function LeadPage({ params }: PageProps) {
           createdAt:    lead.createdAt.toISOString(),
         }}
         client={{
-          id:          lead.client.id,
-          fullName:    lead.client.fullName,
-          birthDate:   lead.client.birthDate?.toISOString() ?? null,
-          nationality: lead.client.nationality,
-          phone:       lead.client.phone,
-          altPhone:    lead.client.altPhone,
-          altPhone2:   lead.client.altPhone2,
-          altPhone3:   lead.client.altPhone3,
-          email:       lead.client.email,
-          addressPL:   lead.client.addressPL,
-          addressHome: lead.client.addressHome,
+          id:             lead.client.id,
+          fullName:       lead.client.fullName,
+          birthDate:      lead.client.birthDate?.toISOString() ?? null,
+          nationality:    lead.client.nationality,
+          phone:          lead.client.phone,
+          altPhone:       lead.client.altPhone,
+          altPhone2:      lead.client.altPhone2,
+          altPhone3:      lead.client.altPhone3,
+          email:          lead.client.email,
+          addressPL:      lead.client.addressPL,
+          addressHome:    lead.client.addressHome,
+          // Легальный побыт — тип и срок (Anna 29.04.2026)
+          legalStayType:  lead.client.legalStayType,
+          legalStayUntil: lead.client.legalStayUntil?.toISOString() ?? null,
         }}
         city={lead.city ? { id: lead.city.id, name: lead.city.name } : null}
         workCity={lead.workCity ? { id: lead.workCity.id, name: lead.workCity.name } : null}
