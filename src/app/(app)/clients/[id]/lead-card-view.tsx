@@ -77,6 +77,9 @@ interface LeadCardViewProps {
     // Легальный побыт — тип пребывания и срок окончания
     legalStayType:  LegalStayType | null;
     legalStayUntil: string | null;
+    // Срок паспорта (Anna идея №7 «Календарь сроков виз и документов»).
+    // Cron шлёт менеджеру push за 90/30/14 дней до этой даты.
+    passportExpiresAt: string | null;
   };
   city:     CityLite | null;
   workCity: CityLite | null;
@@ -141,7 +144,8 @@ const LEGAL_STAY_LABEL: Record<LegalStayType, string> = {
 };
 
 /** Отображение «Действует до» с подсветкой по близости срока:
- *  истёк — красный, < 30 дн — жёлтый, < 90 дн — info, иначе обычный. */
+ *  истёк — красный, < 30 дн — жёлтый, < 90 дн — info, иначе обычный.
+ *  Используется и для legalStayUntil, и для passportExpiresAt. */
 function StayUntilDisplay({ until }: { until: string | null }) {
   if (!until) return null;
   const days = daysUntil(until);
@@ -324,6 +328,12 @@ function ClientCard({ client, lead }: LeadCardViewProps) {
           { label: 'Легальный побыт', value: stayLabel ? <Badge variant={client.legalStayType === 'KARTA' ? 'success' : client.legalStayType === 'VISA' ? 'warn' : 'default'}>{stayLabel}</Badge> : null },
           { label: 'Действует до', value: client.legalStayUntil ? <StayUntilDisplay until={client.legalStayUntil} /> : null },
         ],
+        // Anna идея №7: паспорт. Та же подсветка по близости срока что и у побыта —
+        // но смысловой бейдж не нужен (паспорт у всех есть).
+        [
+          { label: 'Паспорт действует до', value: client.passportExpiresAt ? <StayUntilDisplay until={client.passportExpiresAt} /> : null },
+          { label: '', value: null },
+        ],
       ]} />
       {altPhones.length > 0 && <FieldFull label={`Доп. телефоны (${altPhones.length})`} value={altPhones.map(formatPhone).join('   ·   ')} />}
       <FieldFull label="Адрес проживания в Польше" value={client.addressPL} />
@@ -347,6 +357,9 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
   const [addressHome, setAddressHome] = useState(client.addressHome ?? '');
   const [legalStayType, setLegalStayType] = useState<string>(client.legalStayType ?? '');
   const [legalStayUntil, setLegalStayUntil] = useState(client.legalStayUntil ? client.legalStayUntil.slice(0, 10) : '');
+  // Anna идея №7. При смене даты updateClient сбросит флаги напоминаний —
+  // новая серия 90/30/14 запустится из cron автоматически.
+  const [passportExpiresAt, setPassportExpiresAt] = useState(client.passportExpiresAt ? client.passportExpiresAt.slice(0, 10) : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function save() {
@@ -358,6 +371,7 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
         addressPL: addressPL || null, addressHome: addressHome || null,
         legalStayType:  (legalStayType || null) as 'KARTA' | 'VISA' | 'VISA_FREE' | null,
         legalStayUntil: legalStayUntil || null,
+        passportExpiresAt: passportExpiresAt || null,
       });
       router.refresh(); onClose();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -386,6 +400,13 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
         <FormField label="Действует до" hint="Дата окончания текущего побыта">
           <Input type="date" value={legalStayUntil} onChange={(e) => setLegalStayUntil(e.target.value)} />
         </FormField>
+        {/* Срок паспорта (Anna идея №7) — отдельная строка, занимает обе колонки
+            чтобы выделить визуально. Cron шлёт менеджеру push за 90/30/14 дней. */}
+        <div className="sm:col-span-2">
+          <FormField label="Паспорт действует до" hint="Система напомнит менеджеру за 90, 30 и 14 дней до истечения">
+            <Input type="date" value={passportExpiresAt} onChange={(e) => setPassportExpiresAt(e.target.value)} />
+          </FormField>
+        </div>
         <div className="sm:col-span-2"><FormField label="Адрес проживания в Польше"><Input value={addressPL} onChange={(e) => setAddressPL(e.target.value)} /></FormField></div>
         <div className="sm:col-span-2"><FormField label="Адрес проживания на родине"><Input value={addressHome} onChange={(e) => setAddressHome(e.target.value)} /></FormField></div>
       </div>
