@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Send, Paperclip, Search, MessageSquare,
-  ChevronLeft, FileText, Sparkles,
+  ChevronLeft, FileText, Sparkles, Volume2, VolumeX,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Modal } from '@/components/ui/modal';
@@ -45,6 +45,7 @@ interface MessageLite {
 interface InboxViewProps {
   accounts: AccountLite[];
   threads: ThreadLite[];
+  activeChannelId: string | null;
   activeThreadId: string | null;
   activeMessages: MessageLite[];
   activeThread: {
@@ -54,9 +55,54 @@ interface InboxViewProps {
 }
 
 export function InboxView({
-  accounts, threads, activeThreadId, activeMessages, activeThread,
+  accounts, threads, activeChannelId, activeThreadId, activeMessages, activeThread,
 }: InboxViewProps) {
   const router = useRouter();
+
+  // Звук уведомлений при новом входящем. Состояние mute сохраняется в
+  // localStorage, кнопка mute — в шапке "Каналы". Детект "нового": запоминаем
+  // суммарный unreadCount всех тредов на прошлом рендере; если стало больше —
+  // звякнули. Так ловим новое сообщение в любом треде, не только в активном.
+  // На iOS Safari Audio.play() требует gesture — кнопка-toggle и есть тот gesture,
+  // после первого тапа браузер разрешает воспроизведение.
+  const [muted, setMuted] = useState<boolean>(false);
+  const prevUnreadTotalRef = useRef<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    try { setMuted(localStorage.getItem('inbox.muted') === '1'); } catch {}
+    const audio = new Audio('/notify.wav');
+    audio.volume = 0.5;
+    audio.preload = 'auto';
+    audioRef.current = audio;
+  }, []);
+
+  useEffect(() => {
+    const total = threads.reduce((s, t) => s + t.unreadCount, 0);
+    const prev = prevUnreadTotalRef.current;
+    prevUnreadTotalRef.current = total;
+    if (prev === null) return; // первый рендер — не пикаем
+    if (total > prev && !muted && audioRef.current) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch(() => { /* нет gesture-разрешения — молча */ });
+    }
+  }, [threads, muted]);
+
+  function toggleMute() {
+    setMuted((m) => {
+      const next = !m;
+      try { localStorage.setItem('inbox.muted', next ? '1' : '0'); } catch {}
+      // Прогрев на iOS: если разрешения ещё нет — этот тап даст его, и
+      // следующий play() в useEffect выше сработает уже без блокировок.
+      if (!next && audioRef.current) {
+        audioRef.current.play().then(() => {
+          audioRef.current?.pause();
+          if (audioRef.current) audioRef.current.currentTime = 0;
+        }).catch(() => {});
+      }
+      return next;
+    });
+  }
 
   // Авто-обновление: раз в 5 секунд тихо перезапрашиваем server-state
   // через router.refresh() — это RSC-friendly, без full page reload.
@@ -111,43 +157,68 @@ export function InboxView({
     <div className="fixed top-[52px] left-0 md:left-[232px] right-0 bottom-0 flex min-h-0 overflow-hidden bg-bg z-30">
       {/* Левая колонка — каналы */}
       <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0 min-h-0">
-        <div className="px-4 py-3 border-b border-line">
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between gap-2">
           {/* Заголовок "КАНАЛЫ" — navy брендовый */}
           <h2 className="text-[11px] font-bold uppercase tracking-[0.06em] text-navy">
             Каналы
           </h2>
+          <button
+            type="button"
+            onClick={toggleMute}
+            className={cn(
+              'w-7 h-7 rounded-md grid place-items-center transition-colors shrink-0',
+              muted
+                ? 'text-ink-4 hover:text-navy hover:bg-navy/[0.04]'
+                : 'text-success hover:bg-success/10',
+            )}
+            title={muted ? 'Звук выключен — нажмите чтобы включить' : 'Звук включён — нажмите чтобы выключить'}
+            aria-label={muted ? 'Включить звук уведомлений' : 'Выключить звук уведомлений'}
+          >
+            {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto thin-scroll p-2 min-h-0">
           <Link
             href="/inbox"
             className={cn(
-              'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px]',
-              'hover:bg-navy/[0.04] hover:text-navy transition-colors',
+              'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px] transition-colors',
+              // "Все" активно когда channel-параметра нет
+              activeChannelId === null
+                ? 'bg-navy text-white font-semibold'
+                : 'hover:bg-navy/[0.04] hover:text-navy',
             )}
           >
-            <MessageSquare size={13} className="text-ink-3" />
+            <MessageSquare size={13} className={activeChannelId === null ? 'text-white' : 'text-ink-3'} />
             <span className="flex-1">Все</span>
           </Link>
-          {accounts.map((a) => (
-            <Link
-              key={a.id}
-              href={`/inbox?channel=${a.id}`}
-              className={cn(
-                'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px]',
-                'hover:bg-navy/[0.04] hover:text-navy transition-colors',
-              )}
-            >
-              <span className={cn(
-                'w-1.5 h-1.5 rounded-full shrink-0',
-                a.isConnected ? 'bg-success' : 'bg-ink-5',
-              )} />
-              <div className="flex-1 min-w-0">
-                <div className="text-ink truncate">{a.label}</div>
-                <div className="text-[10.5px] text-ink-4 font-mono truncate">{a.phoneNumber}</div>
-              </div>
-            </Link>
-          ))}
+          {accounts.map((a) => {
+            const isActive = activeChannelId === a.id;
+            return (
+              <Link
+                key={a.id}
+                href={`/inbox?channel=${a.id}`}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px] transition-colors',
+                  isActive
+                    ? 'bg-navy text-white font-semibold'
+                    : 'hover:bg-navy/[0.04] hover:text-navy',
+                )}
+              >
+                <span className={cn(
+                  'w-1.5 h-1.5 rounded-full shrink-0',
+                  a.isConnected ? 'bg-success' : 'bg-ink-5',
+                )} />
+                <div className="flex-1 min-w-0">
+                  <div className={cn('truncate', isActive ? 'text-white' : 'text-ink')}>{a.label}</div>
+                  <div className={cn(
+                    'text-[10.5px] font-mono truncate',
+                    isActive ? 'text-white/70' : 'text-ink-4',
+                  )}>{a.phoneNumber}</div>
+                </div>
+              </Link>
+            );
+          })}
 
           <Link
             href="/settings/channels"
