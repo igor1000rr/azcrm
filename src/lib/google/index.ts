@@ -4,10 +4,15 @@
 //   1. Менеджер на /settings/profile жмёт "Подключить Google Calendar"
 //   2. Редирект на /api/google/auth — формирует URL OAuth и редиректит на Google
 //   3. Google редиректит на /api/google/callback?code=...
-//   4. Меняем code → access_token + refresh_token, сохраняем в User
+//   4. Меняем code → access_token + refresh_token, шифруем и сохраняем в User
 //   5. При создании CalendarEvent (отпечатки) — создаём событие в календаре через API
+//
+// БЕЗОПАСНОСТЬ: токены в БД хранятся в зашифрованном виде (AES-256-GCM).
+// Любое чтение поля User.googleAccessToken / googleRefreshToken должно
+// проходить через decrypt(). Запись — через encrypt(). См. src/lib/crypto.ts.
 
 import { db } from '@/lib/db';
+import { decrypt, encrypt } from '@/lib/crypto';
 
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID ?? '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? '';
@@ -90,6 +95,9 @@ async function refreshAccessToken(refreshToken: string): Promise<{
  * Получить актуальный access_token для пользователя.
  * Использует кэшированный токен из БД, если он ещё валиден (с буфером 60 сек).
  * Иначе обновляет через refresh_token и сохраняет новый expires_at.
+ *
+ * Все токены в БД зашифрованы — decrypt() здесь возвращает plaintext.
+ * Старые незашифрованные записи (legacy) decrypt вернёт как есть (плавная миграция).
  */
 export async function getAccessTokenForUser(userId: string): Promise<string | null> {
   const user = await db.user.findUnique({
@@ -102,6 +110,15 @@ export async function getAccessTokenForUser(userId: string): Promise<string | nu
   });
   if (!user?.googleRefreshToken) return null;
 
+  // Расшифровываем при чтении
+  let refreshToken: string;
+  try {
+    refreshToken = decrypt(user.googleRefreshToken);
+  } catch (e) {
+    console.error('[google] failed to decrypt refresh token for user', userId, e);
+    return null;
+  }
+
   // Если есть валидный кэшированный токен — отдаём его без HTTP-запроса
   const now = Date.now();
   if (
@@ -109,18 +126,23 @@ export async function getAccessTokenForUser(userId: string): Promise<string | nu
     && user.googleAccessTokenExpiresAt
     && user.googleAccessTokenExpiresAt.getTime() - REFRESH_BUFFER_MS > now
   ) {
-    return user.googleAccessToken;
+    try {
+      return decrypt(user.googleAccessToken);
+    } catch (e) {
+      // Битый шифротекст access — не критично, обновим через refresh
+      console.warn('[google] failed to decrypt access token, will refresh:', e);
+    }
   }
 
   // Иначе — обновляем
   try {
-    const fresh = await refreshAccessToken(user.googleRefreshToken);
+    const fresh = await refreshAccessToken(refreshToken);
     const expiresAt = new Date(now + fresh.expires_in * 1000);
 
     await db.user.update({
       where: { id: userId },
       data: {
-        googleAccessToken:          fresh.access_token,
+        googleAccessToken:          encrypt(fresh.access_token),
         googleAccessTokenExpiresAt: expiresAt,
       },
     });
