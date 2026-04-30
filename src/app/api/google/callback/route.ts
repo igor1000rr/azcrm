@@ -16,6 +16,7 @@ import { db } from '@/lib/db';
 import { exchangeCodeForTokens } from '@/lib/google';
 import { auth } from '@/lib/auth';
 import { encrypt, encryptNullable } from '@/lib/crypto';
+import { logger } from '@/lib/logger';
 import { cookies } from 'next/headers';
 
 export async function GET(req: NextRequest) {
@@ -73,7 +74,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.redirect(new URL('/settings/profile?google=connected', req.url));
   } catch (e) {
-    console.error('OAuth callback error:', e);
+    logger.error('OAuth callback error:', e);
     return NextResponse.redirect(new URL('/settings/profile?google=failed', req.url));
   }
 }
