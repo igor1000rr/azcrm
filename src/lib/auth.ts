@@ -6,6 +6,7 @@ import { db } from './db';
 import { checkRateLimit, resetRateLimit } from './rate-limit';
 import { verifyTotp, findBackupCodeMatch, isLikelyTotpCode } from './two-factor';
 import type { UserRole } from '@prisma/client';
+import { logger } from '@/lib/logger';
 
 declare module 'next-auth' {
   interface Session {
@@ -50,7 +51,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         const rlKey = `login:${email}`;
         if (!checkRateLimit(rlKey, LOGIN_MAX, LOGIN_WINDOW_MS)) {
-          console.warn(`[auth] rate-limit hit for ${email}`);
+          logger.warn(`[auth] rate-limit hit for ${email}`);
           return null;
         }
 
