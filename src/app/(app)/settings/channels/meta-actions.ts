@@ -1,0 +1,205 @@
+'use server';
+
+// Server Actions для управления Meta каналами (FB Messenger + Instagram Direct).
+//
+// Подключение через ручной ввод:
+//   - Page Access Token (long-lived) — получается на developers.facebook.com
+//   - App Secret — для проверки подписи webhook
+//   - Verify Token — придумывается, нужен при регистрации webhook на стороне FB
+//
+// При подключении делаем GET /me чтобы валидировать токен и подтянуть
+// pageId+pageName. Если у Page привязан Instagram Business — подтягиваем
+// igUserId+igUsername через /me?fields=instagram_business_account{id,username}.
+//
+// Webhook регистрируется НЕ из CRM (нужны права от App), а вручную в FB App
+// Dashboard → Webhooks. URL — endpoint /api/messenger/webhook?account=<id>,
+// Verify Token — тот что мы сохранили в БД.
+
+import { revalidatePath } from 'next/cache';
+import { z } from 'zod';
+import { db } from '@/lib/db';
+import { requireAdmin, requireUser } from '@/lib/auth';
+import { sendMessengerText, sendInstagramText } from '@/lib/meta';
+import { canViewLead } from '@/lib/permissions';
+import { checkRateLimit } from '@/lib/rate-limit';
+
+const GRAPH = 'https://graph.facebook.com/v19.0';
+
+const connectSchema = z.object({
+  pageAccessToken: z.string().min(20, 'Page Access Token обязателен'),
+  appSecret:       z.string().min(10, 'App Secret обязателен'),
+  verifyToken:     z.string().min(4, 'Verify Token обязателен (придумайте сами)'),
+  label:           z.string().min(1).max(80),
+  ownerId:         z.string().nullable().optional(),
+});
+
+interface MePageResponse {
+  id?:   string;
+  name?: string;
+  instagram_business_account?: { id: string; username?: string };
+  error?: { message: string; type?: string };
+}
+
+/**
+ * Валидирует Page Access Token через GET /me, подтягивает pageId/pageName,
+ * проверяет привязку к Instagram. Создаёт MetaAccount.
+ *
+ * Webhook нужно вручную зарегистрировать в FB App после подключения —
+ * URL и Verify Token CRM покажет в UI.
+ */
+export async function connectMetaAccount(input: z.infer<typeof connectSchema>) {
+  await requireAdmin();
+  const data = connectSchema.parse(input);
+
+  // Валидируем токен — запрашиваем сразу с instagram_business_account чтобы
+  // одним запросом узнать оба идентификатора.
+  const url = `${GRAPH}/me?fields=id,name,instagram_business_account{id,username}&access_token=${encodeURIComponent(data.pageAccessToken)}`;
+  const res = await fetch(url);
+  const me: MePageResponse = await res.json();
+
+  if (me.error || !me.id || !me.name) {
+    throw new Error(`Page Access Token невалиден: ${me.error?.message || 'нет id/name в ответе'}`);
+  }
+
+  // Уникальность по pageId
+  const exists = await db.metaAccount.findUnique({ where: { pageId: me.id } });
+  if (exists) throw new Error(`FB Page "${me.name}" уже подключена`);
+
+  const igAccount = me.instagram_business_account;
+
+  const account = await db.metaAccount.create({
+    data: {
+      pageId:          me.id,
+      pageAccessToken: data.pageAccessToken,
+      pageName:        me.name,
+      appSecret:       data.appSecret,
+      verifyToken:     data.verifyToken,
+      igUserId:        igAccount?.id ?? null,
+      igUsername:      igAccount?.username ?? null,
+      hasMessenger:    true,
+      hasInstagram:    Boolean(igAccount),
+      label:           data.label,
+      ownerId:         data.ownerId ?? null,
+      isActive:        true,
+      isConnected:     true,   // токен валиден — считаем подключённым
+    },
+  });
+
+  revalidatePath('/settings/channels');
+  return {
+    ok:        true,
+    accountId: account.id,
+    pageName:  me.name,
+    hasInstagram: Boolean(igAccount),
+    igUsername:   igAccount?.username ?? null,
+  };
+}
+
+export async function disconnectMetaAccount(accountId: string) {
+  await requireAdmin();
+  const account = await db.metaAccount.findUnique({ where: { id: accountId } });
+  if (!account) throw new Error('Аккаунт не найден');
+
+  await db.metaAccount.delete({ where: { id: accountId } });
+  revalidatePath('/settings/channels');
+  return { ok: true };
+}
+
+export async function toggleMetaAccount(accountId: string, isActive: boolean) {
+  await requireAdmin();
+  await db.metaAccount.update({ where: { id: accountId }, data: { isActive } });
+  revalidatePath('/settings/channels');
+  return { ok: true };
+}
+
+// ============ ОТПРАВКА СООБЩЕНИЯ ИЗ КАРТОЧКИ ЛИДА ============
+
+const sendSchema = z.object({
+  leadId:    z.string(),
+  accountId: z.string(),
+  // 'MESSENGER' или 'INSTAGRAM' — какой именно поток в Meta использовать.
+  // Один MetaAccount может покрывать оба (если Page связана с IG Business).
+  channel:   z.enum(['MESSENGER', 'INSTAGRAM']),
+  body:      z.string().min(1).max(2000),
+});
+
+const SEND_MAX       = 30;
+const SEND_WINDOW_MS = 60 * 1000;
+
+/**
+ * Отправляет сообщение в Messenger или Instagram Direct.
+ * recipientId резолвится из существующего ChatThread (externalId =
+ * PSID для Messenger или IGSID для Instagram).
+ */
+export async function sendMetaFromLead(input: z.infer<typeof sendSchema>) {
+  const user = await requireUser();
+  if (!checkRateLimit(`meta-send:${user.id}`, SEND_MAX, SEND_WINDOW_MS)) {
+    throw new Error('Слишком много сообщений. Подождите минуту.');
+  }
+
+  const data = sendSchema.parse(input);
+
+  const lead = await db.lead.findUnique({
+    where: { id: data.leadId },
+    select: {
+      id: true, clientId: true,
+      salesManagerId: true, legalManagerId: true,
+    },
+  });
+  if (!lead) throw new Error('Лид не найден');
+  if (!canViewLead(user, lead)) throw new Error('Нет доступа к лиду');
+
+  const account = await db.metaAccount.findFirst({
+    where: { id: data.accountId, isActive: true },
+  });
+  if (!account) throw new Error('Канал недоступен');
+  if (!account.isConnected) throw new Error(`Канал «${account.label}» не подключён`);
+
+  if (data.channel === 'INSTAGRAM' && !account.hasInstagram) {
+    throw new Error('Instagram не подключён к этой Page');
+  }
+
+  // Найти thread на нужном канале (MESSENGER или INSTAGRAM) с этим клиентом
+  const thread = await db.chatThread.findFirst({
+    where: {
+      clientId:      lead.clientId,
+      metaAccountId: account.id,
+      channel:       data.channel,
+    },
+    select: { id: true, externalId: true },
+  });
+  if (!thread || !thread.externalId) {
+    throw new Error('Клиент ещё не писал — сначала он должен начать диалог');
+  }
+
+  const sender = data.channel === 'INSTAGRAM' ? sendInstagramText : sendMessengerText;
+  const res = await sender(account, thread.externalId, data.body);
+  if (res.error) {
+    throw new Error(`Meta API отверг отправку: ${res.error.message}`);
+  }
+
+  await db.$transaction([
+    db.chatMessage.create({
+      data: {
+        threadId:      thread.id,
+        metaAccountId: account.id,
+        direction:     'OUT',
+        type:          'TEXT',
+        body:          data.body,
+        externalId:    res.message_id ?? null,
+        senderId:      user.id,
+      },
+    }),
+    db.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        lastMessageAt:   new Date(),
+        lastMessageText: data.body.slice(0, 200),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/clients/${data.leadId}`);
+  revalidatePath('/inbox');
+  return { ok: true };
+}
