@@ -8,7 +8,7 @@ import {
   Inbox, LayoutGrid, Users, Calendar, CreditCard,
   CheckSquare, Zap, BarChart3, Phone, MessageSquare,
   Settings, X, Menu, Activity, Wallet, Receipt, ListChecks, Clock,
-  Cake, MapPin,
+  Cake, MapPin, Mic,
 } from 'lucide-react';
 import { Logo } from './logo';
 import { Avatar } from './ui/avatar';
@@ -80,7 +80,8 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
     { href: '/settings/team',           label: 'Команда',          icon: Users,         roles: ['ADMIN'] },
     { href: '/settings/funnels',        label: 'Воронки',          icon: BarChart3,     roles: ['ADMIN'] },
     { href: '/settings/cities',         label: 'Города',           icon: MapPin,        roles: ['ADMIN'] },
-    { href: '/settings/channels',       label: 'WhatsApp каналы',  icon: MessageSquare, roles: ['ADMIN'] },
+    { href: '/settings/channels',       label: 'Каналы связи',     icon: MessageSquare, roles: ['ADMIN'] },
+    { href: '/settings/call-analysis',  label: 'Анализ звонков',   icon: Mic,           roles: ['ADMIN'] },
     { href: '/settings/blueprints',     label: 'Шаблоны Word',     icon: Settings,      roles: ['ADMIN'] },
     { href: '/settings/chat-templates', label: 'Шаблоны сообщений', icon: Settings,     roles: ['ADMIN'] },
     { href: '/settings/audit',          label: 'Аудит-лог',        icon: Activity,      roles: ['ADMIN'] },
@@ -120,7 +121,6 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           open ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
         )}
       >
-        {/* Бренд + золотая полоска снизу */}
         <div className="px-4 pb-4 mb-3 flex items-center justify-between relative">
           <Link href="/" onClick={() => setOpen(false)}>
             <Logo size="sm" />
@@ -200,7 +200,6 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
           </>
         )}
 
-        {/* Карточка юзера — navy фон и рамка */}
         <div className="mt-auto mx-3 mt-3 px-3 py-2.5 rounded-lg border border-navy-medium/30 bg-navy-tint flex items-center gap-2.5">
           <Avatar name={user.name} size="md" status="online" variant="navy" />
           <div className="flex-1 min-w-0">
@@ -220,10 +219,7 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
   );
 }
 
-// ====================== ВСПОМОГАТЕЛЬНЫЕ ======================
-
 function NavLabel({ children }: { children: React.ReactNode }) {
-  // Заголовки разделов — явный navy-medium #2D4373, видимо синий
   return (
     <div className="text-[10px] tracking-[0.12em] text-navy-medium font-bold uppercase px-4 mt-3 mb-1">
       {children}
@@ -247,7 +243,6 @@ function NavLink({
         'flex items-center gap-2.5 px-4 py-1.5 text-[13px] font-medium transition-colors relative',
         'border-l-[3px]',
         active
-          // Активный пункт: явный синий фон navy-tint + нави бордер
           ? 'bg-navy-tint text-navy border-l-navy font-bold'
           : 'text-ink-2 border-l-transparent hover:bg-navy-tint hover:text-navy hover:border-l-navy-medium',
       )}
