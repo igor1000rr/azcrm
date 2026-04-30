@@ -1,11 +1,16 @@
 'use client';
 
-// UI: два списка каналов (WhatsApp через QR + Telegram через BotFather token)
+// UI: четыре списка каналов:
+//   - WhatsApp (через QR)
+//   - Telegram (через BotFather token)
+//   - Viber (через Public Account auth-token)
+//   - Meta (Facebook Messenger + Instagram через Page Access Token)
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Plus, QrCode, Smartphone, Trash2, Edit3, Power,
   CheckCircle, XCircle, Loader2, RefreshCw, Send,
+  MessageCircle, Facebook, Instagram, Copy,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -18,6 +23,12 @@ import {
 import {
   connectTelegramBot, disconnectTelegramBot, toggleTelegramBot,
 } from './telegram-actions';
+import {
+  connectViberAccount, disconnectViberAccount, toggleViberAccount,
+} from './viber-actions';
+import {
+  connectMetaAccount, disconnectMetaAccount, toggleMetaAccount,
+} from './meta-actions';
 import type { UserRole } from '@prisma/client';
 
 interface WaAccount {
@@ -37,24 +48,53 @@ interface TgAccount {
   threadsCount: number; messagesCount: number;
 }
 
+interface ViberAccountLite {
+  id: string; paName: string; label: string;
+  ownerId: string | null; ownerName: string | null;
+  isConnected: boolean; isActive: boolean;
+  webhookUrl: string | null;
+  lastSeenAt: string | null;
+  threadsCount: number; messagesCount: number;
+}
+
+interface MetaAccountLite {
+  id: string; pageId: string; pageName: string;
+  igUserId: string | null; igUsername: string | null;
+  hasMessenger: boolean; hasInstagram: boolean;
+  verifyToken: string;
+  label: string;
+  ownerId: string | null; ownerName: string | null;
+  isConnected: boolean; isActive: boolean;
+  lastSeenAt: string | null;
+  threadsCount: number; messagesCount: number;
+}
+
 interface UserLite { id: string; name: string; role: UserRole }
 
 interface Props {
-  waAccounts: WaAccount[];
-  tgAccounts: TgAccount[];
-  users:      UserLite[];
+  waAccounts:    WaAccount[];
+  tgAccounts:    TgAccount[];
+  viberAccounts: ViberAccountLite[];
+  metaAccounts:  MetaAccountLite[];
+  users:         UserLite[];
+  appPublicUrl:  string;
 }
 
-export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
-  const [editingWa, setEditingWa]   = useState<WaAccount | null>(null);
-  const [creatingWa, setCreatingWa] = useState(false);
-  const [qrFor, setQrFor]           = useState<WaAccount | null>(null);
-
-  const [creatingTg, setCreatingTg] = useState(false);
+export function ChannelsView({
+  waAccounts, tgAccounts, viberAccounts, metaAccounts, users, appPublicUrl,
+}: Props) {
+  const [editingWa, setEditingWa]       = useState<WaAccount | null>(null);
+  const [creatingWa, setCreatingWa]     = useState(false);
+  const [qrFor, setQrFor]               = useState<WaAccount | null>(null);
+  const [creatingTg, setCreatingTg]     = useState(false);
+  const [creatingViber, setCreatingViber] = useState(false);
+  const [creatingMeta, setCreatingMeta]   = useState(false);
+  const [metaInstructions, setMetaInstructions] = useState<MetaAccountLite | null>(null);
 
   return (
     <div className="p-4 md:p-5 max-w-[1100px] w-full flex flex-col gap-4">
 
+      {/* ============ WHATSAPP ============ */}
       <section>
         <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
           <div className="w-9 h-9 rounded-md bg-wa text-white grid place-items-center shrink-0">
@@ -93,6 +133,7 @@ export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
         </div>
       </section>
 
+      {/* ============ TELEGRAM ============ */}
       <section>
         <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
           <div className="w-9 h-9 rounded-md bg-info text-white grid place-items-center shrink-0">
@@ -127,10 +168,85 @@ export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
         </div>
       </section>
 
+      {/* ============ VIBER ============ */}
+      <section>
+        <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
+          <div className="w-9 h-9 rounded-md grid place-items-center shrink-0" style={{ background: '#7360F2', color: 'white' }}>
+            <MessageCircle size={16} />
+          </div>
+          <div>
+            <h2 className="text-[15px] font-bold tracking-tight">Viber каналы</h2>
+            <p className="text-[12px] text-ink-3 mt-0.5">
+              {viberAccounts.length} {plural(viberAccounts.length, 'канал', 'канала', 'каналов')} ·
+              {' '}{viberAccounts.filter((a) => a.isConnected).length} подключено
+            </p>
+          </div>
+          <Button variant="primary" className="ml-auto" onClick={() => setCreatingViber(true)}>
+            <Plus size={12} /> Добавить Viber
+          </Button>
+        </div>
+
+        <div className="bg-paper border border-line rounded-lg overflow-hidden">
+          {viberAccounts.length === 0 ? (
+            <div className="p-8 text-center">
+              <MessageCircle size={32} className="mx-auto text-ink-5 mb-2" />
+              <p className="text-[12.5px] text-ink-3 mb-1">Viber каналов пока нет.</p>
+              <p className="text-[11px] text-ink-4">Создайте Public Account на <a href="https://partners.viber.com/" target="_blank" rel="noopener" className="text-navy hover:underline">partners.viber.com</a> и введите Auth Token.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-line">
+              {viberAccounts.map((a) => (
+                <ViberRow key={a.id} account={a} />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ============ META (Messenger + Instagram) ============ */}
+      <section>
+        <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
+          <div className="w-9 h-9 rounded-md grid place-items-center shrink-0" style={{ background: '#1877F2', color: 'white' }}>
+            <Facebook size={16} />
+          </div>
+          <div>
+            <h2 className="text-[15px] font-bold tracking-tight">Meta (Messenger + Instagram)</h2>
+            <p className="text-[12px] text-ink-3 mt-0.5">
+              {metaAccounts.length} {plural(metaAccounts.length, 'страница', 'страницы', 'страниц')} ·
+              {' '}{metaAccounts.filter((a) => a.isConnected).length} подключено
+            </p>
+          </div>
+          <Button variant="primary" className="ml-auto" onClick={() => setCreatingMeta(true)}>
+            <Plus size={12} /> Добавить FB Page
+          </Button>
+        </div>
+
+        <div className="bg-paper border border-line rounded-lg overflow-hidden">
+          {metaAccounts.length === 0 ? (
+            <div className="p-8 text-center">
+              <Facebook size={32} className="mx-auto text-ink-5 mb-2" />
+              <p className="text-[12.5px] text-ink-3 mb-1">Meta страниц пока нет.</p>
+              <p className="text-[11px] text-ink-4">Создайте Business App на <a href="https://developers.facebook.com" target="_blank" rel="noopener" className="text-navy hover:underline">developers.facebook.com</a>, добавьте Messenger+Instagram продукты и привяжите Page.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-line">
+              {metaAccounts.map((a) => (
+                <MetaRow
+                  key={a.id}
+                  account={a}
+                  onShowInstructions={() => setMetaInstructions(a)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
       <p className="text-[11px] text-ink-4">
         Канал без владельца — общий, видят все менеджеры. Канал с владельцем — личный, видит только указанный менеджер.
       </p>
 
+      {/* Модалки */}
       {(editingWa || creatingWa) && (
         <WaFormModal
           account={editingWa}
@@ -139,13 +255,28 @@ export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
         />
       )}
       {qrFor && <QrConnectModal account={qrFor} onClose={() => setQrFor(null)} />}
-
-      {creatingTg && (
-        <TgConnectModal users={users} onClose={() => setCreatingTg(false)} />
+      {creatingTg && <TgConnectModal users={users} onClose={() => setCreatingTg(false)} />}
+      {creatingViber && <ViberConnectModal users={users} onClose={() => setCreatingViber(false)} />}
+      {creatingMeta && (
+        <MetaConnectModal
+          users={users}
+          appPublicUrl={appPublicUrl}
+          onClose={() => setCreatingMeta(false)}
+          onConnected={(a) => { setCreatingMeta(false); setMetaInstructions(a); }}
+        />
+      )}
+      {metaInstructions && (
+        <MetaInstructionsModal
+          account={metaInstructions}
+          appPublicUrl={appPublicUrl}
+          onClose={() => setMetaInstructions(null)}
+        />
       )}
     </div>
   );
 }
+
+// ============ WHATSAPP ROW ============
 
 function WaRow({
   account, onEdit, onConnect,
@@ -266,17 +397,6 @@ function WaFormModal({
 
 /**
  * Модалка подключения WhatsApp через QR.
- *
- * Алгоритм:
- *   1. Сразу триггерим connect (timeout 5 сек — он только инициирует сессию).
- *   2. Параллельно стартуем poll status каждую секунду.
- *   3. Как только status=qr — показываем картинку.
- *   4. Как только ready — закрываем модалку.
- *
- * Если в authenticating дольше 15 сек (типичный баг whatsapp-web.js когда
- * puppeteer не дождался полной загрузки UI WhatsApp Web) — показываем
- * кнопку «Сбросить сессию» (POST /connect c force+wipe), worker пересоздаёт
- * клиента и удаляет папку сессии, появляется свежий QR.
  */
 function QrConnectModal({
   account, onClose,
@@ -288,8 +408,6 @@ function QrConnectModal({
   const [status, setStatus] = useState<'loading' | 'qr' | 'connecting' | 'ready' | 'failed'>('loading');
   const [qrUrl, setQrUrl]   = useState<string | null>(null);
   const [error, setError]   = useState<string | null>(null);
-  // Таймер секунд на этапе авторизации — показываем пользователю чтобы было
-  // видно что не зависло, и чтобы нажать «Сбросить сессию» если долго.
   const [connectingSeconds, setConnectingSeconds] = useState(0);
   const [resetting, setResetting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -299,8 +417,6 @@ function QrConnectModal({
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
   }
 
-  /** Принудительный сброс сессии: force + wipe → пересоздаём клиента и удаляем
-   *  папку сессии. После этого worker сгенерит новый QR. */
   async function handleHardReset() {
     setResetting(true);
     setStatus('loading');
@@ -370,7 +486,7 @@ function QrConnectModal({
           stopPolling();
         }
       } catch {
-        // молчим — следующий poll попробует ещё раз
+        // молчим
       }
     }, 1000);
   }
@@ -407,7 +523,7 @@ function QrConnectModal({
           stopPolling();
         }
       } catch {
-        // Timeout / abort — это норма, дальше отработает poll'инг
+        // Timeout / abort — норма
       }
     }
 
@@ -421,7 +537,6 @@ function QrConnectModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.id]);
 
-  // Кнопка hard-reset показывается если в authenticating дольше 15 сек или failed
   const stuck = (status === 'connecting' && connectingSeconds >= 15) || status === 'failed';
 
   return (
@@ -496,6 +611,8 @@ function QrConnectModal({
     </Modal>
   );
 }
+
+// ============ TELEGRAM ROW ============
 
 function TgRow({ account }: { account: TgAccount }) {
   const router = useRouter();
@@ -621,6 +738,373 @@ function TgConnectModal({
           </p>
         </div>
       )}
+    </Modal>
+  );
+}
+
+// ============ VIBER ROW + MODAL ============
+
+function ViberRow({ account }: { account: ViberAccountLite }) {
+  const router = useRouter();
+
+  async function onDelete() {
+    if (!confirm(`Отключить Viber «${account.paName}»? Webhook будет снят, переписки сохранятся.`)) return;
+    try { await disconnectViberAccount(account.id); router.refresh(); }
+    catch (e) { alert((e as Error).message); }
+  }
+  async function onToggle() {
+    try { await toggleViberAccount(account.id, !account.isActive); router.refresh(); }
+    catch (e) { alert((e as Error).message); }
+  }
+
+  return (
+    <div className="px-5 py-3.5 flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-1 min-w-[260px]">
+        <div className={cn('w-10 h-10 rounded-md grid place-items-center shrink-0',
+          account.isConnected ? 'text-white' : 'bg-bg text-ink-4')}
+          style={account.isConnected ? { background: '#7360F2' } : undefined}>
+          <MessageCircle size={16} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <strong className="text-[14px] text-ink">{account.label}</strong>
+            {account.isConnected
+              ? <Badge variant="success" withDot>webhook активен</Badge>
+              : <Badge variant="default">не подключён</Badge>}
+            {!account.isActive && <Badge variant="default">отключён</Badge>}
+            {!account.ownerId && <Badge variant="gold">общий</Badge>}
+          </div>
+          <div className="text-[11.5px] text-ink-3 mt-0.5 flex flex-wrap gap-x-3">
+            <span className="font-mono">{account.paName}</span>
+            {account.ownerName && <span>· {account.ownerName}</span>}
+            <span>· {account.threadsCount} переписок</span>
+            {account.lastSeenAt && <span>· активность {formatRelative(account.lastSeenAt)}</span>}
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-1.5 ml-auto">
+        <Button size="sm" onClick={onToggle} title={account.isActive ? 'Отключить' : 'Включить'}><Power size={11} /></Button>
+        <Button size="sm" variant="ghost" onClick={onDelete} title="Удалить"><Trash2 size={11} /></Button>
+      </div>
+    </div>
+  );
+}
+
+function ViberConnectModal({
+  users, onClose,
+}: {
+  users: UserLite[];
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [authToken, setAuthToken] = useState('');
+  const [paName, setPaName]       = useState('');
+  const [label, setLabel]         = useState('');
+  const [ownerId, setOwnerId]     = useState('');
+  const [busy, setBusy]           = useState(false);
+  const [error, setError]         = useState<string | null>(null);
+  const [success, setSuccess]     = useState<string | null>(null);
+
+  async function save() {
+    setError(null); setBusy(true);
+    try {
+      await connectViberAccount({
+        authToken: authToken.trim(),
+        paName:    paName.trim(),
+        label:     label.trim() || paName.trim(),
+        ownerId:   ownerId || null,
+      });
+      setSuccess(`Viber канал «${paName}» подключён`);
+      setTimeout(() => { router.refresh(); onClose(); }, 1500);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title="Подключение Viber Public Account"
+      footer={<>
+        <Button onClick={onClose} disabled={busy}>Отмена</Button>
+        <Button variant="primary" onClick={save} disabled={busy || !authToken || !paName}>
+          {busy ? 'Подключение...' : 'Подключить'}
+        </Button>
+      </>}>
+      {success ? (
+        <div className="py-6 text-center">
+          <CheckCircle size={36} className="mx-auto text-success mb-3" />
+          <h3 className="text-[15px] font-bold text-success">{success}</h3>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-md px-3 py-2.5 text-[12px] text-ink-2 leading-relaxed border" style={{ background: '#7360F216', borderColor: '#7360F233' }}>
+            <strong className="block mb-1" style={{ color: '#7360F2' }}>Как получить Auth Token:</strong>
+            1. Зайдите на <a href="https://partners.viber.com/" target="_blank" rel="noopener" className="text-navy hover:underline">partners.viber.com</a> и создайте Public Account<br />
+            2. В настройках аккаунта найдите <strong>Account Settings → API</strong><br />
+            3. Скопируйте <code className="font-mono bg-bg px-1">X-Viber-Auth-Token</code><br />
+            4. Webhook URL зарегистрируется автоматически после нажатия «Подключить»
+          </div>
+          <FormField label="Auth Token" required hint="X-Viber-Auth-Token из partners.viber.com">
+            <Input value={authToken} onChange={(e) => setAuthToken(e.target.value)} placeholder="abcdef-12345-67890..." autoFocus />
+          </FormField>
+          <FormField label="Имя Public Account" required hint="Название как в partners.viber.com (уникально)">
+            <Input value={paName} onChange={(e) => setPaName(e.target.value)} placeholder="AZ Group" />
+          </FormField>
+          <FormField label="Название канала" hint="Как будет отображаться в CRM">
+            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={paName || 'AZ Group Viber'} />
+          </FormField>
+          <FormField label="Владелец" hint="Если выбрать — личный, иначе общий">
+            <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+              <option value="">— общий канал (видят все) —</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.role === 'ADMIN' ? 'Админ' : u.role === 'SALES' ? 'Продажи' : 'Легализация'})
+                </option>
+              ))}
+            </Select>
+          </FormField>
+          {error && (
+            <div className="bg-danger-bg border border-danger/20 text-danger text-[12.5px] p-2.5 rounded-md">
+              {error}
+            </div>
+          )}
+          <p className="text-[11px] text-ink-4">
+            При подключении CRM сама зарегистрирует webhook на стороне Viber.
+            Требует чтобы APP_PUBLIC_URL в .env был публичным HTTPS-адресом.
+          </p>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ============ META ROW + MODAL ============
+
+function MetaRow({
+  account, onShowInstructions,
+}: {
+  account: MetaAccountLite;
+  onShowInstructions: () => void;
+}) {
+  const router = useRouter();
+
+  async function onDelete() {
+    if (!confirm(`Отключить «${account.pageName}»? Webhook в FB App нужно убрать вручную.`)) return;
+    try { await disconnectMetaAccount(account.id); router.refresh(); }
+    catch (e) { alert((e as Error).message); }
+  }
+  async function onToggle() {
+    try { await toggleMetaAccount(account.id, !account.isActive); router.refresh(); }
+    catch (e) { alert((e as Error).message); }
+  }
+
+  return (
+    <div className="px-5 py-3.5 flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-1 min-w-[260px]">
+        <div className={cn('w-10 h-10 rounded-md grid place-items-center shrink-0',
+          account.isConnected ? 'text-white' : 'bg-bg text-ink-4')}
+          style={account.isConnected ? { background: '#1877F2' } : undefined}>
+          <Facebook size={16} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <strong className="text-[14px] text-ink">{account.label}</strong>
+            {account.isConnected
+              ? <Badge variant="success" withDot>токен валиден</Badge>
+              : <Badge variant="default">не подключён</Badge>}
+            {!account.isActive && <Badge variant="default">отключён</Badge>}
+            {!account.ownerId && <Badge variant="gold">общий</Badge>}
+            {account.hasMessenger && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-px rounded font-medium" style={{ background: '#1877F216', color: '#1877F2' }}>
+                <Facebook size={9} /> Messenger
+              </span>
+            )}
+            {account.hasInstagram && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-px rounded font-medium" style={{ background: '#E4405F16', color: '#E4405F' }}>
+                <Instagram size={9} /> Instagram
+              </span>
+            )}
+          </div>
+          <div className="text-[11.5px] text-ink-3 mt-0.5 flex flex-wrap gap-x-3">
+            <span className="font-mono">{account.pageName}</span>
+            {account.igUsername && <span className="font-mono">· @{account.igUsername}</span>}
+            {account.ownerName && <span>· {account.ownerName}</span>}
+            <span>· {account.threadsCount} переписок</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-1.5 ml-auto">
+        <Button size="sm" onClick={onShowInstructions} title="Инструкция: настроить webhook в FB">
+          Webhook URL
+        </Button>
+        <Button size="sm" onClick={onToggle} title={account.isActive ? 'Отключить' : 'Включить'}><Power size={11} /></Button>
+        <Button size="sm" variant="ghost" onClick={onDelete} title="Удалить"><Trash2 size={11} /></Button>
+      </div>
+    </div>
+  );
+}
+
+function MetaConnectModal({
+  users, appPublicUrl, onClose, onConnected,
+}: {
+  users: UserLite[];
+  appPublicUrl: string;
+  onClose: () => void;
+  onConnected: (account: MetaAccountLite) => void;
+}) {
+  const router = useRouter();
+  const [pageAccessToken, setPageAccessToken] = useState('');
+  const [appSecret, setAppSecret] = useState('');
+  const [verifyToken, setVerifyToken] = useState('');
+  const [label, setLabel]   = useState('');
+  const [ownerId, setOwnerId] = useState('');
+  const [busy, setBusy]     = useState(false);
+  const [error, setError]   = useState<string | null>(null);
+
+  async function save() {
+    setError(null); setBusy(true);
+    try {
+      const res = await connectMetaAccount({
+        pageAccessToken: pageAccessToken.trim(),
+        appSecret:       appSecret.trim(),
+        verifyToken:     verifyToken.trim(),
+        label:           label.trim() || 'FB Page',
+        ownerId:         ownerId || null,
+      });
+      router.refresh();
+      // Сразу показываем инструкцию по настройке webhook в FB App
+      onConnected({
+        id:           res.accountId,
+        pageId:       '',  // не нужно для модалки инструкций — она тянет verifyToken
+        pageName:     res.pageName,
+        igUserId:     null,
+        igUsername:   res.igUsername,
+        hasMessenger: true,
+        hasInstagram: res.hasInstagram,
+        verifyToken:  verifyToken.trim(),
+        label:        label.trim() || 'FB Page',
+        ownerId:      ownerId || null,
+        ownerName:    null,
+        isConnected:  true,
+        isActive:     true,
+        lastSeenAt:   null,
+        threadsCount: 0,
+        messagesCount: 0,
+      });
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title="Подключение Facebook Page (Messenger + Instagram)" size="lg"
+      footer={<>
+        <Button onClick={onClose} disabled={busy}>Отмена</Button>
+        <Button variant="primary" onClick={save} disabled={busy || !pageAccessToken || !appSecret || !verifyToken}>
+          {busy ? 'Подключение...' : 'Подключить'}
+        </Button>
+      </>}>
+      <div className="flex flex-col gap-3">
+        <div className="rounded-md px-3 py-2.5 text-[12px] text-ink-2 leading-relaxed border" style={{ background: '#1877F216', borderColor: '#1877F233' }}>
+          <strong className="block mb-1" style={{ color: '#1877F2' }}>Что нужно подготовить заранее:</strong>
+          1. Создать Business App на <a href="https://developers.facebook.com" target="_blank" rel="noopener" className="text-navy hover:underline">developers.facebook.com</a><br />
+          2. Добавить продукты <strong>Messenger</strong> и <strong>Instagram</strong><br />
+          3. Получить <strong>Page Access Token</strong> (long-lived) через Graph API Explorer<br />
+          4. Скопировать <strong>App Secret</strong> из Settings → Basic<br />
+          5. Придумать <strong>Verify Token</strong> (любая случайная строка)<br />
+          После подключения CRM покажет URL и инструкции для настройки webhook в FB App Dashboard.
+        </div>
+        <FormField label="Page Access Token" required hint="Long-lived, для работы FB Page">
+          <Input value={pageAccessToken} onChange={(e) => setPageAccessToken(e.target.value)} placeholder="EAAB..." autoFocus />
+        </FormField>
+        <FormField label="App Secret" required hint="Settings → Basic в FB App Dashboard">
+          <Input value={appSecret} onChange={(e) => setAppSecret(e.target.value)} placeholder="32-символьный hex" />
+        </FormField>
+        <FormField label="Verify Token" required hint="Придумайте любую строку — её надо будет ввести в FB при настройке webhook">
+          <Input value={verifyToken} onChange={(e) => setVerifyToken(e.target.value)} placeholder="my-secret-verify-token-2026" />
+        </FormField>
+        <FormField label="Название канала" hint="Как будет отображаться в CRM">
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="AZ Group FB" />
+        </FormField>
+        <FormField label="Владелец" hint="Если выбрать — личный, иначе общий">
+          <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+            <option value="">— общий канал (видят все) —</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name} ({u.role === 'ADMIN' ? 'Админ' : u.role === 'SALES' ? 'Продажи' : 'Легализация'})
+              </option>
+            ))}
+          </Select>
+        </FormField>
+        {error && (
+          <div className="bg-danger-bg border border-danger/20 text-danger text-[12.5px] p-2.5 rounded-md">
+            {error}
+          </div>
+        )}
+        {!appPublicUrl && (
+          <div className="bg-warn-bg border border-warn/20 text-warn text-[12px] p-2.5 rounded-md">
+            APP_PUBLIC_URL не задан в .env — webhook URL не получится скопировать. Добавь переменную и перезапусти сервер.
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/** Модалка с инструкцией: какой URL и токен ввести в FB App Dashboard. */
+function MetaInstructionsModal({
+  account, appPublicUrl, onClose,
+}: {
+  account: MetaAccountLite;
+  appPublicUrl: string;
+  onClose: () => void;
+}) {
+  const webhookUrl = `${appPublicUrl}/api/messenger/webhook?account=${account.id}`;
+  const [copied, setCopied] = useState<'url' | 'token' | null>(null);
+
+  function copy(text: string, what: 'url' | 'token') {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(what);
+      setTimeout(() => setCopied(null), 1500);
+    });
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title={`Webhook для ${account.label}`} size="lg"
+      footer={<Button variant="primary" onClick={onClose}>Понятно</Button>}>
+      <div className="flex flex-col gap-3">
+        <div className="rounded-md px-3 py-2.5 text-[12px] text-ink-2 leading-relaxed border" style={{ background: '#1877F216', borderColor: '#1877F233' }}>
+          Откройте <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener" className="text-navy hover:underline font-semibold">developers.facebook.com/apps</a> →
+          ваш App → <strong>Webhooks</strong> → <strong>Messenger</strong>.
+          Вставьте значения ниже и подпишитесь на поля <code className="font-mono bg-bg px-1">messages</code>, <code className="font-mono bg-bg px-1">messaging_postbacks</code>.
+          Если используете Instagram — повторите то же самое в разделе <strong>Instagram</strong>.
+        </div>
+
+        <div>
+          <label className="text-[10.5px] text-ink-4 font-semibold uppercase tracking-[0.05em] mb-1 block">Callback URL</label>
+          <div className="flex gap-2">
+            <Input readOnly value={webhookUrl} className="font-mono text-[12px]" />
+            <Button onClick={() => copy(webhookUrl, 'url')} title="Скопировать">
+              {copied === 'url' ? <CheckCircle size={12} /> : <Copy size={12} />}
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <label className="text-[10.5px] text-ink-4 font-semibold uppercase tracking-[0.05em] mb-1 block">Verify Token</label>
+          <div className="flex gap-2">
+            <Input readOnly value={account.verifyToken} className="font-mono text-[12px]" />
+            <Button onClick={() => copy(account.verifyToken, 'token')} title="Скопировать">
+              {copied === 'token' ? <CheckCircle size={12} /> : <Copy size={12} />}
+            </Button>
+          </div>
+        </div>
+
+        <p className="text-[11.5px] text-ink-3">
+          После сохранения FB сделает GET запрос на ваш URL и сверит Verify Token —
+          если совпало, webhook активируется и сообщения начнут приходить.
+          {!account.hasInstagram && (
+            <> Чтобы добавить Instagram, привяжите IG Business аккаунт к Page и переподключите канал.</>
+          )}
+        </p>
+      </div>
     </Modal>
   );
 }
