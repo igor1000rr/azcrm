@@ -10,6 +10,8 @@ import { auth } from '@/lib/auth';
 //   /api/files/*                   — JWT ooToken в query (для OnlyOffice)
 //                                    или cookie-сессия (для UI-загрузок)
 //   /api/push/vapid                — публичный VAPID-ключ для браузера
+//   /api/public/*                  — формы лендинга. Защита: rate-limit по IP,
+//                                    honeypot, CORS-allowlist, валидация zod.
 //
 // Если эти пути закрыть auth-middleware — webhook'и получают 302 на /login,
 // внешние сервисы (OnlyOffice, Telegram, worker) их парсят как fail.
@@ -21,6 +23,7 @@ const PUBLIC_API_PREFIXES = [
   '/api/cron',
   '/api/files',
   '/api/push/vapid',
+  '/api/public',
 ];
 
 export default auth((req) => {
