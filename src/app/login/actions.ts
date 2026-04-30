@@ -11,10 +11,6 @@
 
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { checkRateLimit } from '@/lib/rate-limit';
-
-const LOGIN_MAX       = 10;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 export interface PrecheckResult {
   ok:        boolean;
@@ -26,7 +22,13 @@ export interface PrecheckResult {
 
 /**
  * Проверить email+password (БЕЗ создания сессии) и сообщить нужна ли 2FA.
- * НЕ повышает счётчик rate-limit (он сработает в authorize при signIn).
+ *
+ * Rate-limit здесь НЕ применяем — он есть в NextAuth authorize() который
+ * вызывается следом при signIn. Дублирование ломало E2E-тесты (каждый
+ * тест жёг 2 попытки вместо 1, лимит 10/15min исчерпывался к 6-му тесту).
+ *
+ * Безопасность не страдает: brute-force без signIn бесполезен (получишь
+ * только подтверждение пароля, но войти не сможешь — нужен полный signIn).
  *
  * Возвращает:
  *   { ok: false, need2FA: false, errorText: 'Неверный email или пароль' }
@@ -42,16 +44,6 @@ export async function precheckLogin(input: {
 
   if (!email || !password) {
     return { ok: false, need2FA: false, errorText: 'Введите email и пароль' };
-  }
-
-  // Rate-limit считаем общий с обычным логином — чтобы precheck не позволял
-  // подбирать пароль обходом счётчика.
-  const rlKey = `login:${email}`;
-  if (!checkRateLimit(rlKey, LOGIN_MAX, LOGIN_WINDOW_MS)) {
-    return {
-      ok: false, need2FA: false,
-      errorText: 'Слишком много попыток. Подождите 15 минут.',
-    };
   }
 
   const user = await db.user.findUnique({
