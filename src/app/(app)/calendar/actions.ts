@@ -12,6 +12,7 @@ import { requireUser } from '@/lib/auth';
 import { canEditLead, assert } from '@/lib/permissions';
 import { notify } from '@/lib/notify';
 import { audit } from '@/lib/audit';
+import { logger } from '@/lib/logger';
 
 const createMeetingSchema = z.object({
   title:        z.string().min(1, 'Укажите название'),
@@ -109,7 +110,7 @@ export async function createCalendarMeeting(input: z.infer<typeof createMeetingS
         link:   '/calendar',
       });
     } catch (e) {
-      console.error('failed to notify participant', participantId, e);
+      logger.error('failed to notify participant', participantId, e);
     }
   }
 
@@ -250,7 +251,7 @@ export async function updateCalendarMeeting(input: z.infer<typeof updateMeetingS
         link:   '/calendar',
       });
     } catch (e) {
-      console.error('failed to notify participant', participantId, e);
+      logger.error('failed to notify participant', participantId, e);
     }
   }
 
