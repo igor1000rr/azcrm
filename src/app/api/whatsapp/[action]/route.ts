@@ -26,10 +26,6 @@ export async function POST(
   req:    NextRequest,
   ctx:    { params: Promise<{ action: string }> },
 ) {
-  // [DEBUG WA]: временное логирование для диагностики QR-подключения
-  const reqId = Math.random().toString(36).slice(2, 7);
-  const t0 = Date.now();
-
   try {
     const user = await requireUser();
     const { action } = await ctx.params;
@@ -44,18 +40,10 @@ export async function POST(
       return NextResponse.json({ error: 'accountId required' }, { status: 400 });
     }
 
-    if (action === 'connect' || action === 'status') {
-      const flags = action === 'connect'
-        ? ` force=${!!body.force} wipe=${!!body.wipe}`
-        : '';
-      console.log(`[DEBUG WA ${reqId}] ${action} userId=${user.id} accountId=${accountId}${flags}`);
-    }
-
     const account = await db.whatsappAccount.findFirst({
       where: { id: accountId, ...whatsappAccountFilter(user) },
     });
     if (!account) {
-      console.log(`[DEBUG WA ${reqId}] FORBIDDEN — account ${accountId} не найден или нет прав у ${user.id}`);
       return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
 
@@ -64,9 +52,6 @@ export async function POST(
         const force = body.force === true;
         const wipe  = body.wipe === true;
         const res = await workerConnect(accountId, { force, wipe });
-        const dt = Date.now() - t0;
-        const qrLen = res.qr ? res.qr.length : 0;
-        console.log(`[DEBUG WA ${reqId}] connect → status=${res.status} qrLen=${qrLen} dt=${dt}ms`);
         return NextResponse.json(res);
       }
       case 'disconnect': {
@@ -80,9 +65,6 @@ export async function POST(
       }
       case 'status': {
         const res = await workerStatus(accountId);
-        const dt = Date.now() - t0;
-        const qrLen = res.qr ? res.qr.length : 0;
-        console.log(`[DEBUG WA ${reqId}] status → status=${res.status} qrLen=${qrLen} dt=${dt}ms`);
         return NextResponse.json(res);
       }
       case 'send': {
@@ -146,7 +128,6 @@ export async function POST(
     }
   } catch (e) {
     const status = (e as Error & { statusCode?: number }).statusCode ?? 500;
-    console.error(`[DEBUG WA ${reqId}] ERROR status=${status}: ${(e as Error).message}`);
     return NextResponse.json({ error: (e as Error).message }, { status });
   }
 }
