@@ -2,41 +2,30 @@
 //
 // Pipeline для одного звонка:
 //   1. Скачиваем аудио по recordLocalUrl
-//   2. Транскрибируем через Whisper API (OpenAI-совместимый — можно
-//      подключить Groq, OpenAI, любого совместимого провайдера)
+//   2. Транскрибируем через Whisper-совместимый API (OpenAI/Groq/...)
 //   3. Шлём транскрипт в LLM с system-prompt просящим JSON-ответ:
 //      sentiment / sentimentScore / summary / tags
 //   4. Сохраняем результаты в Call.{transcript, sentiment, ...}
 //   5. Если sentiment=NEGATIVE — шлём notify руководителю
 //
-// ENV (если не заданы — gracefully SKIPPED, cron не падает):
-//   WHISPER_API_KEY    — обязателен для транскрипции
-//   WHISPER_API_BASE   — default https://api.openai.com/v1
-//   WHISPER_MODEL      — default whisper-1
-//   LLM_API_KEY        — обязателен для анализа
-//   LLM_API_BASE       — default https://api.openai.com/v1
-//   LLM_MODEL          — default gpt-4o-mini
-//
-// Пример Groq: WHISPER_API_BASE=https://api.groq.com/openai/v1
-//              WHISPER_MODEL=whisper-large-v3
-//              LLM_MODEL=llama-3.3-70b-versatile
+// Конфиг (API-ключи и base URLs) читается из таблицы Setting через
+// getCallAnalysisConfig() с fallback на ENV. Настраивается через UI на
+// /settings/call-analysis.
 
 import { db } from '@/lib/db';
 import { notify } from '@/lib/notify';
+import {
+  getCallAnalysisConfig,
+  isCallAnalysisEnabled as isCfgEnabled,
+  type CallAnalysisConfig,
+} from '@/lib/call-analysis-config';
 import type { CallSentiment } from '@prisma/client';
-
-const WHISPER_API_KEY  = process.env.WHISPER_API_KEY;
-const WHISPER_API_BASE = process.env.WHISPER_API_BASE ?? 'https://api.openai.com/v1';
-const WHISPER_MODEL    = process.env.WHISPER_MODEL    ?? 'whisper-1';
-const LLM_API_KEY      = process.env.LLM_API_KEY;
-const LLM_API_BASE     = process.env.LLM_API_BASE     ?? 'https://api.openai.com/v1';
-const LLM_MODEL        = process.env.LLM_MODEL        ?? 'gpt-4o-mini';
 
 const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? 'http://localhost:3000';
 
 const SYSTEM_PROMPT = `Ты анализируешь телефонные разговоры менеджера юридической миграционной фирмы с клиентом.
 Фирма помогает с легализацией в Польше: карта побыта, виза, karta praca.
-Определи тональность клиента и верни СТРОГО JSON-объект следующего формата (без markdown, без пояснений):
+Опредeли тональность клиента и верни СТРОГО JSON-объект следующего формата (без markdown, без пояснений):
 
 {
   "sentiment": "POSITIVE" | "NEUTRAL" | "NEGATIVE" | "PRICE_QUESTION",
@@ -69,7 +58,6 @@ interface AnalysisResult {
 /** Парсит ответ LLM (строку или объект) в типизированный AnalysisResult.
  *  LLM иногда оборачивает JSON в ```json блоки — обрезаем. Pure для unit-тестов. */
 export function parseAnalysisResponse(raw: string): AnalysisResult {
-  // Удаляем markdown code fence если есть
   let cleaned = raw.trim();
   const fenceMatch = cleaned.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
   if (fenceMatch) cleaned = fenceMatch[1].trim();
@@ -87,14 +75,12 @@ export function parseAnalysisResponse(raw: string): AnalysisResult {
 
   const obj = parsed as Record<string, unknown>;
 
-  // sentiment — обязателен и должен быть из enum
   const sentimentRaw = String(obj.sentiment ?? '').toUpperCase();
   if (!['POSITIVE', 'NEUTRAL', 'NEGATIVE', 'PRICE_QUESTION'].includes(sentimentRaw)) {
     throw new Error(`Неизвестный sentiment: ${sentimentRaw}`);
   }
   const sentiment = sentimentRaw as CallSentiment;
 
-  // sentimentScore — число в [-1, 1], если вне диапазона зажимаем
   let sentimentScore = Number(obj.sentimentScore);
   if (!Number.isFinite(sentimentScore)) sentimentScore = 0;
   sentimentScore = Math.max(-1, Math.min(1, sentimentScore));
@@ -114,10 +100,9 @@ export function parseAnalysisResponse(raw: string): AnalysisResult {
 }
 
 /** Вызывает Whisper API. Возвращает текст транскрипции. */
-export async function transcribeAudio(audioUrl: string): Promise<string> {
-  if (!WHISPER_API_KEY) throw new Error('WHISPER_API_KEY не задан');
+export async function transcribeAudio(audioUrl: string, config: CallAnalysisConfig): Promise<string> {
+  if (!config.whisperApiKey) throw new Error('Whisper API ключ не задан');
 
-  // Скачиваем аудио (recordLocalUrl это /api/files/wa-media/... — internal URL)
   const fullUrl = audioUrl.startsWith('http') ? audioUrl : `${APP_PUBLIC_URL}${audioUrl}`;
   const audioResp = await fetch(fullUrl);
   if (!audioResp.ok) {
@@ -127,12 +112,12 @@ export async function transcribeAudio(audioUrl: string): Promise<string> {
 
   const form = new FormData();
   form.append('file', new Blob([audioBuf], { type: 'audio/mpeg' }), 'call.mp3');
-  form.append('model', WHISPER_MODEL);
+  form.append('model', config.whisperModel);
   form.append('response_format', 'text');
 
-  const resp = await fetch(`${WHISPER_API_BASE}/audio/transcriptions`, {
+  const resp = await fetch(`${config.whisperApiBase}/audio/transcriptions`, {
     method:  'POST',
-    headers: { Authorization: `Bearer ${WHISPER_API_KEY}` },
+    headers: { Authorization: `Bearer ${config.whisperApiKey}` },
     body:    form,
   });
 
@@ -146,17 +131,17 @@ export async function transcribeAudio(audioUrl: string): Promise<string> {
 }
 
 /** Вызывает LLM для sentiment-анализа. Возвращает разобранный AnalysisResult. */
-export async function analyzeTranscript(transcript: string): Promise<AnalysisResult> {
-  if (!LLM_API_KEY) throw new Error('LLM_API_KEY не задан');
+export async function analyzeTranscript(transcript: string, config: CallAnalysisConfig): Promise<AnalysisResult> {
+  if (!config.llmApiKey) throw new Error('LLM API ключ не задан');
 
-  const resp = await fetch(`${LLM_API_BASE}/chat/completions`, {
+  const resp = await fetch(`${config.llmApiBase}/chat/completions`, {
     method:  'POST',
     headers: {
-      Authorization:  `Bearer ${LLM_API_KEY}`,
+      Authorization:  `Bearer ${config.llmApiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model:       LLM_MODEL,
+      model:       config.llmModel,
       temperature: 0.2,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -203,7 +188,6 @@ export async function processCall(callId: string): Promise<'DONE' | 'SKIPPED' | 
   if (!call) return 'FAILED';
   if (call.transcriptStatus !== 'PENDING') return 'SKIPPED';
 
-  // Ранний отказ: нет записи или слишком короткий звонок
   if (!call.recordLocalUrl || (call.durationSec ?? 0) < MIN_DURATION_SEC) {
     await db.call.update({
       where: { id: callId },
@@ -215,28 +199,26 @@ export async function processCall(callId: string): Promise<'DONE' | 'SKIPPED' | 
     return 'SKIPPED';
   }
 
-  // Если ENV не сконфигурирован — корректно SKIPPED с понятной причиной.
-  // Cron не падает, Igor увидит причину в transcriptError.
-  if (!WHISPER_API_KEY || !LLM_API_KEY) {
+  const config = await getCallAnalysisConfig();
+
+  if (!config.whisperApiKey || !config.llmApiKey) {
     await db.call.update({
       where: { id: callId },
       data:  {
         transcriptStatus: 'SKIPPED',
-        transcriptError:  'WHISPER_API_KEY или LLM_API_KEY не заданы в env',
+        transcriptError:  'Whisper или LLM API ключ не задан (Настройки → Анализ звонков)',
       },
     });
     return 'SKIPPED';
   }
 
-  // Помечаем PROCESSING — защита от повторного входа если cron срабатывает
-  // ещё до завершения предыдущего запроса
   await db.call.update({
     where: { id: callId },
     data:  { transcriptStatus: 'PROCESSING' },
   });
 
   try {
-    const transcript = await transcribeAudio(call.recordLocalUrl);
+    const transcript = await transcribeAudio(call.recordLocalUrl, config);
     if (!transcript || transcript.length < 10) {
       await db.call.update({
         where: { id: callId },
@@ -250,7 +232,7 @@ export async function processCall(callId: string): Promise<'DONE' | 'SKIPPED' | 
       return 'SKIPPED';
     }
 
-    const analysis = await analyzeTranscript(transcript);
+    const analysis = await analyzeTranscript(transcript, config);
 
     await db.call.update({
       where: { id: callId },
@@ -266,8 +248,6 @@ export async function processCall(callId: string): Promise<'DONE' | 'SKIPPED' | 
       },
     });
 
-    // Anna идея №12: «Видны проблемные звонки, требующие внимания
-    // руководителя» — шлём NEGATIVE_CALL_ALERT.
     if (analysis.sentiment === 'NEGATIVE') {
       const managerId = call.lead?.legalManagerId
         ?? call.lead?.salesManagerId
@@ -307,13 +287,12 @@ interface BatchResult {
   failed:    number;
 }
 
-/** Берёт пачку PENDING звонков и обрабатывает по одному.
- *  Используется из cron-endpoint /api/cron/transcribe-calls. */
+/** Берёт пачку PENDING звонков и обрабатывает по одному. */
 export async function processPendingCalls(limit = 5): Promise<BatchResult> {
   const calls = await db.call.findMany({
     where:   { transcriptStatus: 'PENDING' },
     select:  { id: true },
-    orderBy: { startedAt: 'desc' },                // свежие первыми
+    orderBy: { startedAt: 'desc' },
     take:    limit,
   });
 
@@ -330,8 +309,7 @@ export async function processPendingCalls(limit = 5): Promise<BatchResult> {
   return result;
 }
 
-/** Включена ли фича. Для UI чтобы скрыть бейдж "анализируется"
- *  если ENV даже не настроены и обработка не запустится. */
-export function isCallAnalysisEnabled(): boolean {
-  return Boolean(WHISPER_API_KEY && LLM_API_KEY);
+/** Включена ли фича. Async — теперь читается из БД. */
+export async function isCallAnalysisEnabled(): Promise<boolean> {
+  return isCfgEnabled();
 }
