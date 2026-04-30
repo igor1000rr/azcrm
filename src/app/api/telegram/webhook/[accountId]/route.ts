@@ -10,15 +10,70 @@
 //   5. Сохранить ChatMessage с дедупликацией по externalId = update_id
 
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { db } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { notify } from '@/lib/notify';
 import { normalizePhone } from '@/lib/utils';
 import { getWebhookSecret, type TelegramUpdate, type TelegramMessage } from '@/lib/telegram';
+import { parseBody } from '@/lib/api-validation';
 import type { MessageType } from '@prisma/client';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+// ============ ZOD-СХЕМА TG UPDATE ============
+// Минимальная защитная валидация: гарантируем что update_id есть и это число,
+// а message/edited_message — корректный объект если присутствует. Внутрь
+// TelegramMessage детально не лезем — Telegram API стабилен и поля могут
+// добавляться (forward_from, reply_to_message и т.п.) — расширяемая схема
+// через .passthrough(). Главное защитить от мусора в кривых полях.
+const TgUserSchema = z.object({
+  id:         z.number().int(),
+  is_bot:     z.boolean().optional(),
+  first_name: z.string().max(200).optional(),
+  last_name:  z.string().max(200).optional(),
+  username:   z.string().max(100).optional(),
+}).passthrough();
+
+const TgChatSchema = z.object({
+  id:    z.number().int(),
+  type:  z.string().max(40).optional(),
+  title: z.string().max(200).optional(),
+}).passthrough();
+
+const TgMessageSchema = z.object({
+  message_id: z.number().int(),
+  date:       z.number().int().nonnegative(),
+  chat:       TgChatSchema,
+  from:       TgUserSchema.optional(),
+  text:       z.string().max(20_000).optional(),
+  caption:    z.string().max(5_000).optional(),
+  photo:      z.array(z.object({ file_size: z.number().int().optional() }).passthrough()).optional(),
+  document:   z.object({
+    file_name: z.string().max(512).optional(),
+    file_size: z.number().int().optional(),
+  }).passthrough().optional(),
+  audio:      z.object({ file_size: z.number().int().optional() }).passthrough().optional(),
+  voice:      z.object({ file_size: z.number().int().optional() }).passthrough().optional(),
+  video:      z.object({ file_size: z.number().int().optional() }).passthrough().optional(),
+  contact:    z.object({
+    phone_number: z.string().max(40),
+    first_name:   z.string().max(200).optional(),
+    last_name:    z.string().max(200).optional(),
+  }).passthrough().optional(),
+  location:   z.object({
+    latitude:  z.number(),
+    longitude: z.number(),
+  }).passthrough().optional(),
+}).passthrough();
+
+const TgUpdateSchema = z.object({
+  update_id:      z.number().int(),
+  message:        TgMessageSchema.optional(),
+  edited_message: TgMessageSchema.optional(),
+  callback_query: z.object({}).passthrough().optional(),
+}).passthrough();
 
 export async function POST(
   req: NextRequest,
@@ -38,10 +93,15 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
-  // 2. Парсим update
-  let update: TelegramUpdate;
-  try { update = await req.json() as TelegramUpdate; }
-  catch { return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400 }); }
+  // 2. Парсим update через zod. Telegram ретраит на не-2xx, так что
+  // на reaaaaally невалидные апдейты возвращаем 200 со skipped — иначе
+  // Telegram забьёт очередь.
+  const parsed = await parseBody(req, TgUpdateSchema);
+  if (!parsed.ok) {
+    console.warn('[tg-webhook] invalid update payload, skipping');
+    return NextResponse.json({ ok: true, skipped: true, reason: 'invalid' });
+  }
+  const update = parsed.data as TelegramUpdate;
 
   const message = update.message ?? update.edited_message;
   if (!message) {
@@ -91,9 +151,10 @@ async function handleIncomingMessage(
   let client: { id: string } | null = null;
   let phone: string | null = null;
 
-  if (msg.contact?.phone_number && msg.contact.phone_number === fromUser?.id?.toString()
-      || msg.contact?.phone_number) {
-    // contact прислан самим пользователем
+  // contact приходит когда юзер сам шарит свой номер через "📎 → Contact".
+  // Раньше тут было `(A && A === userId.toString()) || A` — что эквивалентно
+  // просто `A`. Упрощено: любой contact с phone_number используется.
+  if (msg.contact?.phone_number) {
     try { phone = normalizePhone(msg.contact.phone_number); } catch {}
   }
   if (phone) {
