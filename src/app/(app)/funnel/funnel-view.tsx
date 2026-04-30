@@ -48,6 +48,11 @@ export function FunnelView({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
 
+  // Anna: финансовые суммы скрываем от менеджеров (по этапам и в списке).
+  // Только админ видит агрегаты — sales/legal видят только количество и суммы
+  // КОНКРЕТНЫХ своих лидов (для работы с клиентом — звонок про долг и т.д.).
+  const isAdmin = currentUserRole === 'ADMIN';
+
   // Синхронизация локального состояния с пропсами при смене фильтров.
   // useState(leads) инициализируется один раз — без useEffect новые
   // отфильтрованные данные с сервера не попадают в UI и канбан рендерится
@@ -144,12 +149,12 @@ export function FunnelView({
           'grid gap-px bg-line',
           // Менеджерам (SALES/LEGAL) показываем только "Всего лидов" —
           // финансы (стоимость/получено/долг/конверсия) видны только админу.
-          currentUserRole === 'ADMIN'
+          isAdmin
             ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-5'
             : 'grid-cols-1',
         )}>
           <KpiCell label="Всего лидов" value={kpi.leadsCount} foot={`${kpi.decisionCount} закрыто`} />
-          {currentUserRole === 'ADMIN' && (
+          {isAdmin && (
             <>
               <KpiCell label="Стоимость" value={formatMoney(kpi.totalAmount)} unit="zł" foot={`средний ${formatMoney(kpi.leadsCount ? Math.round(kpi.totalAmount / kpi.leadsCount) : 0)} zł`} />
               <KpiCell label="Получено" value={formatMoney(kpi.totalPaid)} unit="zł" foot={`${Math.round((kpi.totalPaid / Math.max(kpi.totalAmount, 1)) * 100)}% от суммы`} highlight={kpi.totalPaid > 0 ? 'success' : undefined} />
@@ -198,7 +203,7 @@ export function FunnelView({
         </button>
 
         <div className="ml-auto hidden md:flex items-center gap-2">
-          {currentUserRole === 'ADMIN' && (
+          {isAdmin && (
             <a href={`/api/leads/export?funnel=${currentFunnelId}${currentFilters.city ? `&city=${currentFilters.city}` : ''}`}
               data-testid="export-link"
               className="px-2.5 py-1 rounded text-[11.5px] font-medium inline-flex items-center gap-1 border border-line bg-paper text-ink-2 hover:text-navy hover:bg-navy/[0.03] hover:border-navy/30"
@@ -241,7 +246,9 @@ export function FunnelView({
                     </div>
                     <div className="text-[11px] text-ink-3 mt-0.5 flex items-center gap-2">
                       <span><strong className="text-navy">{stageLeads.length}</strong> {plural(stageLeads.length, 'лид', 'лида', 'лидов')}</span>
-                      {stageSum > 0 && <><span>·</span><span className="font-mono"><strong className="text-ink">{formatMoney(stageSum)}</strong> zł</span></>}
+                      {/* Сумма по этапу — только админу. Anna 30.04.2026:
+                          «убрать суммы у менеджеров в таблицах». */}
+                      {isAdmin && stageSum > 0 && <><span>·</span><span className="font-mono"><strong className="text-ink">{formatMoney(stageSum)}</strong> zł</span></>}
                     </div>
                   </div>
                   <button type="button" aria-label="Добавить лида в этап"
