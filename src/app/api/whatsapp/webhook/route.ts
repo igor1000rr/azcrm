@@ -19,6 +19,7 @@ import { normalizePhone } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
 import { notify } from '@/lib/notify';
 import { parseBody } from '@/lib/api-validation';
+import { logger } from '@/lib/logger';
 
 // ============ ZOD-СХЕМЫ ============
 // Worker — наш код, но JSON.parse от него всё равно может прийти битый
@@ -117,7 +118,7 @@ async function handleIncomingMessage(msg: IncomingMessage) {
     });
 
     if (!defaultFunnel || defaultFunnel.stages.length === 0) {
-      console.error('[wa-webhook] no default funnel/stage configured');
+      logger.error('[wa-webhook] no default funnel/stage configured');
       return NextResponse.json({ error: 'no funnel configured' }, { status: 500 });
     }
 
