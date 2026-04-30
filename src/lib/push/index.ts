@@ -8,6 +8,7 @@
 
 import webpush from 'web-push';
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  ?? '';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY ?? '';
@@ -78,7 +79,7 @@ export async function sendPushToUser(
         if (statusCode === 404 || statusCode === 410) {
           await db.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
         } else {
-          console.error(`push failed for ${userId}:`, e);
+          logger.error(`push failed for ${userId}:`, e);
         }
         return { ok: false as const };
       }

@@ -3,6 +3,7 @@
 // если у юзера нет push или браузер закрыт.
 
 import nodemailer from 'nodemailer';
+import { logger } from '@/lib/logger';
 
 const SMTP_HOST = process.env.SMTP_HOST ?? '';
 const SMTP_PORT = parseInt(process.env.SMTP_PORT ?? '587', 10);
@@ -54,7 +55,7 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
     });
     return true;
   } catch (e) {
-    console.error('[email] send failed:', e);
+    logger.error('[email] send failed:', e);
     return false;
   }
 }
