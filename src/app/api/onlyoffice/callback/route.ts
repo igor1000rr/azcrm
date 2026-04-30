@@ -21,9 +21,11 @@ import path from 'node:path';
 
 // Схема callback OnlyOffice — официальная документация:
 // https://api.onlyoffice.com/editors/callback
-// status — int 0..7, key — обязателен, url/users/actions — опциональны.
+// status — int 0..7 (обязательно), key/url/users/actions/token — опциональны.
+// `key` присутствует не во всех типах callback'ов (например, при NO_CHANGES
+// или в простейших ping'ах его может не быть), поэтому НЕ требуем его.
 const OOCallbackSchema = z.object({
-  key:    z.string().min(1).max(128),
+  key:    z.string().min(1).max(128).optional(),
   status: z.number().int().min(0).max(7),
   url:    z.string().url().max(4096).optional(),
   users:  z.array(z.string().max(128)).max(50).optional(),
@@ -79,7 +81,7 @@ export async function POST(req: NextRequest) {
       // OnlyOffice ждёт { error: <int> } — конвертим формат, но статус 400 сохраняем
       return NextResponse.json({ error: 1, message: 'invalid body' }, { status: 400 });
     }
-    const body: OOCallbackBody & { token?: string } = parsed.data;
+    const body = parsed.data as OOCallbackBody & { token?: string };
 
     // Токен либо в Authorization, либо в body.token. ОБЯЗАТЕЛЕН.
     const authHeader = req.headers.get('authorization') ?? '';
