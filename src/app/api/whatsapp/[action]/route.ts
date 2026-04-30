@@ -1,6 +1,7 @@
 // API для управления WhatsApp каналами
-// POST /api/whatsapp/connect    { accountId } -> { qr, status }
+// POST /api/whatsapp/connect    { accountId, force?, wipe? } -> { qr, status }
 // POST /api/whatsapp/disconnect { accountId } -> { ok }
+// POST /api/whatsapp/status     { accountId } -> { status, qr? }
 // POST /api/whatsapp/send       { accountId, threadId, body } -> { ok, messageId }
 //
 // Эти endpoints вызываются из UI, проксируют в worker и обновляют БД.
@@ -18,7 +19,6 @@ import { revalidatePath } from 'next/cache';
 const ACTIONS = ['connect', 'disconnect', 'send', 'status'] as const;
 type Action = typeof ACTIONS[number];
 
-// Лимит на отправку: 30 сообщений в минуту на пользователя.
 const SEND_MAX        = 30;
 const SEND_WINDOW_MS  = 60 * 1000;
 
@@ -26,8 +26,7 @@ export async function POST(
   req:    NextRequest,
   ctx:    { params: Promise<{ action: string }> },
 ) {
-  // [DEBUG WA]: временное логирование чтобы найти где ломается QR-подключение.
-  // Все логи помечены префиксом — потом убрать одним grep'ом.
+  // [DEBUG WA]: временное логирование для диагностики QR-подключения
   const reqId = Math.random().toString(36).slice(2, 7);
   const t0 = Date.now();
 
@@ -46,10 +45,12 @@ export async function POST(
     }
 
     if (action === 'connect' || action === 'status') {
-      console.log(`[DEBUG WA ${reqId}] ${action} userId=${user.id} accountId=${accountId}`);
+      const flags = action === 'connect'
+        ? ` force=${!!body.force} wipe=${!!body.wipe}`
+        : '';
+      console.log(`[DEBUG WA ${reqId}] ${action} userId=${user.id} accountId=${accountId}${flags}`);
     }
 
-    // Проверяем что юзер имеет доступ к этому аккаунту
     const account = await db.whatsappAccount.findFirst({
       where: { id: accountId, ...whatsappAccountFilter(user) },
     });
@@ -60,7 +61,9 @@ export async function POST(
 
     switch (action) {
       case 'connect': {
-        const res = await workerConnect(accountId);
+        const force = body.force === true;
+        const wipe  = body.wipe === true;
+        const res = await workerConnect(accountId, { force, wipe });
         const dt = Date.now() - t0;
         const qrLen = res.qr ? res.qr.length : 0;
         console.log(`[DEBUG WA ${reqId}] connect → status=${res.status} qrLen=${qrLen} dt=${dt}ms`);
@@ -83,7 +86,6 @@ export async function POST(
         return NextResponse.json(res);
       }
       case 'send': {
-        // Rate-limit на пользователя
         if (!checkRateLimit(`wa-send:${user.id}`, SEND_MAX, SEND_WINDOW_MS)) {
           return NextResponse.json(
             { ok: false, error: `Слишком много сообщений. Подождите минуту.` },
