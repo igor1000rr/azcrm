@@ -44,20 +44,32 @@ function parseOptionalDate(s: string | null | undefined, errMsg: string): Date |
   return d;
 }
 
-/** Сравнивает две даты по ISO-строке (или обе null). true если разные. */
-function datesDiffer(a: Date | null, b: Date | null): boolean {
-  if (a === null && b === null) return false;
-  if (a === null || b === null) return true;
-  return a.getTime() !== b.getTime();
+/** Сравнивает две даты по времени (или обе null/undefined). true если разные.
+ *  undefined трактуется как null — нужно для устойчивости в тестах где
+ *  старые findResp не содержали поля legalStayUntil/passportExpiresAt. */
+function datesDiffer(a: Date | null | undefined, b: Date | null | undefined): boolean {
+  const an = a ?? null;
+  const bn = b ?? null;
+  if (an === null && bn === null) return false;
+  if (an === null || bn === null) return true;
+  return an.getTime() !== bn.getTime();
 }
 
 export async function updateClient(input: z.infer<typeof clientSchema>) {
   const user = await requireUser();
   const data = clientSchema.parse(input);
 
+  // select явно указываем поля (включая legalStayUntil/passportExpiresAt
+  // для сравнения через datesDiffer ниже). Не include {} — там всё лишнее.
   const client = await db.client.findUnique({
     where: { id: data.id },
-    include: {
+    select: {
+      id:                true,
+      phone:             true,
+      fullName:          true,
+      email:             true,
+      legalStayUntil:    true,
+      passportExpiresAt: true,
       leads: {
         select: { salesManagerId: true, legalManagerId: true },
         take: 1,
