@@ -17,6 +17,7 @@ import { notify } from '@/lib/notify';
 import { normalizePhone } from '@/lib/utils';
 import { getWebhookSecret, type TelegramUpdate, type TelegramMessage } from '@/lib/telegram';
 import { parseBody } from '@/lib/api-validation';
+import { logger } from '@/lib/logger';
 import type { MessageType } from '@prisma/client';
 
 export const dynamic = 'force-dynamic';
@@ -85,7 +86,7 @@ export async function POST(
   let expected: string;
   try { expected = getWebhookSecret(accountId); }
   catch (e) {
-    console.error('[tg-webhook] secret config error', e);
+    logger.error('[tg-webhook] secret config error', e);
     return NextResponse.json({ ok: false }, { status: 500 });
   }
   const provided = req.headers.get('x-telegram-bot-api-secret-token') ?? '';
@@ -98,7 +99,7 @@ export async function POST(
   // Telegram забьёт очередь.
   const parsed = await parseBody(req, TgUpdateSchema);
   if (!parsed.ok) {
-    console.warn('[tg-webhook] invalid update payload, skipping');
+    logger.warn('[tg-webhook] invalid update payload, skipping');
     return NextResponse.json({ ok: true, skipped: true, reason: 'invalid' });
   }
   const update = parsed.data as TelegramUpdate;
@@ -176,7 +177,7 @@ async function handleIncomingMessage(
       include: { stages: { orderBy: { position: 'asc' }, take: 1 } },
     });
     if (!defaultFunnel || defaultFunnel.stages.length === 0) {
-      console.error('[tg-webhook] no default funnel/stage configured');
+      logger.error('[tg-webhook] no default funnel/stage configured');
       return NextResponse.json({ ok: false, error: 'no funnel configured' }, { status: 500 });
     }
 
