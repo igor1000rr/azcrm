@@ -6,7 +6,7 @@ import { notFound } from 'next/navigation';
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { canViewLead, whatsappAccountFilter } from '@/lib/permissions';
+import { canViewLead } from '@/lib/permissions';
 import { LeadCardView } from './lead-card-view';
 
 export const dynamic = 'force-dynamic';
@@ -76,14 +76,12 @@ export default async function LeadPage({ params }: PageProps) {
     orderBy: { name: 'asc' },
   });
 
-  // Пелномоцники: менеджеры легализации + админы (Anna просила «легализация + я»)
   const attorneys = await db.user.findMany({
     where: { isActive: true, role: { in: ['LEGAL', 'ADMIN'] } },
     select: { id: true, name: true, role: true },
     orderBy: [{ role: 'asc' }, { name: 'asc' }],
   });
 
-  // Города (для селекта «город работы») и каталог услуг (для multi-service редактора)
   const [cities, allServices] = await Promise.all([
     db.city.findMany({
       where: { isActive: true },
@@ -117,26 +115,66 @@ export default async function LeadPage({ params }: PageProps) {
     take: 10,
   });
 
-  // ============ ОБЪЕДИНЁННАЯ ПЕРЕПИСКА КЛИЕНТА ============
-  // Anna хочет видеть всю историю общения по клиенту независимо от
-  // того с какого канала писали. Собираем сообщения со всех каналов
-  // которые пользователю доступны (через whatsappAccountFilter).
+  // ============ ОБЪЕДИНЁННАЯ ПЕРЕПИСКА КЛИЕНТА (все каналы) ============
+  // Anna хочет видеть всю историю общения по клиенту независимо от канала.
+  // Собираем сообщения со всех каналов которые пользователю доступны.
   //
-  // Также подгружаем СПИСОК доступных каналов для селектора при ответе:
+  // Permission policy для всех типов аккаунтов:
   //   ADMIN — все активные
   //   SALES/LEGAL — свои (ownerId == user.id) + общие (ownerId == null)
 
-  const visibleAccountFilter = whatsappAccountFilter(user);
+  const accountFilter = user.role === 'ADMIN'
+    ? { isActive: true }
+    : { isActive: true, OR: [{ ownerId: user.id }, { ownerId: null }] };
 
-  // ВАЖНО: orderBy lastMessageAt desc — самый свежий thread будет первым,
-  // используется ниже для определения какую переписку открыть кнопкой WhatsApp.
+  const [waAccs, tgAccs, viberAccs, metaAccs] = await Promise.all([
+    db.whatsappAccount.findMany({
+      where:  accountFilter,
+      select: { id: true, label: true, phoneNumber: true, isConnected: true, ownerId: true },
+      orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
+    }),
+    db.telegramAccount.findMany({
+      where:  accountFilter,
+      select: { id: true, label: true, botUsername: true, isConnected: true, ownerId: true },
+      orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
+    }),
+    db.viberAccount.findMany({
+      where:  accountFilter,
+      select: { id: true, label: true, paName: true, isConnected: true, ownerId: true },
+      orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
+    }),
+    db.metaAccount.findMany({
+      where:  accountFilter,
+      select: {
+        id: true, label: true, pageName: true, igUsername: true,
+        hasMessenger: true, hasInstagram: true, isConnected: true, ownerId: true,
+      },
+      orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
+    }),
+  ]);
+
+  const waIds    = waAccs.map((a) => a.id);
+  const tgIds    = tgAccs.map((a) => a.id);
+  const viberIds = viberAccs.map((a) => a.id);
+  const metaIds  = metaAccs.map((a) => a.id);
+
+  // Threads со всех каналов клиента — orderBy lastMessageAt чтобы первый
+  // был самым свежим (нужно ниже для определения какую переписку открыть).
   const clientThreads = await db.chatThread.findMany({
     where: {
-      clientId:        lead.clientId,
-      channel:         'WHATSAPP',
-      whatsappAccount: visibleAccountFilter,
+      clientId: lead.clientId,
+      OR: [
+        { whatsappAccountId: { in: waIds } },
+        { telegramAccountId: { in: tgIds } },
+        { viberAccountId:    { in: viberIds } },
+        { metaAccountId:     { in: metaIds } },
+      ],
     },
-    select: { id: true, whatsappAccountId: true, lastMessageAt: true },
+    select: {
+      id: true, channel: true, lastMessageAt: true,
+      whatsappAccountId: true, telegramAccountId: true,
+      viberAccountId: true, metaAccountId: true,
+    },
     orderBy: { lastMessageAt: 'desc' },
   });
   const threadIds = clientThreads.map((t) => t.id);
@@ -144,67 +182,47 @@ export default async function LeadPage({ params }: PageProps) {
   const chatMessagesRaw = threadIds.length === 0 ? [] : await db.chatMessage.findMany({
     where: { threadId: { in: threadIds } },
     orderBy: { createdAt: 'asc' },
-    take: 500,                                         // последние 500 — хватит для большинства лидов
+    take: 500,
     include: {
       sender:          { select: { name: true } },
       whatsappAccount: { select: { id: true, label: true } },
+      telegramAccount: { select: { id: true, label: true } },
+      viberAccount:    { select: { id: true, label: true } },
+      metaAccount:     { select: { id: true, label: true } },
+      thread:          { select: { channel: true } },
     },
   });
 
-  const availableChatAccounts = await db.whatsappAccount.findMany({
-    where: { isActive: true, ...visibleAccountFilter },
-    select: {
-      id:          true,
-      label:       true,
-      phoneNumber: true,
-      isConnected: true,
-      ownerId:     true,
-    },
-    orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],   // общие (ownerId=null) первыми
-  });
-
-  // ============ КНОПКА «WhatsApp» В КАРТОЧКЕ ============
+  // ============ КНОПКА «WhatsApp» В КАРТОЧКЕ (legacy: ведёт на самый свежий WA-thread) ============
   // Раньше слала /inbox?phone=...&account=... — но /inbox эти параметры
-  // игнорирует и открывал дефолтный (общий) канал. Igor: «выбивает в общий
-  // WhatsApp». Теперь резолвим конкретные thread+channel здесь:
-  //
-  //   1. Если у клиента есть переписка в одном из доступных каналов —
-  //      открываем самый свежий thread (по lastMessageAt).
-  //   2. Иначе выбираем приоритетный канал: канал откуда пришёл лид
-  //      (lead.whatsappAccountId) → личный канал sales-менеджера →
-  //      личный канал legal-менеджера → null.
-  //   3. Если и канала нет — просто /inbox.
-  //
-  // Достаём поля в локальные const ДО логики выбора — иначе TypeScript
-  // теряет narrowing после `if (!lead) notFound()` (lead становится possibly null
-  // в любом нижнем замыкании / async-границе).
-  const latestThread       = clientThreads[0] ?? null;
+  // игнорирует. Сейчас резолвим конкретный WA thread+channel здесь.
+  // Для других каналов кнопок пока нет — переписка показывается в LeadChatPanel
+  // прямо в карточке.
+  const latestWaThread     = clientThreads.find((t) => t.whatsappAccountId);
   const leadWaAccountId    = lead.whatsappAccountId;
   const leadSalesManagerId = lead.salesManagerId;
   const leadLegalManagerId = lead.legalManagerId;
 
-  let preferredAccountId: string | null = null;
+  let preferredWaAccountId: string | null = null;
   if (leadWaAccountId) {
-    preferredAccountId = leadWaAccountId;
+    preferredWaAccountId = leadWaAccountId;
   } else if (leadSalesManagerId) {
-    const sm = availableChatAccounts.find((a) => a.ownerId === leadSalesManagerId);
-    if (sm) preferredAccountId = sm.id;
+    const sm = waAccs.find((a) => a.ownerId === leadSalesManagerId);
+    if (sm) preferredWaAccountId = sm.id;
   }
-  if (!preferredAccountId && leadLegalManagerId) {
-    const lm = availableChatAccounts.find((a) => a.ownerId === leadLegalManagerId);
-    if (lm) preferredAccountId = lm.id;
+  if (!preferredWaAccountId && leadLegalManagerId) {
+    const lm = waAccs.find((a) => a.ownerId === leadLegalManagerId);
+    if (lm) preferredWaAccountId = lm.id;
   }
 
   let whatsappHref = '/inbox';
-  if (latestThread && latestThread.whatsappAccountId) {
-    whatsappHref = `/inbox?thread=${latestThread.id}&channel=${latestThread.whatsappAccountId}`;
-  } else if (preferredAccountId) {
-    whatsappHref = `/inbox?channel=${preferredAccountId}`;
+  if (latestWaThread && latestWaThread.whatsappAccountId) {
+    whatsappHref = `/inbox?thread=${latestWaThread.id}&channel=${latestWaThread.whatsappAccountId}`;
+  } else if (preferredWaAccountId) {
+    whatsappHref = `/inbox?channel=${preferredWaAccountId}`;
   }
 
   // ============ ЗВОНКИ ПО ЛИДУ (Anna идея №12) ============
-  // Последние 10 звонков для отображения в карточке. Полный список со
-  // всеми фильтрами и поиском по транскрипту — на /calls.
   const calls = await db.call.findMany({
     where: { leadId: lead.id },
     orderBy: { startedAt: 'desc' },
@@ -230,6 +248,108 @@ export default async function LeadPage({ params }: PageProps) {
   const total = Number(lead.totalAmount);
   const debt = Math.max(0, total - paid);
 
+  // Нормализация сообщений для UI: вычисляем kind/accountId/accountLabel
+  // из того какое из связей у сообщения заполнено.
+  const chatMessages = chatMessagesRaw.map((m) => {
+    let kind: 'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM' = 'WHATSAPP';
+    let accountId    = '';
+    let accountLabel = '?';
+    if (m.whatsappAccountId && m.whatsappAccount) {
+      kind = 'WHATSAPP'; accountId = m.whatsappAccount.id; accountLabel = m.whatsappAccount.label;
+    } else if (m.telegramAccountId && m.telegramAccount) {
+      kind = 'TELEGRAM'; accountId = m.telegramAccount.id; accountLabel = m.telegramAccount.label;
+    } else if (m.viberAccountId && m.viberAccount) {
+      kind = 'VIBER';    accountId = m.viberAccount.id;    accountLabel = m.viberAccount.label;
+    } else if (m.metaAccountId && m.metaAccount) {
+      // Различаем MESSENGER vs INSTAGRAM по channel самого thread'а
+      kind = m.thread.channel === 'INSTAGRAM' ? 'INSTAGRAM' : 'MESSENGER';
+      accountId = m.metaAccount.id;
+      accountLabel = m.metaAccount.label;
+    }
+    return {
+      id:          m.id,
+      direction:   m.direction,
+      type:        m.type,
+      body:        m.body,
+      mediaUrl:    m.mediaUrl,
+      mediaName:   m.mediaName,
+      createdAt:   m.createdAt.toISOString(),
+      isRead:      m.isRead,
+      deliveredAt: m.deliveredAt?.toISOString() ?? null,
+      senderName:  m.sender?.name ?? null,
+      kind,
+      accountId,
+      accountLabel,
+    };
+  });
+
+  // Список каналов для селектора отправки. Один MetaAccount разворачивается
+  // в два пункта (Messenger + Instagram) если оба активны на Page.
+  const availableChatAccounts: Array<{
+    kind:        'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM';
+    accountId:   string;
+    label:       string;
+    subtitle:    string | null;
+    isConnected: boolean;
+    isShared:    boolean;
+  }> = [
+    ...waAccs.map((a) => ({
+      kind:        'WHATSAPP' as const,
+      accountId:   a.id,
+      label:       a.label,
+      subtitle:    a.phoneNumber,
+      isConnected: a.isConnected,
+      isShared:    a.ownerId === null,
+    })),
+    ...tgAccs.map((a) => ({
+      kind:        'TELEGRAM' as const,
+      accountId:   a.id,
+      label:       a.label,
+      subtitle:    `@${a.botUsername}`,
+      isConnected: a.isConnected,
+      isShared:    a.ownerId === null,
+    })),
+    ...viberAccs.map((a) => ({
+      kind:        'VIBER' as const,
+      accountId:   a.id,
+      label:       a.label,
+      subtitle:    a.paName,
+      isConnected: a.isConnected,
+      isShared:    a.ownerId === null,
+    })),
+    ...metaAccs.flatMap((a) => {
+      const items: Array<{
+        kind:        'MESSENGER' | 'INSTAGRAM';
+        accountId:   string;
+        label:       string;
+        subtitle:    string | null;
+        isConnected: boolean;
+        isShared:    boolean;
+      }> = [];
+      if (a.hasMessenger) {
+        items.push({
+          kind:        'MESSENGER',
+          accountId:   a.id,
+          label:       `${a.label} · FB`,
+          subtitle:    a.pageName,
+          isConnected: a.isConnected,
+          isShared:    a.ownerId === null,
+        });
+      }
+      if (a.hasInstagram) {
+        items.push({
+          kind:        'INSTAGRAM',
+          accountId:   a.id,
+          label:       `${a.label} · IG`,
+          subtitle:    a.igUsername ? `@${a.igUsername}` : null,
+          isConnected: a.isConnected,
+          isShared:    a.ownerId === null,
+        });
+      }
+      return items;
+    }),
+  ];
+
   return (
     <>
       <Topbar
@@ -249,7 +369,6 @@ export default async function LeadPage({ params }: PageProps) {
           stageName:    lead.stage.name,
           source:       lead.source,
           attorney:     lead.attorney,
-          // Номер дела (Anna 30.04.2026) — необязательное поле в секции «Сделка»
           caseNumber:   lead.caseNumber,
           serviceName:  lead.service?.name ?? null,
           employerName: lead.employerName,
@@ -258,7 +377,6 @@ export default async function LeadPage({ params }: PageProps) {
           firstContactAt: lead.firstContactAt?.toISOString() ?? null,
           fingerprintDate: lead.fingerprintDate?.toISOString() ?? null,
           fingerprintLocation: lead.fingerprintLocation,
-          // Дата подачи в уженд (Anna 30.04.2026 — «волшебная штучка»)
           submittedAt:  lead.submittedAt?.toISOString() ?? null,
           isArchived:   lead.isArchived,
           summary:      lead.summary,
@@ -278,10 +396,8 @@ export default async function LeadPage({ params }: PageProps) {
           email:          lead.client.email,
           addressPL:      lead.client.addressPL,
           addressHome:    lead.client.addressHome,
-          // Легальный побыт — тип и срок (Anna 29.04.2026)
           legalStayType:  lead.client.legalStayType,
           legalStayUntil: lead.client.legalStayUntil?.toISOString() ?? null,
-          // Срок паспорта (Anna идея №7 «Календарь сроков виз и документов»)
           passportExpiresAt: lead.client.passportExpiresAt?.toISOString() ?? null,
         }}
         city={lead.city ? { id: lead.city.id, name: lead.city.name } : null}
@@ -374,27 +490,8 @@ export default async function LeadPage({ params }: PageProps) {
         }))}
         team={team}
         attorneys={attorneys}
-        chatMessages={chatMessagesRaw.map((m) => ({
-          id:           m.id,
-          direction:    m.direction,
-          type:         m.type,
-          body:         m.body,
-          mediaUrl:     m.mediaUrl,
-          mediaName:    m.mediaName,
-          createdAt:    m.createdAt.toISOString(),
-          isRead:       m.isRead,
-          deliveredAt:  m.deliveredAt?.toISOString() ?? null,
-          senderName:   m.sender?.name ?? null,
-          accountId:    m.whatsappAccount?.id ?? '',
-          accountLabel: m.whatsappAccount?.label ?? '?',
-        }))}
-        availableChatAccounts={availableChatAccounts.map((a) => ({
-          id:          a.id,
-          label:       a.label,
-          phoneNumber: a.phoneNumber,
-          isConnected: a.isConnected,
-          isShared:    a.ownerId === null,
-        }))}
+        chatMessages={chatMessages}
+        availableChatAccounts={availableChatAccounts}
         calls={calls.map((c) => ({
           id:               c.id,
           direction:        c.direction,
