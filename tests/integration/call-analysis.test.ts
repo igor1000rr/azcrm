@@ -102,30 +102,34 @@ describe('parseAnalysisResponse', () => {
 // ============================================================
 // Integration: processCall (с моками БД, fetch, notify)
 // ============================================================
+//
+// vi.mock хойстится в самый верх файла, поэтому обычные const'ы выше
+// факториек ещё не существуют. Используем vi.hoisted чтобы получить
+// стабильные ссылки на моки.
 
-type AnyFn = ReturnType<typeof vi.fn>;
-
-const mockDb = {
-  call: {
-    findUnique: vi.fn() as AnyFn,
-    update:     vi.fn() as AnyFn,
-    findMany:   vi.fn() as AnyFn,
+const mocks = vi.hoisted(() => ({
+  db: {
+    call: {
+      findUnique: vi.fn(),
+      update:     vi.fn(),
+      findMany:   vi.fn(),
+    },
   },
-};
-const mockNotify = vi.fn();
+  notify: vi.fn(),
+}));
 
-vi.mock('@/lib/db',     () => ({ db: mockDb }));
-vi.mock('@/lib/notify', () => ({ notify: mockNotify }));
+vi.mock('@/lib/db',     () => ({ db:     mocks.db }));
+vi.mock('@/lib/notify', () => ({ notify: mocks.notify }));
 
 const { processCall, processPendingCalls } = await import('@/lib/call-analysis');
 
 beforeEach(() => {
-  mockDb.call.findUnique.mockReset();
-  mockDb.call.update.mockReset();
-  mockDb.call.findMany.mockReset();
-  mockNotify.mockReset();
-  mockDb.call.update.mockResolvedValue({});
-  mockNotify.mockResolvedValue(undefined);
+  mocks.db.call.findUnique.mockReset();
+  mocks.db.call.update.mockReset();
+  mocks.db.call.findMany.mockReset();
+  mocks.notify.mockReset();
+  mocks.db.call.update.mockResolvedValue({});
+  mocks.notify.mockResolvedValue(undefined);
   vi.restoreAllMocks();
 });
 
@@ -164,20 +168,20 @@ function mockFetchOk(transcriptText: string, llmJson: Record<string, unknown>) {
 
 describe('processCall', () => {
   it('не найден → FAILED', async () => {
-    mockDb.call.findUnique.mockResolvedValue(null);
+    mocks.db.call.findUnique.mockResolvedValue(null);
     expect(await processCall('missing')).toBe('FAILED');
   });
 
   it('статус не PENDING → SKIPPED, БД не трогаем', async () => {
-    mockDb.call.findUnique.mockResolvedValue({ ...fullCall, transcriptStatus: 'DONE' });
+    mocks.db.call.findUnique.mockResolvedValue({ ...fullCall, transcriptStatus: 'DONE' });
     expect(await processCall('call-1')).toBe('SKIPPED');
-    expect(mockDb.call.update).not.toHaveBeenCalled();
+    expect(mocks.db.call.update).not.toHaveBeenCalled();
   });
 
   it('нет recordLocalUrl → SKIPPED + transcriptError', async () => {
-    mockDb.call.findUnique.mockResolvedValue({ ...fullCall, recordLocalUrl: null });
+    mocks.db.call.findUnique.mockResolvedValue({ ...fullCall, recordLocalUrl: null });
     expect(await processCall('call-1')).toBe('SKIPPED');
-    expect(mockDb.call.update).toHaveBeenCalledWith({
+    expect(mocks.db.call.update).toHaveBeenCalledWith({
       where: { id: 'call-1' },
       data:  expect.objectContaining({
         transcriptStatus: 'SKIPPED',
@@ -187,9 +191,9 @@ describe('processCall', () => {
   });
 
   it('звонок < 5 сек → SKIPPED', async () => {
-    mockDb.call.findUnique.mockResolvedValue({ ...fullCall, durationSec: 3 });
+    mocks.db.call.findUnique.mockResolvedValue({ ...fullCall, durationSec: 3 });
     expect(await processCall('call-1')).toBe('SKIPPED');
-    expect(mockDb.call.update).toHaveBeenCalledWith({
+    expect(mocks.db.call.update).toHaveBeenCalledWith({
       where: { id: 'call-1' },
       data:  expect.objectContaining({
         transcriptStatus: 'SKIPPED',
@@ -199,7 +203,7 @@ describe('processCall', () => {
   });
 
   it('успех POSITIVE → DONE + сохраняет все поля + notify НЕ вызывается', async () => {
-    mockDb.call.findUnique.mockResolvedValue(fullCall);
+    mocks.db.call.findUnique.mockResolvedValue(fullCall);
     mockFetchOk('Здравствуйте, спасибо большое за консультацию!', {
       sentiment: 'POSITIVE', sentimentScore: 0.8,
       summary: 'Клиент благодарит',  tags: ['благодарность'],
@@ -208,11 +212,11 @@ describe('processCall', () => {
     expect(await processCall('call-1')).toBe('DONE');
 
     // 2 update: PROCESSING → DONE
-    expect(mockDb.call.update).toHaveBeenCalledTimes(2);
-    expect(mockDb.call.update).toHaveBeenNthCalledWith(1, {
+    expect(mocks.db.call.update).toHaveBeenCalledTimes(2);
+    expect(mocks.db.call.update).toHaveBeenNthCalledWith(1, {
       where: { id: 'call-1' }, data: { transcriptStatus: 'PROCESSING' },
     });
-    expect(mockDb.call.update).toHaveBeenNthCalledWith(2, {
+    expect(mocks.db.call.update).toHaveBeenNthCalledWith(2, {
       where: { id: 'call-1' },
       data: expect.objectContaining({
         transcriptStatus: 'DONE',
@@ -224,11 +228,11 @@ describe('processCall', () => {
       }),
     });
 
-    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it('успех NEGATIVE → notify руководителю с правильным userId (legal приоритет)', async () => {
-    mockDb.call.findUnique.mockResolvedValue(fullCall);
+    mocks.db.call.findUnique.mockResolvedValue(fullCall);
     mockFetchOk('Это безобразие! Уже месяц жду!', {
       sentiment: 'NEGATIVE', sentimentScore: -0.8,
       summary: 'Клиент возмущён сроками', tags: ['жалоба-сроки'],
@@ -236,8 +240,8 @@ describe('processCall', () => {
 
     await processCall('call-1');
 
-    expect(mockNotify).toHaveBeenCalledTimes(1);
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledTimes(1);
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'mgr-legal',                    // legal приоритет, не sales
       kind:   'NEGATIVE_CALL_ALERT',
       title:  expect.stringContaining('Иван Петров'),
@@ -247,7 +251,7 @@ describe('processCall', () => {
   });
 
   it('NEGATIVE без legalManager → notify salesManager', async () => {
-    mockDb.call.findUnique.mockResolvedValue({
+    mocks.db.call.findUnique.mockResolvedValue({
       ...fullCall,
       lead: { ...fullCall.lead, legalManagerId: null },
     });
@@ -257,13 +261,13 @@ describe('processCall', () => {
 
     await processCall('call-1');
 
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'mgr-sales',
     }));
   });
 
   it('NEGATIVE без лида → notify managerId звонка', async () => {
-    mockDb.call.findUnique.mockResolvedValue({
+    mocks.db.call.findUnique.mockResolvedValue({
       ...fullCall, lead: null, managerId: 'mgr-call-direct',
     });
     mockFetchOk('плохо', {
@@ -271,13 +275,13 @@ describe('processCall', () => {
     });
 
     await processCall('call-1');
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'mgr-call-direct',
     }));
   });
 
   it('NEGATIVE и нет ни одного менеджера → DONE, notify не вызывается', async () => {
-    mockDb.call.findUnique.mockResolvedValue({
+    mocks.db.call.findUnique.mockResolvedValue({
       ...fullCall, lead: null, managerId: null,
     });
     mockFetchOk('плохо', {
@@ -285,11 +289,11 @@ describe('processCall', () => {
     });
 
     expect(await processCall('call-1')).toBe('DONE');
-    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it('пустая транскрипция → SKIPPED, LLM не вызывается', async () => {
-    mockDb.call.findUnique.mockResolvedValue(fullCall);
+    mocks.db.call.findUnique.mockResolvedValue(fullCall);
     let fetchCount = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
       fetchCount++;
@@ -299,7 +303,7 @@ describe('processCall', () => {
 
     expect(await processCall('call-1')).toBe('SKIPPED');
     expect(fetchCount).toBe(2);                    // LLM (3-й) не вызван
-    expect(mockDb.call.update).toHaveBeenLastCalledWith({
+    expect(mocks.db.call.update).toHaveBeenLastCalledWith({
       where: { id: 'call-1' },
       data:  expect.objectContaining({
         transcriptStatus: 'SKIPPED',
@@ -309,7 +313,7 @@ describe('processCall', () => {
   });
 
   it('Whisper 401 → FAILED + transcriptError содержит код', async () => {
-    mockDb.call.findUnique.mockResolvedValue(fullCall);
+    mocks.db.call.findUnique.mockResolvedValue(fullCall);
     let fetchCount = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
       fetchCount++;
@@ -318,7 +322,7 @@ describe('processCall', () => {
     }) as typeof fetch);
 
     expect(await processCall('call-1')).toBe('FAILED');
-    expect(mockDb.call.update).toHaveBeenLastCalledWith({
+    expect(mocks.db.call.update).toHaveBeenLastCalledWith({
       where: { id: 'call-1' },
       data:  expect.objectContaining({
         transcriptStatus: 'FAILED',
@@ -328,7 +332,7 @@ describe('processCall', () => {
   });
 
   it('LLM вернул мусор → FAILED', async () => {
-    mockDb.call.findUnique.mockResolvedValue(fullCall);
+    mocks.db.call.findUnique.mockResolvedValue(fullCall);
     let fetchCount = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
       fetchCount++;
@@ -340,16 +344,16 @@ describe('processCall', () => {
     }) as typeof fetch);
 
     expect(await processCall('call-1')).toBe('FAILED');
-    expect(mockDb.call.update).toHaveBeenLastCalledWith({
+    expect(mocks.db.call.update).toHaveBeenLastCalledWith({
       where: { id: 'call-1' },
       data:  expect.objectContaining({ transcriptStatus: 'FAILED' }),
     });
   });
 
   it('PROCESSING ставится ДО fetch (защита от race с повторным cron)', async () => {
-    mockDb.call.findUnique.mockResolvedValue(fullCall);
+    mocks.db.call.findUnique.mockResolvedValue(fullCall);
     const order: string[] = [];
-    mockDb.call.update.mockImplementation(async (args: { data: { transcriptStatus?: string } }) => {
+    mocks.db.call.update.mockImplementation(async (args: { data: { transcriptStatus?: string } }) => {
       if (args.data.transcriptStatus) order.push(`update:${args.data.transcriptStatus}`);
       return {};
     });
@@ -367,24 +371,24 @@ describe('processCall', () => {
 
 describe('processPendingCalls', () => {
   it('пусто → 0/0/0/0', async () => {
-    mockDb.call.findMany.mockResolvedValue([]);
+    mocks.db.call.findMany.mockResolvedValue([]);
     const r = await processPendingCalls();
     expect(r).toEqual({ processed: 0, done: 0, skipped: 0, failed: 0 });
   });
 
   it('limit передаётся в findMany', async () => {
-    mockDb.call.findMany.mockResolvedValue([]);
+    mocks.db.call.findMany.mockResolvedValue([]);
     await processPendingCalls(7);
-    expect(mockDb.call.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 7 }));
+    expect(mocks.db.call.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 7 }));
   });
 
   it('пачка из 3 разных результатов → счётчики верны', async () => {
-    mockDb.call.findMany.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
+    mocks.db.call.findMany.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
 
     // a → SKIPPED (нет recordLocalUrl)
     // b → DONE (всё ок, NEUTRAL)
     // c → FAILED (Whisper 500)
-    mockDb.call.findUnique
+    mocks.db.call.findUnique
       .mockResolvedValueOnce({ ...fullCall, id: 'a', recordLocalUrl: null })
       .mockResolvedValueOnce({ ...fullCall, id: 'b' })
       .mockResolvedValueOnce({ ...fullCall, id: 'c' });
