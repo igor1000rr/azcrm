@@ -9,6 +9,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // читает константы const WHISPER_API_KEY = process.env.WHISPER_API_KEY,
 // и если env пустой → isCallAnalysisEnabled()=false → все processCall
 // возвращают SKIPPED вместо ожидаемого DONE.
+//
+// После рефакторинга на конфиг через БД (call-analysis-config.ts):
+// getCallAnalysisConfig() сначала смотрит в Setting (БД), и если там
+// пусто — fallback на ENV. В тестах мокаем db.setting.findUnique → null,
+// тогда конфиг тянется из ENV ровно как раньше.
 vi.hoisted(() => {
   process.env.WHISPER_API_KEY  = 'test-whisper-key';
   process.env.LLM_API_KEY      = 'test-llm-key';
@@ -111,6 +116,9 @@ describe('parseAnalysisResponse', () => {
 //
 // vi.mock хойстится в самый верх файла, поэтому обычные const'ы выше
 // факториек ещё не существуют. Используем vi.hoisted.
+//
+// Мокаем db.setting.findUnique → null чтобы getCallAnalysisConfig упал
+// на ENV-fallback (там test-ключи через hoisted process.env выше).
 
 const mocks = vi.hoisted(() => ({
   db: {
@@ -118,6 +126,9 @@ const mocks = vi.hoisted(() => ({
       findUnique: vi.fn(),
       update:     vi.fn(),
       findMany:   vi.fn(),
+    },
+    setting: {
+      findUnique: vi.fn(),
     },
   },
   notify: vi.fn(),
@@ -137,8 +148,12 @@ beforeEach(() => {
   mocks.db.call.findUnique.mockReset();
   mocks.db.call.update.mockReset();
   mocks.db.call.findMany.mockReset();
+  mocks.db.setting.findUnique.mockReset();
   mocks.notify.mockReset();
   mocks.db.call.update.mockResolvedValue({});
+  // По умолчанию в Setting нет конфига — тогда getCallAnalysisConfig
+  // вернёт значения из process.env (test-keys выше).
+  mocks.db.setting.findUnique.mockResolvedValue(null);
   mocks.notify.mockResolvedValue(undefined);
 });
 
@@ -379,6 +394,40 @@ describe('processCall', () => {
     await processCall('call-1');
     expect(order[0]).toBe('update:PROCESSING');
     expect(order[1]).toBe('fetch');
+  });
+
+  it('конфиг из БД перебивает ENV — другой LLM endpoint', async () => {
+    // Пользователь сохранил свой ключ через UI → лежит в Setting.
+    // Проверяем что endpoint берётся из БД, а не из process.env.
+    mocks.db.setting.findUnique.mockResolvedValue({
+      key: 'call-analysis',
+      value: {
+        whisperApiKey:  'db-whisper',
+        whisperApiBase: 'https://api.test/v1',
+        whisperModel:   'whisper-1',
+        llmApiKey:      'db-llm-grok',
+        llmApiBase:     'https://api.x.ai/v1',
+        llmModel:       'grok-2',
+      },
+    });
+    mocks.db.call.findUnique.mockResolvedValue(fullCall);
+
+    const calledUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+      calledUrls.push(url);
+      if (url.includes('files/wa-media')) return new Response(new ArrayBuffer(100), { status: 200 });
+      if (url.includes('audio/transcriptions')) return new Response(LONG_TRANSCRIPT, { status: 200 });
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({
+          sentiment: 'NEUTRAL', sentimentScore: 0, summary: 'ok', tags: [],
+        })}}],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    expect(await processCall('call-1')).toBe('DONE');
+    // LLM endpoint должен быть из БД (api.x.ai), а не из ENV (api.test)
+    expect(calledUrls.some((u) => u.startsWith('https://api.x.ai/v1/chat/completions'))).toBe(true);
   });
 });
 
