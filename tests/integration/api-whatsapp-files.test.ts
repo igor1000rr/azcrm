@@ -121,8 +121,14 @@ describe('POST /api/whatsapp/[action]', () => {
     mockDb.whatsappAccount.findFirst.mockResolvedValue({ id: 'wa-1' });
     const res = await callWA('connect', { accountId: 'wa-1' });
     expect(res.status).toBe(200);
-    expect(mockWorkerConnect).toHaveBeenCalledWith('wa-1');
+    // workerConnect теперь принимает opts вторым аргументом — { force, wipe }
+    expect(mockWorkerConnect).toHaveBeenCalledWith('wa-1', { force: false, wipe: false });
     expect((res.data as { qr: string }).qr).toBe('qr-data');
+  });
+  it('connect с force=true → opts проксируется в worker', async () => {
+    mockDb.whatsappAccount.findFirst.mockResolvedValue({ id: 'wa-1' });
+    await callWA('connect', { accountId: 'wa-1', force: true, wipe: true });
+    expect(mockWorkerConnect).toHaveBeenCalledWith('wa-1', { force: true, wipe: true });
   });
   it('disconnect → worker + пометить isConnected=false', async () => {
     mockDb.whatsappAccount.findFirst.mockResolvedValue({ id: 'wa-1' });
