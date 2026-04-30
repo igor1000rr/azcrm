@@ -321,6 +321,49 @@ export async function setSubmittedAt(leadId: string, date: string | null) {
   return { ok: true };
 }
 
+// ====================== НОМЕР ДЕЛА (case number) ======================
+
+/**
+ * Anna 30.04.2026: «строчка номер дела рядом со стоимостью услуг,
+ * необязательная». Это номер wniosek который УВ присваивает после подачи.
+ * Inline-редактирование в карточке лида. Сохраняется на blur и Enter.
+ */
+export async function setCaseNumber(leadId: string, caseNumber: string | null) {
+  const user = await requireUser();
+
+  const lead = await db.lead.findUnique({
+    where: { id: leadId },
+    select: { id: true, salesManagerId: true, legalManagerId: true, caseNumber: true },
+  });
+  if (!lead) throw new Error('Лид не найден');
+  assert(canEditLead(user, lead));
+
+  // Тримим и обрезаем до 100 символов на всякий случай. Пустая строка → null.
+  const next = (caseNumber ?? '').trim().slice(0, 100) || null;
+
+  // Идемпотентность: если значение не изменилось — не делаем update и audit.
+  if ((lead.caseNumber ?? null) === next) {
+    return { ok: true, unchanged: true };
+  }
+
+  await db.lead.update({
+    where: { id: leadId },
+    data:  { caseNumber: next },
+  });
+
+  await audit({
+    userId:     user.id,
+    action:     'lead.set_case_number',
+    entityType: 'Lead',
+    entityId:   leadId,
+    before:     { caseNumber: lead.caseNumber },
+    after:      { caseNumber: next },
+  });
+
+  revalidatePath(`/clients/${leadId}`);
+  return { ok: true };
+}
+
 // ====================== УСЛУГИ НА ЛИДЕ ======================
 
 const leadServicesSchema = z.object({
