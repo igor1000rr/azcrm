@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => ({
       create: vi.fn(), delete: vi.fn(), update: vi.fn(),
     },
     lead:        { findUnique: vi.fn() },
-    chatThread:  { findFirst: vi.fn() },
+    // chatThread.update нужен потому что внутри $transaction sendMetaFromLead
+    // вызывает db.chatThread.update — без мока падаем с TypeError.
+    chatThread:  { findFirst: vi.fn(), update: vi.fn() },
     chatMessage: { create: vi.fn() },
     $transaction: vi.fn(),
   },
@@ -38,6 +40,8 @@ beforeEach(() => {
   mocks.auth.requireAdmin.mockResolvedValue({ id: 'admin', role: 'ADMIN' });
   mocks.auth.requireUser.mockResolvedValue({ id: 'user-1', role: 'SALES' });
   mocks.db.$transaction.mockResolvedValue([]);
+  mocks.db.chatThread.update.mockResolvedValue({});
+  mocks.db.chatMessage.create.mockResolvedValue({});
   mocks.permissions.canViewLead.mockReturnValue(true);
   mocks.rateLimit.checkRateLimit.mockReturnValue(true);
 });
