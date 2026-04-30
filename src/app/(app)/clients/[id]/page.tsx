@@ -174,27 +174,32 @@ export default async function LeadPage({ params }: PageProps) {
   //      (lead.whatsappAccountId) → личный канал sales-менеджера →
   //      личный канал legal-менеджера → null.
   //   3. Если и канала нет — просто /inbox.
-  const latestThread = clientThreads[0] ?? null;
+  //
+  // Достаём поля в локальные const ДО логики выбора — иначе TypeScript
+  // теряет narrowing после `if (!lead) notFound()` (lead становится possibly null
+  // в любом нижнем замыкании / async-границе).
+  const latestThread       = clientThreads[0] ?? null;
+  const leadWaAccountId    = lead.whatsappAccountId;
+  const leadSalesManagerId = lead.salesManagerId;
+  const leadLegalManagerId = lead.legalManagerId;
 
-  function pickPreferredAccountId(): string | null {
-    if (lead.whatsappAccountId) return lead.whatsappAccountId;
-    if (lead.salesManagerId) {
-      const sm = availableChatAccounts.find((a) => a.ownerId === lead.salesManagerId);
-      if (sm) return sm.id;
-    }
-    if (lead.legalManagerId) {
-      const lm = availableChatAccounts.find((a) => a.ownerId === lead.legalManagerId);
-      if (lm) return lm.id;
-    }
-    return null;
+  let preferredAccountId: string | null = null;
+  if (leadWaAccountId) {
+    preferredAccountId = leadWaAccountId;
+  } else if (leadSalesManagerId) {
+    const sm = availableChatAccounts.find((a) => a.ownerId === leadSalesManagerId);
+    if (sm) preferredAccountId = sm.id;
+  }
+  if (!preferredAccountId && leadLegalManagerId) {
+    const lm = availableChatAccounts.find((a) => a.ownerId === leadLegalManagerId);
+    if (lm) preferredAccountId = lm.id;
   }
 
   let whatsappHref = '/inbox';
   if (latestThread && latestThread.whatsappAccountId) {
     whatsappHref = `/inbox?thread=${latestThread.id}&channel=${latestThread.whatsappAccountId}`;
-  } else {
-    const preferred = pickPreferredAccountId();
-    if (preferred) whatsappHref = `/inbox?channel=${preferred}`;
+  } else if (preferredAccountId) {
+    whatsappHref = `/inbox?channel=${preferredAccountId}`;
   }
 
   // ============ ЗВОНКИ ПО ЛИДУ (Anna идея №12) ============
