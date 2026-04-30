@@ -13,6 +13,7 @@
 
 import { db } from '@/lib/db';
 import { decrypt, encrypt } from '@/lib/crypto';
+import { logger } from '@/lib/logger';
 
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID ?? '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? '';
@@ -115,7 +116,7 @@ export async function getAccessTokenForUser(userId: string): Promise<string | nu
   try {
     refreshToken = decrypt(user.googleRefreshToken);
   } catch (e) {
-    console.error('[google] failed to decrypt refresh token for user', userId, e);
+    logger.error('[google] failed to decrypt refresh token for user', userId, e);
     return null;
   }
 
@@ -130,7 +131,7 @@ export async function getAccessTokenForUser(userId: string): Promise<string | nu
       return decrypt(user.googleAccessToken);
     } catch (e) {
       // Битый шифротекст access — не критично, обновим через refresh
-      console.warn('[google] failed to decrypt access token, will refresh:', e);
+      logger.warn('[google] failed to decrypt access token, will refresh:', e);
     }
   }
 
@@ -148,7 +149,7 @@ export async function getAccessTokenForUser(userId: string): Promise<string | nu
     });
     return fresh.access_token;
   } catch (e) {
-    console.error('refresh token failed:', e);
+    logger.error('refresh token failed:', e);
     return null;
   }
 }
@@ -186,7 +187,7 @@ export async function createGoogleEvent(
   );
 
   if (!res.ok) {
-    console.error('Google Calendar create failed:', res.status, await res.text());
+    logger.error('Google Calendar create failed:', res.status, await res.text());
     return null;
   }
 
@@ -267,7 +268,7 @@ export async function listGoogleEvents(
   );
 
   if (!res.ok) {
-    console.error('listGoogleEvents failed:', res.status);
+    logger.error('listGoogleEvents failed:', res.status);
     return [];
   }
 
