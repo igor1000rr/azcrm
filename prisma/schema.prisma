@@ -61,6 +61,20 @@ model User {
   // LEGAL — со ВТОРОГО платежа (после закрытия дела).
   commissionPercent Decimal? @db.Decimal(5, 2)
 
+  // ============ Двухфакторная аутентификация (Anna идея №50) ============
+  // TOTP по RFC 6238 (Google Authenticator / Authy / 1Password / 1FA).
+  // twoFactorEnabled — флаг активности 2FA для этого юзера.
+  // totpSecret — base32-секрет (~32 символа), шарится с приложением через QR.
+  //   Хранится в открытом виде т.к. это shared secret и шифровать его на
+  //   уровне приложения смысла нет (если БД скомпрометирована — всё равно
+  //   потеряны и пароли).
+  // twoFactorBackupCodes — массив bcrypt-хешей одноразовых backup-кодов
+  //   (10 шт., формат XXXX-XXXX) на случай потери телефона. При входе по
+  //   backup-коду он удаляется из массива.
+  twoFactorEnabled     Boolean  @default(false)
+  totpSecret           String?
+  twoFactorBackupCodes String[] @default([])
+
   // OAuth для Google Calendar
   googleAccessToken           String?   @db.Text
   googleAccessTokenExpiresAt  DateTime?
