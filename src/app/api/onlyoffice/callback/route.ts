@@ -17,6 +17,7 @@ import {
 } from '@/lib/onlyoffice';
 import { downloadAndSave } from '@/lib/storage';
 import { parseBody } from '@/lib/api-validation';
+import { logger } from '@/lib/logger';
 import path from 'node:path';
 
 // Схема callback OnlyOffice — официальная документация:
@@ -115,7 +116,7 @@ export async function POST(req: NextRequest) {
 
         // Защита от SSRF — URL должен быть с разрешённого OO-сервера
         if (!isAllowedDownloadUrl(body.url)) {
-          console.error('[onlyoffice/callback] rejected url:', body.url);
+          logger.error('[onlyoffice/callback] rejected url:', body.url);
           return NextResponse.json({ error: 1, message: 'untrusted url' }, { status: 400 });
         }
 
@@ -158,14 +159,14 @@ export async function POST(req: NextRequest) {
 
       case OOCallbackStatus.SAVE_ERROR:
       case OOCallbackStatus.FORCESAVE_ERROR: {
-        console.error(`[onlyoffice] save error for doc ${docId}:`, body);
+        logger.error(`[onlyoffice] save error for doc ${docId}:`, body);
         break;
       }
     }
 
     return NextResponse.json({ error: 0 });
   } catch (e) {
-    console.error('[onlyoffice/callback] ', e);
+    logger.error('[onlyoffice/callback] ', e);
     return NextResponse.json({ error: 1, message: (e as Error).message }, { status: 500 });
   }
 }
