@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { listGoogleEvents } from '@/lib/google';
 import { checkCronAuth } from '@/lib/cron-auth';
+import { logger } from '@/lib/logger';
 
 export async function POST(req: NextRequest) {
   const fail = checkCronAuth(req);
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (e) {
-      console.error(`sync-calendar for ${user.name} failed:`, e);
+      logger.error(`sync-calendar for ${user.name} failed:`, e);
       errors++;
     }
   }
