@@ -12,41 +12,56 @@
 //   5. Обновить lastMessageAt в треде
 
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { db } from '@/lib/db';
 import { verifyWebhookToken } from '@/lib/whatsapp';
 import { normalizePhone } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
 import { notify } from '@/lib/notify';
+import { parseBody } from '@/lib/api-validation';
 
-interface IncomingMessage {
-  kind:        'message.in';
-  accountId:   string;       // WhatsappAccount.id
-  externalId:  string;       // WhatsApp message ID (для дедупликации)
-  fromPhone:   string;       // номер собеседника
-  fromName?:   string;       // имя из WhatsApp профиля
-  type:        'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contact';
-  body?:       string;
-  mediaUrl?:   string;       // URL внутри worker'а — нужно скачать
-  mediaName?:  string;
-  mediaSize?:  number;
-  timestamp:   number;
-}
+// ============ ZOD-СХЕМЫ ============
+// Worker — наш код, но JSON.parse от него всё равно может прийти битый
+// (баг в worker, partial write, версия рассинхронизирована). Лучше упасть
+// на 400 чем на TypeError в логике.
 
-interface ConnectionEvent {
-  kind:        'connection';
-  accountId:   string;
-  status:      'qr' | 'authenticating' | 'ready' | 'disconnected' | 'failed';
-  phoneNumber?: string;
-}
+const IncomingMessageSchema = z.object({
+  kind:        z.literal('message.in'),
+  accountId:   z.string().min(1).max(64),
+  externalId:  z.string().min(1).max(256),
+  fromPhone:   z.string().min(3).max(40),
+  fromName:    z.string().max(200).optional(),
+  type:        z.enum(['text', 'image', 'document', 'audio', 'video', 'location', 'contact']),
+  body:        z.string().max(20_000).optional(),
+  mediaUrl:    z.string().max(2048).optional(),
+  mediaName:   z.string().max(512).optional(),
+  mediaSize:   z.number().int().nonnegative().max(100 * 1024 * 1024).optional(),
+  timestamp:   z.number().int().nonnegative(),
+});
 
-interface MessageStatus {
-  kind:        'message.status';
-  accountId:   string;
-  externalId:  string;
-  status:      'sent' | 'delivered' | 'read' | 'failed';
-}
+const ConnectionEventSchema = z.object({
+  kind:        z.literal('connection'),
+  accountId:   z.string().min(1).max(64),
+  status:      z.enum(['qr', 'authenticating', 'ready', 'disconnected', 'failed']),
+  phoneNumber: z.string().max(40).optional(),
+});
 
-type WebhookBody = IncomingMessage | ConnectionEvent | MessageStatus;
+const MessageStatusSchema = z.object({
+  kind:        z.literal('message.status'),
+  accountId:   z.string().min(1).max(64),
+  externalId:  z.string().min(1).max(256),
+  status:      z.enum(['sent', 'delivered', 'read', 'failed']),
+});
+
+const WebhookSchema = z.discriminatedUnion('kind', [
+  IncomingMessageSchema,
+  ConnectionEventSchema,
+  MessageStatusSchema,
+]);
+
+type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
+type ConnectionEvent = z.infer<typeof ConnectionEventSchema>;
+type MessageStatus   = z.infer<typeof MessageStatusSchema>;
 
 export async function POST(req: NextRequest) {
   // Проверка токена
@@ -56,7 +71,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const body = await req.json() as WebhookBody;
+  const parsed = await parseBody(req, WebhookSchema);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.data;
 
   switch (body.kind) {
     case 'message.in':
@@ -65,8 +82,6 @@ export async function POST(req: NextRequest) {
       return handleMessageStatus(body);
     case 'connection':
       return handleConnection(body);
-    default:
-      return NextResponse.json({ error: 'unknown kind' }, { status: 400 });
   }
 }
 
