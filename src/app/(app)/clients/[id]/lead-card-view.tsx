@@ -32,7 +32,7 @@ import {
 import {
   updateClient, removeClientFile,
   setEmployer, setWorkCity, setLeadServices,
-  setSubmittedAt,
+  setSubmittedAt, setCaseNumber,
 } from './actions';
 import { setAttorney } from './attorney-actions';
 import type { UserRole, PaymentMethod, EventKind, CalendarKind, FileCategory, InternalDocFormat } from '@prisma/client';
@@ -59,6 +59,8 @@ interface LeadCardViewProps {
   lead: {
     id: string; stageId: string; funnelId: string; funnelName: string;
     stageName: string; source: string | null; attorney: string | null;
+    // Номер дела (wniosek number) — Anna 30.04.2026, необязательное.
+    caseNumber: string | null;
     serviceName: string | null;
     employerName: string | null; employerPhone: string | null;
     totalAmount: number; firstContactAt: string | null;
@@ -90,6 +92,12 @@ interface LeadCardViewProps {
   salesManager: { id: string; name: string; email: string } | null;
   legalManager: { id: string; name: string; email: string } | null;
   whatsappAccount: { id: string; label: string; phoneNumber: string } | null;
+  // Готовая ссылка для кнопки WhatsApp — резолвится на сервере в page.tsx.
+  // Открывает конкретный thread с этим клиентом или преферный канал
+  // (lead.whatsappAccountId → канал sales-менеджера → канал legal-менеджера).
+  // Раньше карточка слала /inbox?phone=...&account=... но /inbox эти параметры
+  // игнорирует и открывал общий канал — Igor: «выбивает в общий WhatsApp».
+  whatsappHref: string;
   stages: Array<{
     id: string; name: string; color: string | null; position: number;
     isFinal: boolean; isLost: boolean;
@@ -232,6 +240,60 @@ function SubmittedAtField({ leadId, initial }: { leadId: string; initial: string
   );
 }
 
+/** Inline-редактор «Номер дела» (Anna 30.04.2026).
+ *  Необязательное текстовое поле. Сохраняется на blur и Enter — без модалок.
+ *  Появляется в секции «Сделка» рядом со «Стоимость услуг». */
+function CaseNumberField({ leadId, initial }: { leadId: string; initial: string | null }) {
+  const router = useRouter();
+  const [value, setValue] = useState(initial ?? '');
+  const [busy, setBusy]   = useState(false);
+  const [err, setErr]     = useState<string | null>(null);
+
+  // Синк при внешнем обновлении (router.refresh)
+  useEffect(() => { setValue(initial ?? ''); }, [initial]);
+
+  async function commit() {
+    const next = value.trim();
+    // Не шлём запрос если ничего не изменилось — экономим круг к серверу
+    if (next === (initial ?? '').trim()) return;
+    setErr(null); setBusy(true);
+    try {
+      await setCaseNumber(leadId, next || null);
+      router.refresh();
+    } catch (e) {
+      setErr((e as Error).message);
+      setValue(initial ?? ''); // откатываем при ошибке
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <Input
+        type="text"
+        value={value}
+        disabled={busy}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            (e.target as HTMLInputElement).blur();
+          } else if (e.key === 'Escape') {
+            setValue(initial ?? '');
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        placeholder="необязательно"
+        className="text-[12.5px] py-0.5 font-mono"
+        maxLength={100}
+      />
+      {err && <div className="text-[11px] text-danger">{err}</div>}
+    </div>
+  );
+}
+
 export function LeadCardView(props: LeadCardViewProps) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 p-4 md:p-5 max-w-[1380px] mx-auto w-full">
@@ -293,7 +355,7 @@ function CallsCard({ calls, client }: LeadCardViewProps) {
   );
 }
 
-function ClientHeader({ client, lead, city, stages, currentUser, whatsappAccount }: LeadCardViewProps) {
+function ClientHeader({ client, lead, city, stages, currentUser, whatsappHref }: LeadCardViewProps) {
   const router = useRouter();
   const stageIdx = stages.findIndex((s) => s.id === lead.stageId);
   async function onArchive() {
@@ -302,7 +364,6 @@ function ClientHeader({ client, lead, city, stages, currentUser, whatsappAccount
     catch (e) { console.error(e); alert('Не удалось архивировать'); }
   }
   const telHref = `tel:${client.phone.replace(/[^\d+]/g, '')}`;
-  const waHref  = `/inbox?phone=${encodeURIComponent(client.phone)}${whatsappAccount ? `&account=${whatsappAccount.id}` : ''}`;
   return (
     <div className="bg-paper border border-line rounded-lg p-5 md:p-6">
       <div className="flex items-start gap-4 flex-wrap">
@@ -328,7 +389,7 @@ function ClientHeader({ client, lead, city, stages, currentUser, whatsappAccount
         </div>
         <div className="flex flex-wrap gap-1.5 ml-auto">
           <a href={telHref}><Button><Phone size={12} /> Звонок</Button></a>
-          <Link href={waHref}><Button><MessageSquare size={12} /> WhatsApp</Button></Link>
+          <Link href={whatsappHref}><Button><MessageSquare size={12} /> WhatsApp</Button></Link>
           {currentUser.role === 'ADMIN' && (
             <Button variant="ghost" onClick={onArchive} title="Архив"><Trash2 size={12} /></Button>
           )}
@@ -496,7 +557,9 @@ function DealCard({ lead, salesManager, legalManager, city, workCity, cities, te
         ],
         [
           { label: 'Стоимость услуг', value: <span className="font-mono font-bold">{formatMoney(lead.totalAmount)} zł</span> },
-          { label: '', value: null },
+          // Anna 30.04.2026: «строчка номер дела рядом со стоимостью услуг,
+          // необязательная». Inline-редактор, сохраняет на blur и Enter.
+          { label: 'Номер дела', value: <CaseNumberField leadId={lead.id} initial={lead.caseNumber} /> },
         ],
       ]} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-line-2 -mx-4 md:-mx-5 -mb-1 mt-px">
@@ -1212,16 +1275,15 @@ function ClientFilesCard({ clientFiles, client }: LeadCardViewProps) {
   );
 }
 
-function QuickActionsAside({ client, lead, whatsappAccount }: LeadCardViewProps) {
+function QuickActionsAside({ client, lead, whatsappHref }: LeadCardViewProps) {
   const phoneClean = client.phone.replace(/[^\d+]/g, '');
   const telHref  = `tel:${phoneClean}`;
-  const waHref   = `/inbox?phone=${encodeURIComponent(client.phone)}${whatsappAccount ? `&account=${whatsappAccount.id}` : ''}`;
   const mailHref = client.email ? `mailto:${client.email}` : null;
   const meetHref = `/clients/${lead.id}#calendar`;
   return (
     <Section title="Быстрые действия" tight>
       <div className="grid grid-cols-2 gap-1.5">
-        <QuickLink icon={<MessageSquare size={11} />} label="WhatsApp" color="bg-wa text-white" href={waHref} />
+        <QuickLink icon={<MessageSquare size={11} />} label="WhatsApp" color="bg-wa text-white" href={whatsappHref} />
         <QuickLink icon={<Phone size={11} />} label="Позвонить" color="bg-navy text-gold" href={telHref} external />
         <QuickLink icon={<Mail size={11} />} label="Email" color="bg-info text-white" href={mailHref ?? undefined} external disabled={!mailHref} />
         <QuickLink icon={<CalendarIcon size={11} />} label="Встреча" color="bg-gold text-navy" href={meetHref} />
