@@ -16,6 +16,7 @@ import { workerSendMessage } from '@/lib/whatsapp';
 import { formatTime } from '@/lib/utils';
 import { checkCronAuth } from '@/lib/cron-auth';
 import { checkExpiringDocuments } from '@/lib/document-reminders';
+import { logger } from '@/lib/logger';
 
 export async function POST(req: NextRequest) {
   const fail = checkCronAuth(req);
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
         sent7d++;
       }
     } catch (e) {
-      console.error('reminder 7d failed:', e);
+      logger.error('reminder 7d failed:', e);
       errors++;
     }
   }
@@ -117,7 +118,7 @@ export async function POST(req: NextRequest) {
         sent1d++;
       }
     } catch (e) {
-      console.error('reminder 1d failed:', e);
+      logger.error('reminder 1d failed:', e);
       errors++;
     }
   }
@@ -125,7 +126,7 @@ export async function POST(req: NextRequest) {
   // === Документы клиентов: визы, карты побыта, паспорта ===
   // Anna идея №7 — за 90/30/14 дней до истечения шлём менеджеру push.
   const docResult = await checkExpiringDocuments(now).catch((e) => {
-    console.error('expiring documents check failed:', e);
+    logger.error('expiring documents check failed:', e);
     return { sent: 0, errors: 1 };
   });
 
