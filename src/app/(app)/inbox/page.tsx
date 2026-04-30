@@ -45,6 +45,41 @@ export default async function InboxPage({ searchParams }: PageProps) {
     },
   });
 
+  // ============ FALLBACK: leadId через клиента ============
+  // Бывает thread.leadId = null (worker не привязал, или старая запись),
+  // но client есть. Чтобы кнопка «Открыть карточку» работала всегда,
+  // одним запросом грузим последние АКТИВНЫЕ лиды этих клиентов и подмешиваем.
+  // Igor: «с чата нельзя перейти на карточку» — здесь и фиксится.
+  const clientIdsForFallback = threads
+    .filter((t) => !t.leadId && t.clientId)
+    .map((t) => t.clientId as string);
+
+  let fallbackLeadByClient = new Map<string, { id: string; funnelName: string }>();
+  if (clientIdsForFallback.length > 0) {
+    const fallbackLeads = await db.lead.findMany({
+      where: {
+        clientId: { in: clientIdsForFallback },
+        isArchived: false,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, clientId: true, funnel: { select: { name: true } } },
+    });
+    // findMany может вернуть несколько лидов на клиента — берём первый (самый свежий
+    // т.к. orderBy createdAt desc), если для clientId уже есть запись — пропускаем.
+    fallbackLeadByClient = new Map();
+    for (const l of fallbackLeads) {
+      if (!fallbackLeadByClient.has(l.clientId)) {
+        fallbackLeadByClient.set(l.clientId, { id: l.id, funnelName: l.funnel.name });
+      }
+    }
+  }
+
+  function resolveLead(t: typeof threads[number]) {
+    if (t.lead) return { id: t.lead.id, funnelName: t.lead.funnel.name };
+    if (t.clientId) return fallbackLeadByClient.get(t.clientId) ?? null;
+    return null;
+  }
+
   // Если открыт thread — подгружаем сообщения
   let activeThread = null;
   let activeMessages: Array<{
@@ -91,17 +126,20 @@ export default async function InboxPage({ searchParams }: PageProps) {
 
       <InboxView
         accounts={accounts}
-        threads={threads.map((t) => ({
-          id: t.id,
-          clientName:    t.client?.fullName ?? t.externalUserName ?? t.externalPhoneNumber ?? '?',
-          clientPhone:   t.client?.phone ?? t.externalPhoneNumber ?? '',
-          lastMessageAt: t.lastMessageAt?.toISOString() ?? null,
-          lastMessageText: t.lastMessageText,
-          unreadCount:   t.unreadCount,
-          accountLabel:  t.whatsappAccount?.label ?? null,
-          leadId:        t.lead?.id ?? null,
-          funnelName:    t.lead?.funnel.name ?? null,
-        }))}
+        threads={threads.map((t) => {
+          const resolved = resolveLead(t);
+          return {
+            id: t.id,
+            clientName:    t.client?.fullName ?? t.externalUserName ?? t.externalPhoneNumber ?? '?',
+            clientPhone:   t.client?.phone ?? t.externalPhoneNumber ?? '',
+            lastMessageAt: t.lastMessageAt?.toISOString() ?? null,
+            lastMessageText: t.lastMessageText,
+            unreadCount:   t.unreadCount,
+            accountLabel:  t.whatsappAccount?.label ?? null,
+            leadId:        resolved?.id ?? null,
+            funnelName:    resolved?.funnelName ?? null,
+          };
+        })}
         activeChannelId={params.channel ?? null}
         activeThreadId={params.thread ?? null}
         activeMessages={activeMessages}
@@ -111,7 +149,7 @@ export default async function InboxPage({ searchParams }: PageProps) {
           clientId:     activeThread.client?.id ?? null,
           clientName:   activeThread.client?.fullName ?? activeThread.externalUserName ?? activeThread.externalPhoneNumber ?? '?',
           clientPhone:  activeThread.client?.phone ?? activeThread.externalPhoneNumber ?? '',
-          leadId:       activeThread.lead?.id ?? null,
+          leadId:       resolveLead(activeThread)?.id ?? null,
         } : null}
       />
     </>
