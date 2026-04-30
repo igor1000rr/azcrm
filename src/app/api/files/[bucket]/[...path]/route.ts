@@ -1,8 +1,10 @@
 // GET /api/files/<bucket>/<path...>
 // Отдаёт файлы из storage. Доступ:
-//  - 'avatars' — публично (для аватарок в UI без auth)
-//  - 'uploads', 'docs', 'wa-media' — нужна авторизация
-//      (PII клиентов: паспорта, фото из WhatsApp, и т.д.)
+//  - 'avatars'                — публично (для аватарок в UI без auth)
+//  - 'docs'                   — авторизация ИЛИ short-lived ooToken (для OnlyOffice)
+//  - 'uploads', 'wa-media'    — авторизация + проверка владения
+//      (PII клиентов: паспорта, фото из WhatsApp). ADMIN видит всё,
+//      SALES/LEGAL — только файлы клиентов в своих лидах.
 //  - 'blueprints', 'expenses' — только ADMIN
 //
 // Для OnlyOffice сервера, который ходит за файлом без сессии, поддерживается
@@ -10,8 +12,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import { db } from '@/lib/db';
 import { streamFile } from '@/lib/storage';
 import { verifyFileAccessToken } from '@/lib/onlyoffice';
+import { clientVisibilityFilter, leadVisibilityFilter } from '@/lib/permissions';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -73,6 +77,19 @@ export async function GET(
     if ((bucket === 'blueprints' || bucket === 'expenses') && session.user.role !== 'ADMIN') {
       return new NextResponse('Forbidden', { status: 403 });
     }
+
+    // Проверка владения для bucket'ов с PII клиентов.
+    // ADMIN видит всё. SALES/LEGAL — только файлы из видимых им клиентов/лидов.
+    if (session.user.role !== 'ADMIN' && (bucket === 'uploads' || bucket === 'wa-media')) {
+      const owns = await checkFileOwnership(
+        bucket as 'uploads' | 'wa-media',
+        pathSegments.join('/'),
+        { id: session.user.id, role: session.user.role, email: session.user.email, name: session.user.name },
+      );
+      if (!owns) {
+        return new NextResponse('Forbidden', { status: 403 });
+      }
+    }
   }
 
   // Защита от path-traversal
@@ -110,4 +127,55 @@ export async function GET(
       'Cache-Control':  isPublicBucket ? 'public, max-age=3600' : 'private, no-store',
     },
   });
+}
+
+/**
+ * Проверяет что файл принадлежит клиенту/треду, который видим текущему юзеру.
+ *
+ * - bucket='uploads': в БД ClientFile.fileUrl = '/api/files/uploads/<storedName>'.
+ *   Файл видим, если связанный клиент проходит clientVisibilityFilter.
+ *
+ * - bucket='wa-media': файл видим если есть ChatMessage.mediaUrl ссылающийся
+ *   на этот путь, и его ChatThread связан с видимым клиентом, ИЛИ если
+ *   thread.lead проходит leadVisibilityFilter.
+ *
+ * Вернёт true если хоть одна связь найдена для этого юзера; false иначе.
+ */
+async function checkFileOwnership(
+  bucket: 'uploads' | 'wa-media',
+  storedName: string,
+  user: { id: string; role: 'ADMIN' | 'SALES' | 'LEGAL'; email: string; name: string },
+): Promise<boolean> {
+  const fileUrl = `/api/files/${bucket}/${storedName}`;
+
+  if (bucket === 'uploads') {
+    // ClientFile с этим fileUrl, у которого клиент проходит фильтр видимости
+    const found = await db.clientFile.findFirst({
+      where: {
+        fileUrl,
+        client: clientVisibilityFilter(user),
+      },
+      select: { id: true },
+    });
+    return !!found;
+  }
+
+  // wa-media — медиа из чатов. Видим если:
+  //   1) ChatMessage.mediaUrl == fileUrl
+  //   2) thread.client проходит clientVisibilityFilter
+  //      ИЛИ thread.lead проходит leadVisibilityFilter (для случая когда
+  //      клиент уже отвязан — leadId на треде ещё может быть).
+  const found = await db.chatMessage.findFirst({
+    where: {
+      mediaUrl: fileUrl,
+      thread: {
+        OR: [
+          { client: clientVisibilityFilter(user) },
+          { lead:   leadVisibilityFilter(user)   },
+        ],
+      },
+    },
+    select: { id: true },
+  });
+  return !!found;
 }
