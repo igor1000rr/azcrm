@@ -3,6 +3,7 @@
 //
 // API worker'а (внутренний, по WORKER_API_URL):
 //   POST /accounts/:id/connect   — старт сессии, возвращает QR код
+//                                   body: { force?, wipe? } для принудительного сброса
 //   POST /accounts/:id/disconnect — отключить
 //   GET  /accounts/:id/status    — статус
 //   POST /accounts/:id/send      — отправить сообщение
@@ -16,10 +17,17 @@ const WORKER_URL = process.env.WHATSAPP_WORKER_URL ?? 'http://localhost:3100';
 const WORKER_AUTH_TOKEN = process.env.WHATSAPP_WORKER_TOKEN ?? '';
 
 interface ConnectResult {
-  qr?:        string;     // base64 QR-кода (если требуется сканирование)
+  qr?:        string;
   status:     'qr' | 'authenticating' | 'ready' | 'failed';
-  phoneNumber?: string;   // подтверждённый номер после ready
+  phoneNumber?: string;
   error?:     string;
+}
+
+interface ConnectOptions {
+  /** Сбросить клиента в worker'е и пересоздать (для зависших сессий). */
+  force?: boolean;
+  /** Дополнительно удалить файлы сессии — нужен новый QR-скан. */
+  wipe?: boolean;
 }
 
 interface SendResult {
@@ -33,11 +41,15 @@ interface AccountStatus {
   phoneNumber?: string;
   lastSeenAt?: string;
   qr?: string;
+  error?: string;
 }
 
-/** Запросить QR / подключиться к WhatsApp */
-export async function workerConnect(accountId: string): Promise<ConnectResult> {
-  return workerCall<ConnectResult>('POST', `/accounts/${accountId}/connect`);
+/** Запросить QR / подключиться к WhatsApp. opts.force/wipe — сброс зависшей сессии. */
+export async function workerConnect(
+  accountId: string,
+  opts: ConnectOptions = {},
+): Promise<ConnectResult> {
+  return workerCall<ConnectResult>('POST', `/accounts/${accountId}/connect`, opts);
 }
 
 /** Отключить аккаунт */
@@ -53,7 +65,7 @@ export async function workerStatus(accountId: string): Promise<AccountStatus> {
 /** Отправить сообщение */
 export async function workerSendMessage(
   accountId: string,
-  toPhone:   string,        // полный международный формат
+  toPhone:   string,
   body:      string,
   mediaUrl?: string,
 ): Promise<SendResult> {
@@ -86,7 +98,6 @@ async function workerCall<T>(
     }
     return res.json() as Promise<T>;
   } catch (e) {
-    // Worker может быть не запущен — возвращаем дефолт
     if ((e as Error).message.includes('fetch failed')) {
       throw new Error('WhatsApp worker недоступен. Проверьте что процесс запущен.');
     }
@@ -96,9 +107,7 @@ async function workerCall<T>(
 
 /**
  * Проверка валидности webhook'a от worker'а.
- * Если токен не настроен — отказ ВО ВСЕХ запросах. Иначе любой может
- * слать фейковые входящие сообщения и плодить лиды/клиентов.
- * Сравниваем через timingSafeEqual чтобы не сливать длину токена.
+ * Если токен не настроен — отказ ВО ВСЕХ запросах.
  */
 export function verifyWebhookToken(token: string | null): boolean {
   if (!WORKER_AUTH_TOKEN) return false;
