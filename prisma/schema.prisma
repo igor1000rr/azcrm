@@ -275,6 +275,10 @@ model Lead {
 
   attorney      String?  // Pelnomocnik
 
+  // Номер дела (wniosek number) — присваивается УВ после подачи внеска.
+  // Anna 30.04.2026: «строчка номер дела рядом со стоимостью услуг», необязательное.
+  caseNumber    String?
+
   // Работодатель (ручной ввод, для karta praca)
   employerName  String?
   employerPhone String?
