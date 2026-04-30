@@ -44,6 +44,12 @@ const mockAuth                  = vi.fn(async () => ({ user: { id: 'u-1', email:
 const mockBuildAuthUrl          = vi.fn(() => 'https://accounts.google.com/o/oauth2/auth?state=...');
 const mockIsGoogleConfigured    = vi.fn(() => true);
 const mockExchangeCodeForTokens = vi.fn();
+// Crypto-моки. encrypt: (plaintext) => `enc:${plaintext}` — чтобы тесты могли
+// различать шифрованное от plaintext, но при этом ассерты оставались читаемыми.
+const mockEncrypt = vi.fn((s: string) => `enc:${s}`);
+const mockEncryptNullable = vi.fn((s: string | null | undefined) =>
+  s == null ? undefined : `enc:${s}`,
+);
 
 vi.mock('@/lib/db',     () => ({ db: mockDb }));
 vi.mock('@/lib/auth',   () => ({
@@ -55,6 +61,12 @@ vi.mock('@/lib/google', () => ({
   buildAuthUrl:           mockBuildAuthUrl,
   isGoogleConfigured:     mockIsGoogleConfigured,
   exchangeCodeForTokens:  mockExchangeCodeForTokens,
+}));
+vi.mock('@/lib/crypto', () => ({
+  encrypt:          mockEncrypt,
+  encryptNullable:  mockEncryptNullable,
+  decrypt:          (s: string) => s,
+  decryptNullable:  (s: string | null | undefined) => s ?? null,
 }));
 
 function makeReq(url: string) {
@@ -80,6 +92,8 @@ beforeEach(() => {
   mockIsGoogleConfigured.mockReset();
   mockIsGoogleConfigured.mockReturnValue(true);
   mockExchangeCodeForTokens.mockReset();
+  mockEncrypt.mockClear();
+  mockEncryptNullable.mockClear();
 });
 
 describe('GET /api/google/auth', () => {
@@ -146,7 +160,7 @@ describe('GET /api/google/callback', () => {
     const res = (await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-1:abc') as never)) as CallbackRes;
     expect(res.url).toContain('google=csrf');
   });
-  it('успех: токены приходят → user.update с expiresAt и redirect ?google=connected', async () => {
+  it('успех: токены приходят → user.update с ЗАШИФРОВАННЫМИ токенами и redirect ?google=connected', async () => {
     _cookieMap.set('google_oauth_state', 'u-1:nonce-1');
     mockExchangeCodeForTokens.mockResolvedValue({
       access_token:  'AT-abc',
@@ -156,12 +170,15 @@ describe('GET /api/google/callback', () => {
     const { GET } = await import('@/app/api/google/callback/route');
     const res = (await GET(makeReq('http://localhost/api/google/callback?code=AUTH&state=u-1:nonce-1') as never)) as CallbackRes;
     expect(res.url).toContain('google=connected');
+    // Токены сохраняются в БД ЗАШИФРОВАННЫМИ — мок encrypt оборачивает их в 'enc:'
+    expect(mockEncrypt).toHaveBeenCalledWith('AT-abc');
+    expect(mockEncryptNullable).toHaveBeenCalledWith('RT-xyz');
     expect(mockDb.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'u-1' },
         data: expect.objectContaining({
-          googleAccessToken:  'AT-abc',
-          googleRefreshToken: 'RT-xyz',
+          googleAccessToken:  'enc:AT-abc',
+          googleRefreshToken: 'enc:RT-xyz',
           googleCalendarId:   'primary',
           googleAccessTokenExpiresAt: expect.any(Date),
         }),
@@ -169,7 +186,7 @@ describe('GET /api/google/callback', () => {
     );
     expect(cookieDelete).toHaveBeenCalledWith('google_oauth_state');
   });
-  it('успех без refresh_token → обновляет без перезаписи (undefined)', async () => {
+  it('успех без refresh_token → encryptNullable(undefined) = undefined, не перезатирается', async () => {
     _cookieMap.set('google_oauth_state', 'u-1:nonce-1');
     mockExchangeCodeForTokens.mockResolvedValue({
       access_token: 'AT-only', expires_in: 3600,
@@ -178,6 +195,7 @@ describe('GET /api/google/callback', () => {
     await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-1:nonce-1') as never);
     const updateCall = mockDb.user.update.mock.calls[0]![0];
     expect(updateCall.data.googleRefreshToken).toBeUndefined();
+    expect(updateCall.data.googleAccessToken).toBe('enc:AT-only');
   });
   it('exchangeCodeForTokens бросил исключение → redirect ?google=failed', async () => {
     _cookieMap.set('google_oauth_state', 'u-1:nonce-1');
