@@ -13,6 +13,7 @@ import {
 import { normalizePhone } from '@/lib/utils';
 import { notify } from '@/lib/notify';
 import { audit } from '@/lib/audit';
+import { logger } from '@/lib/logger';
 
 // ====================== СОЗДАНИЕ ЛИДА ======================
 
@@ -674,7 +675,7 @@ export async function setFingerprintDate(
   if (existingEvent?.googleId && existingEvent.ownerId) {
     const { deleteGoogleEvent } = await import('@/lib/google');
     deleteGoogleEvent(existingEvent.ownerId, existingEvent.googleId).catch((e) => {
-      console.error('failed to delete google event:', e);
+      logger.error('failed to delete google event:', e);
     });
   }
 
