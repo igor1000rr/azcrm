@@ -274,6 +274,19 @@ function WaFormModal({
   );
 }
 
+/**
+ * Модалка подключения WhatsApp через QR.
+ *
+ * Алгоритм (после фикса 30.04.2026):
+ *   1. Сразу триггерим connect (не ждём ответа дольше 5 сек — он только
+ *      инициирует сессию в worker'е).
+ *   2. Параллельно стартуем poll status каждую секунду — это надёжнее,
+ *      чем ждать ответа от connect (который раньше висел до 30 сек ожидая
+ *      QR на стороне worker'а и часто отваливался по timeout, оставляя
+ *      модалку в состоянии «Подготовка...»).
+ *   3. Как только status вернёт qr — показываем картинку.
+ *   4. Как только ready — закрываем модалку.
+ */
 function QrConnectModal({
   account, onClose,
 }: {
@@ -288,60 +301,103 @@ function QrConnectModal({
 
   useEffect(() => {
     let cancelled = false;
+    let pollCount = 0;
+    const MAX_POLLS = 90;   // ~90 секунд на сканирование QR
 
-    async function start() {
-      try {
-        const res = await fetch('/api/whatsapp/connect', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ accountId: account.id }),
-        });
-        const data = await res.json();
-        if (cancelled) return;
-
-        if (data.status === 'ready') {
-          setStatus('ready');
-          setTimeout(() => { router.refresh(); onClose(); }, 1500);
-          return;
-        }
-        if (data.status === 'qr' && data.qr) {
-          setQrUrl(data.qr); setStatus('qr'); startPolling(); return;
-        }
-        if (data.status === 'failed') {
-          setError(data.error || 'не удалось подключиться');
-          setStatus('failed'); return;
-        }
-        setStatus('connecting'); startPolling();
-      } catch (e) {
-        if (!cancelled) { setError((e as Error).message); setStatus('failed'); }
-      }
-    }
-
+    // 1. Сразу стартуем poll'инг status — он не ждёт ничего, отдаёт
+    //    текущее состояние моментально. Так фронт увидит QR через 1 сек
+    //    после его генерации, а не через 30 сек ответа от connect.
     function startPolling() {
       pollRef.current = setInterval(async () => {
+        pollCount++;
+        if (pollCount > MAX_POLLS) {
+          stopPolling();
+          if (!cancelled) {
+            setError('Превышено время ожидания. Попробуйте ещё раз.');
+            setStatus('failed');
+          }
+          return;
+        }
+
         try {
           const res = await fetch('/api/whatsapp/status', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ accountId: account.id }),
           });
+          if (!res.ok) {
+            // не валим всё на один таймаут — пробуем дальше
+            return;
+          }
           const data = await res.json();
           if (cancelled) return;
 
           if (data.status === 'ready') {
-            setStatus('ready'); stopPolling();
+            setStatus('ready');
+            stopPolling();
             setTimeout(() => { router.refresh(); onClose(); }, 1500);
-          } else if (data.status === 'qr' && data.qr && data.qr !== qrUrl) {
-            setQrUrl(data.qr);
+          } else if (data.status === 'authenticating') {
+            setStatus('connecting');
+          } else if (data.status === 'qr' && data.qr) {
+            // Обновляем QR картинку (она перегенерируется каждые 20 сек)
+            setQrUrl((cur) => (cur === data.qr ? cur : data.qr));
+            setStatus('qr');
           } else if (data.status === 'failed') {
-            setStatus('failed'); stopPolling();
+            setStatus('failed');
+            setError('Worker сообщил об ошибке инициализации');
+            stopPolling();
           }
-        } catch {}
-      }, 2000);
+          // status === 'disconnected' или 'initializing' — продолжаем ждать
+        } catch {
+          // молчим — следующий poll попробует ещё раз
+        }
+      }, 1000);
     }
+
     function stopPolling() {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
 
-    start();
+    // 2. Параллельно отправляем connect — он триггерит initialize() в worker'е
+    //    если сессия ещё не запущена. Ответ нам не важен (мы ждём через poll).
+    //    AbortSignal на 5 сек — если worker долго отвечает, не блокируем UI.
+    async function triggerConnect() {
+      try {
+        const ac = new AbortController();
+        const timeoutId = setTimeout(() => ac.abort(), 5000);
+        const res = await fetch('/api/whatsapp/connect', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ accountId: account.id }),
+          signal:  ac.signal,
+        });
+        clearTimeout(timeoutId);
+
+        // Если connect успел вернуть QR быстрее чем первый poll — показываем сразу
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (cancelled || !data) return;
+          if (data.status === 'ready') {
+            setStatus('ready');
+            stopPolling();
+            setTimeout(() => { router.refresh(); onClose(); }, 1500);
+          } else if (data.status === 'qr' && data.qr) {
+            setQrUrl(data.qr);
+            setStatus('qr');
+          } else if (data.status === 'failed') {
+            setStatus('failed');
+            setError(data.error || 'не удалось подключиться');
+            stopPolling();
+          }
+        }
+      } catch {
+        // Timeout / abort — это норма, дальше отработает poll'инг
+      }
+    }
+
+    triggerConnect();
+    startPolling();
+
     return () => { cancelled = true; stopPolling(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.id]);
@@ -353,6 +409,7 @@ function QrConnectModal({
           <div className="py-8">
             <Loader2 size={32} className="mx-auto text-ink-4 animate-spin mb-3" />
             <p className="text-[13px] text-ink-3">Подготовка...</p>
+            <p className="text-[11px] text-ink-4 mt-2">QR обычно появляется через 5-15 секунд</p>
           </div>
         )}
         {status === 'qr' && qrUrl && (
