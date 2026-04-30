@@ -1,6 +1,6 @@
 'use client';
 
-// Календарь — клиентская сетка месяца с возможностью создавать встречи.
+// Календарь — клиентская сетка месяца с возможностью создавать/редактировать встречи.
 //
 // Структура:
 //   - Шапка: ← / → / Сегодня / название месяца / кнопка "Новая встреча"
@@ -8,14 +8,8 @@
 //   - Сетка 7×N: дни недели + ячейки дней с событиями
 //   - Модалка создания встречи (по клику на день или на кнопку)
 //   - Модалка деталей события (по клику на событие в ячейке)
-//
-// Подсветка «волшебная штучка» (Anna 30.04.2026):
-//   - event.submitted === false → красная пунктирная рамка + ⚠ маркер
-//     в начале строки события. Это значит у привязанного лида не
-//     поставлена дата подачи внеска (submittedAt = null).
-//   - event.submitted === null → событие без привязки к лиду (внутр. встреча),
-//     никакой подсветки.
-//   - event.submitted === true → внесок уже подан, штатный вид.
+//   - Модалка редактирования (Igor 30.04.2026): кнопка из деталей →
+//     можно поправить название/описание/время/участников
 
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
@@ -23,14 +17,14 @@ import { useRouter } from 'next/navigation';
 import {
   ChevronLeft, ChevronRight, Plus,
   MapPin, Users, Trash2, AlertTriangle,
-  ChevronDown,
+  ChevronDown, FileText, Edit3,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
 import { Input, Textarea, Select, FormField } from '@/components/ui/input';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatTime, formatDate, daysUntil } from '@/lib/utils';
-import { createCalendarMeeting } from './actions';
+import { createCalendarMeeting, updateCalendarMeeting } from './actions';
 import { deleteCalendarEvent } from '../actions';
 import type { UserRole, CalendarKind } from '@prisma/client';
 
@@ -51,8 +45,6 @@ interface EventLite {
   ownerName:      string | null;
   leadId:         string | null;
   leadClientName: string | null;
-  // Anna 30.04.2026: false = у лида нет даты подачи внеска (подсветка красным),
-  // true = подан, null = событие без привязки к лиду.
   submitted:      boolean | null;
   participants:   { id: string; name: string }[];
 }
@@ -118,7 +110,6 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
     return cells;
   }, [year, monthIndex]);
 
-  // События сгруппированные по дню (формат YYYY-MM-DD локальной даты)
   const eventsByDay = useMemo(() => {
     const map: Record<string, EventLite[]> = {};
     for (const e of events) {
@@ -129,7 +120,6 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
     return map;
   }, [events]);
 
-  // Сколько событий в текущем месяце с непоставленной датой подачи
   const eventsWithoutSubmission = useMemo(
     () => events.filter((e) => e.submitted === false).length,
     [events],
@@ -138,6 +128,7 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
   const [createOpen, setCreateOpen]   = useState(false);
   const [createDate, setCreateDate]   = useState<string | null>(null);
   const [detailEvent, setDetailEvent] = useState<EventLite | null>(null);
+  const [editEvent, setEditEvent]     = useState<EventLite | null>(null);
 
   function navMonth(delta: number) {
     const newDate = new Date(year, monthIndex + delta, 1);
@@ -188,14 +179,12 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
         </div>
       </div>
 
-      {/* Баннер: лиды без даты подачи внеска */}
       {pendingSubmissions.length > 0 && (
         <PendingSubmissionsBanner items={pendingSubmissions} />
       )}
 
       {/* Сетка календаря */}
       <div className="bg-paper border border-line rounded-lg overflow-hidden">
-        {/* Заголовки дней недели */}
         <div className="grid grid-cols-7 border-b border-line bg-bg">
           {WEEKDAYS.map((d, i) => (
             <div key={d} className={cn(
@@ -204,7 +193,6 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
             )}>{d}</div>
           ))}
         </div>
-        {/* Дни */}
         <div className="grid grid-cols-7">
           {gridDays.map((day, idx) => {
             const dayKey = toDayKey(day);
@@ -265,9 +253,6 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
                           'w-full text-left px-1.5 py-px rounded text-[10.5px] font-medium truncate border transition-colors',
                           c.bg, c.text, c.border,
                           'hover:brightness-95',
-                          // Подсветка «внесок не подан»: красная пунктирная рамка
-                          // поверх обычного стиля + ring чтобы отличалось даже
-                          // в одинаковых по типу событиях.
                           noSubmission && 'border-dashed border-danger ring-1 ring-danger/40',
                         )}
                         title={
@@ -309,9 +294,8 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
         </div>
       </div>
 
-      {/* Подсказка снизу */}
       <div className="text-[11.5px] text-ink-4 mt-3 px-1">
-        Нажмите на любой день чтобы создать встречу. На событие — чтобы увидеть детали.
+        Нажмите на любой день чтобы создать встречу. На событие — чтобы увидеть детали и редактировать.
         {eventsWithoutSubmission > 0 && (
           <> События с <span className="text-danger font-semibold">красной пунктирной рамкой</span> — клиент без даты подачи внеска.</>
         )}
@@ -319,13 +303,26 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
 
       {/* Модалки */}
       {createOpen && (
-        <CreateMeetingModal
+        <MeetingFormModal
+          mode="create"
           initialDate={createDate}
           team={team}
           leads={leads}
           currentUserId={currentUser.id}
           onClose={() => setCreateOpen(false)}
-          onCreated={() => { setCreateOpen(false); router.refresh(); }}
+          onSaved={() => { setCreateOpen(false); router.refresh(); }}
+        />
+      )}
+      {editEvent && (
+        <MeetingFormModal
+          mode="edit"
+          eventToEdit={editEvent}
+          initialDate={null}
+          team={team}
+          leads={leads}
+          currentUserId={currentUser.id}
+          onClose={() => setEditEvent(null)}
+          onSaved={() => { setEditEvent(null); router.refresh(); }}
         />
       )}
       {detailEvent && (
@@ -335,6 +332,7 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
           isAdmin={currentUser.role === 'ADMIN'}
           onClose={() => setDetailEvent(null)}
           onDeleted={() => { setDetailEvent(null); router.refresh(); }}
+          onEdit={() => { setEditEvent(detailEvent); setDetailEvent(null); }}
         />
       )}
     </div>
@@ -343,9 +341,6 @@ export function CalendarMonthView({ currentUser, year, monthIndex, events, team,
 
 // ====================== БАННЕР: ЛИДЫ БЕЗ ДАТЫ ПОДАЧИ ======================
 
-/** Сворачиваемый баннер со списком лидов которым нужно поставить
- *  дату подачи внеска. Показывает первые 3, остальные раскрываются по клику.
- *  Anna 30.04.2026 — «волшебная штучка». */
 function PendingSubmissionsBanner({ items }: { items: PendingSubmission[] }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? items : items.slice(0, 3);
@@ -363,7 +358,6 @@ function PendingSubmissionsBanner({ items }: { items: PendingSubmission[] }) {
       <div className="flex flex-col gap-1">
         {visible.map((l) => {
           const days = daysUntil(l.firstContactAt);
-          // days отрицательное: первый контакт был в прошлом
           const elapsed = days !== null ? Math.abs(days) : null;
           return (
             <Link
@@ -407,34 +401,59 @@ function PendingSubmissionsBanner({ items }: { items: PendingSubmission[] }) {
   );
 }
 
-// ====================== МОДАЛКА: создать встречу ======================
+// ====================== МОДАЛКА: создать/редактировать встречу ======================
 
-function CreateMeetingModal({
-  initialDate, team, leads, currentUserId, onClose, onCreated,
+/**
+ * Универсальная форма встречи — режим create или edit.
+ * При edit получает eventToEdit с предзаполненными полями.
+ * Описание — большая Textarea (rows=6) чтобы менеджер видел весь текст
+ * который вписывает (Igor 30.04.2026: было rows=2 и описание "уезжало").
+ */
+function MeetingFormModal({
+  mode, eventToEdit, initialDate, team, leads, currentUserId, onClose, onSaved,
 }: {
+  mode: 'create' | 'edit';
+  eventToEdit?: EventLite;
   initialDate: string | null;
   team: TeamMember[];
   leads: LeadOption[];
   currentUserId: string;
   onClose: () => void;
-  onCreated: () => void;
+  onSaved: () => void;
 }) {
-  const today = toDayKey(new Date());
-  const initial = initialDate || today;
+  const isEdit = mode === 'edit' && !!eventToEdit;
 
-  const [title, setTitle]                 = useState('');
-  // Узкий тип — модалка создаёт только эти 3 типа встреч (FINGERPRINT и
-  // EXTRA_CALL — отдельные actions внутри карточки лида). Совпадает с zod
-  // схемой createCalendarMeeting в calendar/actions.ts.
-  const [kind, setKind]                   = useState<MeetingKind>('INTERNAL_MEETING');
-  const [date, setDate]                   = useState(initial);
-  const [time, setTime]                   = useState('10:00');
-  const [duration, setDuration]           = useState(30);
-  const [location, setLocation]           = useState('');
-  const [description, setDescription]     = useState('');
-  const [leadId, setLeadId]               = useState<string>('');
+  // Дефолты — либо из eventToEdit, либо новые
+  const initialStart = eventToEdit ? new Date(eventToEdit.startsAt) : null;
+  const initialEnd   = eventToEdit?.endsAt ? new Date(eventToEdit.endsAt) : null;
+  const initDate = initialStart ? toDayKey(initialStart) : (initialDate || toDayKey(new Date()));
+  const initTime = initialStart
+    ? `${String(initialStart.getHours()).padStart(2, '0')}:${String(initialStart.getMinutes()).padStart(2, '0')}`
+    : '10:00';
+  const initDuration = (initialStart && initialEnd)
+    ? Math.round((initialEnd.getTime() - initialStart.getTime()) / 60000)
+    : 30;
+
+  // Если редактируется FINGERPRINT/EXTRA_CALL — kind недоступен (на сервере
+  // отрежется). Но в форме просто показываем как есть, кастуем в MeetingKind.
+  const initKind: MeetingKind = (eventToEdit?.kind === 'INTERNAL_MEETING'
+    || eventToEdit?.kind === 'CONSULTATION'
+    || eventToEdit?.kind === 'CUSTOM')
+    ? eventToEdit.kind
+    : 'INTERNAL_MEETING';
+
+  const [title, setTitle]                 = useState(eventToEdit?.title || '');
+  const [kind, setKind]                   = useState<MeetingKind>(initKind);
+  const [date, setDate]                   = useState(initDate);
+  const [time, setTime]                   = useState(initTime);
+  const [duration, setDuration]           = useState(initDuration);
+  const [location, setLocation]           = useState(eventToEdit?.location || '');
+  const [description, setDescription]     = useState(eventToEdit?.description || '');
+  const [leadId, setLeadId]               = useState<string>(eventToEdit?.leadId || '');
   const [leadSearch, setLeadSearch]       = useState('');
-  const [participantIds, setParticipants] = useState<string[]>([]);
+  const [participantIds, setParticipants] = useState<string[]>(
+    eventToEdit?.participants.map((p) => p.id) || [],
+  );
   const [busy, setBusy]                   = useState(false);
   const [error, setError]                 = useState<string | null>(null);
 
@@ -447,7 +466,14 @@ function CreateMeetingModal({
     ).slice(0, 30);
   }, [leadSearch, leads]);
 
-  const selectedLead = leadId ? leads.find((l) => l.id === leadId) : null;
+  // selectedLead резолвим из leads ИЛИ из eventToEdit (если лид есть в событии,
+  // но его нет в текущем списке — например уже пропал из top-200 last-updated)
+  const selectedLead = leadId
+    ? (leads.find((l) => l.id === leadId)
+        ?? (eventToEdit?.leadId === leadId && eventToEdit?.leadClientName
+          ? { id: leadId, name: eventToEdit.leadClientName, phone: '', funnelName: '' }
+          : null))
+    : null;
 
   function toggleParticipant(id: string) {
     setParticipants((prev) =>
@@ -460,25 +486,37 @@ function CreateMeetingModal({
     if (!title.trim()) { setError('Укажите название'); return; }
     setBusy(true);
     try {
-      // Локальная дата+время → ISO. new Date(`YYYY-MM-DDTHH:MM:00`)
-      // парсится как локальное время и конвертируется в UTC при toISOString().
       const startsAt = new Date(`${date}T${time}:00`);
       if (isNaN(startsAt.getTime())) {
         setError('Некорректная дата или время');
         setBusy(false);
         return;
       }
-      await createCalendarMeeting({
-        title:          title.trim(),
-        kind,
-        startsAt:       startsAt.toISOString(),
-        durationMin:    duration,
-        location:       location.trim() || undefined,
-        description:    description.trim() || undefined,
-        leadId:         leadId || undefined,
-        participantIds,
-      });
-      onCreated();
+      if (isEdit && eventToEdit) {
+        await updateCalendarMeeting({
+          id:            eventToEdit.id,
+          title:         title.trim(),
+          kind,
+          startsAt:      startsAt.toISOString(),
+          durationMin:   duration,
+          location:      location.trim() || undefined,
+          description:   description.trim() || undefined,
+          leadId:        leadId || undefined,
+          participantIds,
+        });
+      } else {
+        await createCalendarMeeting({
+          title:         title.trim(),
+          kind,
+          startsAt:      startsAt.toISOString(),
+          durationMin:   duration,
+          location:      location.trim() || undefined,
+          description:   description.trim() || undefined,
+          leadId:        leadId || undefined,
+          participantIds,
+        });
+      }
+      onSaved();
     } catch (e) {
       setError((e as Error).message || 'Ошибка');
       setBusy(false);
@@ -486,17 +524,18 @@ function CreateMeetingModal({
   }
 
   return (
-    <Modal open={true} onClose={onClose} title="Новая встреча" size="lg"
+    <Modal open={true} onClose={onClose}
+      title={isEdit ? 'Редактирование встречи' : 'Новая встреча'} size="lg"
       footer={<>
         <Button onClick={onClose}>Отмена</Button>
         <Button variant="primary" onClick={save} disabled={busy || !title.trim()}>
-          {busy ? 'Сохранение...' : 'Создать встречу'}
+          {busy ? 'Сохранение...' : (isEdit ? 'Сохранить' : 'Создать встречу')}
         </Button>
       </>}>
       <div className="flex flex-col gap-3">
         <FormField label="Название" required>
           <Input value={title} onChange={(e) => setTitle(e.target.value)}
-            placeholder="Встреча с клиентом / Планёрка / ..." autoFocus />
+            placeholder="Встреча с клиентом / Планёрка / ..." autoFocus={!isEdit} />
         </FormField>
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Тип">
@@ -514,6 +553,8 @@ function CreateMeetingModal({
               <option value={60}>1 час</option>
               <option value={90}>1.5 часа</option>
               <option value={120}>2 часа</option>
+              <option value={180}>3 часа</option>
+              <option value={240}>4 часа</option>
             </Select>
           </FormField>
         </div>
@@ -535,7 +576,11 @@ function CreateMeetingModal({
               <Avatar name={selectedLead.name} size="xs" />
               <div className="flex-1 min-w-0">
                 <div className="font-semibold text-navy truncate">{selectedLead.name}</div>
-                <div className="text-[10.5px] text-ink-4 font-mono">{selectedLead.phone} · {selectedLead.funnelName}</div>
+                {(selectedLead.phone || selectedLead.funnelName) && (
+                  <div className="text-[10.5px] text-ink-4 font-mono">
+                    {selectedLead.phone}{selectedLead.phone && selectedLead.funnelName && ' · '}{selectedLead.funnelName}
+                  </div>
+                )}
               </div>
               <button type="button" onClick={() => { setLeadId(''); setLeadSearch(''); }}
                 className="text-[11px] text-danger hover:underline">убрать</button>
@@ -562,7 +607,9 @@ function CreateMeetingModal({
           )}
         </FormField>
         <FormField label="Пригласить участников"
-          hint={participantIds.length > 0 ? `Будут уведомлены: ${participantIds.length}` : 'Им придёт уведомление'}>
+          hint={participantIds.length > 0
+            ? `${participantIds.length} ${plural(participantIds.length, 'участник', 'участника', 'участников')}`
+            : 'Им придёт уведомление'}>
           <div className="flex flex-wrap gap-1.5 max-h-[160px] overflow-y-auto thin-scroll p-1.5 border border-line rounded-md bg-bg/30">
             {team.filter((t) => t.id !== currentUserId).length === 0 ? (
               <div className="text-[12px] text-ink-4 px-1 py-0.5">В команде нет других участников</div>
@@ -583,9 +630,9 @@ function CreateMeetingModal({
             })}
           </div>
         </FormField>
-        <FormField label="Описание" hint="Повестка, детали, ссылки">
+        <FormField label="Описание" hint="Повестка, детали, ссылки. Поддерживается перенос строк.">
           <Textarea value={description} onChange={(e) => setDescription(e.target.value)}
-            rows={2} placeholder="О чём встреча" />
+            rows={6} placeholder="Что обсудить, какие материалы подготовить, ссылки на документы..." />
         </FormField>
         {error && (
           <div className="bg-danger-bg border border-danger/20 text-danger text-[12.5px] p-2.5 rounded-md">
@@ -600,16 +647,25 @@ function CreateMeetingModal({
 // ====================== МОДАЛКА: детали события ======================
 
 function EventDetailModal({
-  event, currentUserId, isAdmin, onClose, onDeleted,
+  event, currentUserId, isAdmin, onClose, onDeleted, onEdit,
 }: {
   event: EventLite;
   currentUserId: string;
   isAdmin: boolean;
   onClose: () => void;
   onDeleted: () => void;
+  onEdit: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const canDelete = isAdmin || event.ownerId === currentUserId;
+  const isOwner = event.ownerId === currentUserId;
+  const canDelete = isAdmin || isOwner;
+  // Редактирование разрешено для INTERNAL_MEETING/CONSULTATION/CUSTOM — у этих
+  // нет Google Calendar sync. FINGERPRINT/EXTRA_CALL правятся только из
+  // карточки клиента (там логика синхронизации с Google).
+  const isEditableKind = event.kind === 'INTERNAL_MEETING'
+    || event.kind === 'CONSULTATION'
+    || event.kind === 'CUSTOM';
+  const canEdit = (isAdmin || isOwner) && isEditableKind;
   const start = new Date(event.startsAt);
   const c = KIND_STYLES[event.kind];
   const noSubmission = event.submitted === false;
@@ -627,9 +683,14 @@ function EventDetailModal({
   }
 
   return (
-    <Modal open={true} onClose={onClose} title={event.title}
+    <Modal open={true} onClose={onClose} title={event.title} size="lg"
       footer={<>
         <Button onClick={onClose}>Закрыть</Button>
+        {canEdit && (
+          <Button onClick={onEdit} disabled={busy}>
+            <Edit3 size={12} /> Редактировать
+          </Button>
+        )}
         {canDelete && (
           <Button variant="danger" onClick={onDelete} disabled={busy}>
             <Trash2 size={12} /> {busy ? 'Удаление...' : 'Удалить'}
@@ -637,8 +698,6 @@ function EventDetailModal({
         )}
       </>}>
       <div className="flex flex-col gap-3">
-        {/* Предупреждение о неподанном внеске — самое верхнее, чтобы Anna
-            сразу видела причину красной рамки. */}
         {noSubmission && event.leadId && (
           <Link
             href={`/clients/${event.leadId}`}
@@ -653,11 +712,14 @@ function EventDetailModal({
             </div>
           </Link>
         )}
-        <div>
+        <div className="flex items-center gap-2 flex-wrap">
           <span className={cn(
             'inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border',
             c.bg, c.text, c.border,
           )}>{c.label}</span>
+          {!isEditableKind && (
+            <span className="text-[10.5px] text-ink-4">Редактируется только из карточки клиента</span>
+          )}
         </div>
         <div>
           <div className="text-[14px] font-bold text-ink">
@@ -699,11 +761,20 @@ function EventDetailModal({
             → Карточка клиента: {event.leadClientName}
           </Link>
         )}
-        {event.description && (
-          <div className="bg-bg/50 border border-line rounded-md p-2.5 text-[12.5px] text-ink-2 whitespace-pre-wrap">
-            {event.description}
+        {event.description ? (
+          <div>
+            <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold mb-1">
+              <FileText size={11} /> Описание
+            </div>
+            <div className="bg-bg/50 border border-line rounded-md p-3 text-[12.5px] text-ink-2 whitespace-pre-wrap leading-relaxed max-h-[400px] overflow-y-auto thin-scroll">
+              {event.description}
+            </div>
           </div>
-        )}
+        ) : canEdit ? (
+          <div className="text-[11.5px] text-ink-4 italic">
+            Описание не заполнено. Нажмите «Редактировать» чтобы добавить детали.
+          </div>
+        ) : null}
       </div>
     </Modal>
   );

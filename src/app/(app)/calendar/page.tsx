@@ -1,10 +1,15 @@
 // Календарь — сетка месяца со всеми событиями (отпечатки, доп. вызвания,
 // внутренние встречи, консультации, пр.). Клик по дню → создание встречи.
 //
-// Видимость событий:
-//   - ADMIN видит всё
-//   - остальные видят: свои (ownerId), общие (ownerId=null), или приглашены
-//     (через participants)
+// Видимость событий (Igor 30.04.2026):
+//   ВСЕ пользователи видят ВСЕ события компании. Это рабочий календарь —
+//   важно чтобы менеджеры видели когда у коллег встречи, какие отпечатки
+//   запланированы и т.д. Раньше SALES/LEGAL видели только свои + общие +
+//   куда приглашены — Igor попросил открыть для всех.
+//
+//   Имя клиента в title видно всем (например «Подача на КП: Иванов»). Если
+//   SALES попробует открыть карточку клиента LEGAL'а — там сработает
+//   leadVisibilityFilter и вернёт 403. Сами события открыты.
 //
 // Список лидов для привязки к встрече — только видимые юзеру (leadVisibilityFilter):
 // SALES не должен видеть клиентов LEGAL в селекторе — это утечка ПДн.
@@ -64,37 +69,25 @@ export default async function CalendarPage({ searchParams }: PageProps) {
   const offsetEnd  = dowLast === 0 ? 0 : 7 - dowLast;
   const gridEnd    = new Date(year, monthIndex + 1, offsetEnd, 23, 59, 59, 999);
 
-  // Видимость событий
-  const eventVisibility = user.role === 'ADMIN'
-    ? {}
-    : {
-        OR: [
-          { ownerId: user.id },
-          { ownerId: null },
-          { participants: { some: { userId: user.id } } },
-        ],
-      };
-
   // Видимость лидов в селекторе «Привязать к клиенту» — только свои (SALES не
   // должен видеть клиентов LEGAL и наоборот). Админ — видит все.
   const leadVis = leadVisibilityFilter(user);
 
+  // События календаря — без фильтра по ownerId/participants.
+  // Все сотрудники видят расписание всей команды.
   const [events, team, leads, pendingLeads] = await Promise.all([
     db.calendarEvent.findMany({
-      where: { ...eventVisibility, startsAt: { gte: gridStart, lte: gridEnd } },
+      where: { startsAt: { gte: gridStart, lte: gridEnd } },
       orderBy: { startsAt: 'asc' },
       include: {
         lead: {
           select: {
             id: true,
-            // Anna 30.04.2026: подсветка событий клиентов без даты подачи внеска
             submittedAt: true,
             client: { select: { fullName: true } },
           },
         },
         owner: { select: { id: true, name: true } },
-        // Только userId — у CalendarEventParticipant нет relation на User
-        // в схеме, поэтому include: { user: ... } упал бы. Имена резолвим ниже.
         participants: { select: { userId: true } },
       },
     }),
@@ -113,11 +106,6 @@ export default async function CalendarPage({ searchParams }: PageProps) {
       orderBy: { updatedAt: 'desc' },
       take: 200,
     }),
-    // Pending submissions — лиды без даты подачи внеска для предупреждающего
-    // баннера. Условия: лид активен, submittedAt = null, был хотя бы один
-    // контакт (firstContactAt не null — иначе это совсем свежий лид которому
-    // ещё рано подаваться). Сортировка — старые первыми, чтобы Anna видела
-    // самые «горящие». Лимит 100 — больше в баннер не поместится по UX.
     db.lead.findMany({
       where: {
         ...leadVis,
@@ -171,8 +159,6 @@ export default async function CalendarPage({ searchParams }: PageProps) {
           ownerName:      e.owner?.name ?? null,
           leadId:         e.leadId,
           leadClientName: e.lead?.client.fullName ?? null,
-          // Anna 30.04.2026: флаг подачи внеска для подсветки на клиенте.
-          // Логика вынесена в computeSubmissionStatus (lib/calendar-helpers).
           submitted:      computeSubmissionStatus(e.lead),
           participants:   e.participants
             .map((p) => userById.get(p.userId))
