@@ -46,18 +46,15 @@ interface Props {
 }
 
 export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
-  // WhatsApp стейт
   const [editingWa, setEditingWa]   = useState<WaAccount | null>(null);
   const [creatingWa, setCreatingWa] = useState(false);
   const [qrFor, setQrFor]           = useState<WaAccount | null>(null);
 
-  // Telegram стейт
   const [creatingTg, setCreatingTg] = useState(false);
 
   return (
     <div className="p-4 md:p-5 max-w-[1100px] w-full flex flex-col gap-4">
 
-      {/* ============= WHATSAPP ============= */}
       <section>
         <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
           <div className="w-9 h-9 rounded-md bg-wa text-white grid place-items-center shrink-0">
@@ -96,7 +93,6 @@ export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
         </div>
       </section>
 
-      {/* ============= TELEGRAM ============= */}
       <section>
         <div className="bg-paper border border-line rounded-lg p-4 mb-3 flex items-center gap-3 flex-wrap">
           <div className="w-9 h-9 rounded-md bg-info text-white grid place-items-center shrink-0">
@@ -135,7 +131,6 @@ export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
         Канал без владельца — общий, видят все менеджеры. Канал с владельцем — личный, видит только указанный менеджер.
       </p>
 
-      {/* Модалки WhatsApp */}
       {(editingWa || creatingWa) && (
         <WaFormModal
           account={editingWa}
@@ -145,17 +140,12 @@ export function ChannelsView({ waAccounts, tgAccounts, users }: Props) {
       )}
       {qrFor && <QrConnectModal account={qrFor} onClose={() => setQrFor(null)} />}
 
-      {/* Модалка Telegram */}
       {creatingTg && (
         <TgConnectModal users={users} onClose={() => setCreatingTg(false)} />
       )}
     </div>
   );
 }
-
-// ============================================================
-// WHATSAPP ряд и модалки
-// ============================================================
 
 function WaRow({
   account, onEdit, onConnect,
@@ -277,9 +267,9 @@ function WaFormModal({
 /**
  * Модалка подключения WhatsApp через QR.
  *
- * [DEBUG-РЕЖИМ 30.04.2026]: визуальная панель внизу модалки показывает
- * каждый fetch и его ответ — нужна чтобы найти где зависает QR.
- * Когда баг найдём, debug-блок убрать.
+ * Лечит залипание сессии в authenticating: после ~20 сек в этом статусе
+ * показывает кнопку "Сбросить сессию" (force=true, wipe=true) — worker
+ * destroy-нёт зависшего клиента и удалит папку сессии. Появится свежий QR.
  */
 function QrConnectModal({
   account, onClose,
@@ -292,85 +282,123 @@ function QrConnectModal({
   const [qrUrl, setQrUrl]   = useState<string | null>(null);
   const [error, setError]   = useState<string | null>(null);
   const [debug, setDebug]   = useState<string[]>([]);
+  // Сколько секунд провели в connecting / authenticating — нужно чтобы
+  // показать кнопку "Сбросить" если сессия залипла.
+  const [connectingSeconds, setConnectingSeconds] = useState(0);
+  const [resetting, setResetting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelledRef = useRef(false);
 
-  // Хелпер: добавить строку в видимый debug-лог
   function log(line: string) {
     setDebug((cur) => {
       const stamped = `${new Date().toISOString().slice(11, 19)} ${line}`;
-      // Держим максимум 25 последних строк
       const next = [...cur, stamped];
       return next.length > 25 ? next.slice(-25) : next;
     });
   }
 
-  useEffect(() => {
-    let cancelled = false;
+  function stopPolling() {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }
+
+  /** Принудительный сброс сессии: force + wipe → пересоздаём клиента и удаляем
+   *  папку сессии. После этого worker сгенерит новый QR. */
+  async function handleHardReset() {
+    setResetting(true);
+    log(`HARD RESET request (force+wipe)`);
+    setStatus('loading');
+    setQrUrl(null);
+    setError(null);
+    setConnectingSeconds(0);
+    stopPolling();
+    try {
+      const res = await fetch('/api/whatsapp/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: account.id, force: true, wipe: true }),
+      });
+      const data = await res.json().catch(() => null);
+      const qrFlag = data?.qr ? `qr[${data.qr.length}]` : 'no-qr';
+      log(`hard reset → ${data?.status ?? 'NULL'} ${qrFlag}`);
+      if (data?.status === 'qr' && data.qr) {
+        setQrUrl(data.qr);
+        setStatus('qr');
+      }
+      // Запускаем poll заново
+      startPollingFresh();
+    } catch (e) {
+      log(`hard reset EXCEPTION: ${(e as Error).message}`);
+      setError((e as Error).message);
+      setStatus('failed');
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  function startPollingFresh() {
     let pollCount = 0;
     const MAX_POLLS = 90;
 
-    log(`init account=${account.id.slice(-8)} label="${account.label}"`);
+    pollRef.current = setInterval(async () => {
+      pollCount++;
+      if (pollCount > MAX_POLLS) {
+        log(`POLL #${pollCount} TIMEOUT (max=${MAX_POLLS})`);
+        stopPolling();
+        if (!cancelledRef.current) {
+          setError('Превышено время ожидания. Попробуйте ещё раз.');
+          setStatus('failed');
+        }
+        return;
+      }
 
-    function startPolling() {
-      pollRef.current = setInterval(async () => {
-        pollCount++;
-        if (pollCount > MAX_POLLS) {
-          log(`POLL #${pollCount} TIMEOUT (max=${MAX_POLLS})`);
-          stopPolling();
-          if (!cancelled) {
-            setError('Превышено время ожидания. Попробуйте ещё раз.');
-            setStatus('failed');
-          }
+      try {
+        const t0 = Date.now();
+        const res = await fetch('/api/whatsapp/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountId: account.id }),
+        });
+        const dt = Date.now() - t0;
+
+        if (!res.ok) {
+          log(`poll #${pollCount} HTTP ${res.status} dt=${dt}ms`);
           return;
         }
+        const data = await res.json();
+        if (cancelledRef.current) return;
 
-        try {
-          const t0 = Date.now();
-          const res = await fetch('/api/whatsapp/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accountId: account.id }),
-          });
-          const dt = Date.now() - t0;
-
-          if (!res.ok) {
-            log(`poll #${pollCount} HTTP ${res.status} dt=${dt}ms`);
-            return;
-          }
-          const data = await res.json();
-          if (cancelled) return;
-
-          // Каждый 5й poll логируем чтобы не засорять
-          if (pollCount === 1 || pollCount % 5 === 0) {
-            const qrFlag = data.qr ? `qr[${data.qr.length}]` : 'no-qr';
-            log(`poll #${pollCount} → ${data.status} ${qrFlag} dt=${dt}ms`);
-          }
-
-          if (data.status === 'ready') {
-            log(`READY!`);
-            setStatus('ready');
-            stopPolling();
-            setTimeout(() => { router.refresh(); onClose(); }, 1500);
-          } else if (data.status === 'authenticating') {
-            setStatus('connecting');
-          } else if (data.status === 'qr' && data.qr) {
-            setQrUrl((cur) => (cur === data.qr ? cur : data.qr));
-            setStatus('qr');
-          } else if (data.status === 'failed') {
-            log(`FAILED from worker`);
-            setStatus('failed');
-            setError('Worker сообщил об ошибке инициализации');
-            stopPolling();
-          }
-        } catch (e) {
-          log(`poll #${pollCount} EXCEPTION: ${(e as Error).message}`);
+        if (pollCount === 1 || pollCount % 5 === 0) {
+          const qrFlag = data.qr ? `qr[${data.qr.length}]` : 'no-qr';
+          log(`poll #${pollCount} → ${data.status} ${qrFlag} dt=${dt}ms`);
         }
-      }, 1000);
-    }
 
-    function stopPolling() {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    }
+        if (data.status === 'ready') {
+          log(`READY!`);
+          setStatus('ready');
+          stopPolling();
+          setTimeout(() => { router.refresh(); onClose(); }, 1500);
+        } else if (data.status === 'authenticating') {
+          setStatus('connecting');
+          setConnectingSeconds((s) => s + 1);
+        } else if (data.status === 'qr' && data.qr) {
+          setQrUrl((cur) => (cur === data.qr ? cur : data.qr));
+          setStatus('qr');
+          setConnectingSeconds(0);
+        } else if (data.status === 'failed') {
+          log(`FAILED from worker: ${data.error ?? '(нет описания)'}`);
+          setStatus('failed');
+          setError(data.error || 'Worker сообщил об ошибке инициализации');
+          stopPolling();
+        }
+      } catch (e) {
+        log(`poll #${pollCount} EXCEPTION: ${(e as Error).message}`);
+      }
+    }, 1000);
+  }
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    log(`init account=${account.id.slice(-8)} label="${account.label}"`);
 
     async function triggerConnect() {
       try {
@@ -396,7 +424,7 @@ function QrConnectModal({
         const qrFlag = data?.qr ? `qr[${data.qr.length}]` : 'no-qr';
         log(`connect → ${data?.status ?? 'NULL'} ${qrFlag} dt=${dt}ms`);
 
-        if (cancelled || !data) return;
+        if (cancelledRef.current || !data) return;
         if (data.status === 'ready') {
           setStatus('ready');
           stopPolling();
@@ -415,11 +443,17 @@ function QrConnectModal({
     }
 
     triggerConnect();
-    startPolling();
+    startPollingFresh();
 
-    return () => { cancelled = true; stopPolling(); };
+    return () => {
+      cancelledRef.current = true;
+      stopPolling();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.id]);
+
+  // Показываем кнопку «Сбросить» если в connecting дольше 15 сек или failed
+  const stuck = (status === 'connecting' && connectingSeconds >= 15) || status === 'failed';
 
   return (
     <Modal open={true} onClose={onClose} title={`Подключение: ${account.label}`}>
@@ -449,7 +483,12 @@ function QrConnectModal({
         {status === 'connecting' && (
           <div className="py-8">
             <Loader2 size={32} className="mx-auto text-info animate-spin mb-3" />
-            <p className="text-[13px] text-ink-3">Авторизация...</p>
+            <p className="text-[13px] text-ink-3">Авторизация... {connectingSeconds > 0 && `(${connectingSeconds}с)`}</p>
+            {connectingSeconds >= 15 && (
+              <p className="text-[11px] text-warn mt-2">
+                Сессия может быть зависшей. Сбросьте и сосканируйте QR заново.
+              </p>
+            )}
           </div>
         )}
         {status === 'ready' && (
@@ -462,13 +501,31 @@ function QrConnectModal({
           <div className="py-8">
             <XCircle size={36} className="mx-auto text-danger mb-3" />
             <h3 className="text-[14px] font-bold text-danger mb-1">Не удалось подключиться</h3>
-            {error && <p className="text-[12px] text-ink-3">{error}</p>}
+            {error && <p className="text-[12px] text-ink-3 max-w-md mx-auto">{error}</p>}
           </div>
         )}
 
-        {/* DEBUG-ПАНЕЛЬ — временно для диагностики QR-проблемы */}
+        {/* Кнопка hard-reset — появляется при зависании или ошибке */}
+        {stuck && (
+          <div className="mt-2 mb-4">
+            <Button
+              variant="warn"
+              onClick={handleHardReset}
+              disabled={resetting}
+            >
+              <RefreshCw size={12} className={resetting ? 'animate-spin' : ''} />
+              {resetting ? 'Сброс...' : 'Сбросить сессию и получить новый QR'}
+            </Button>
+            <p className="text-[10.5px] text-ink-4 mt-1.5 max-w-md mx-auto">
+              Worker удалит зависшую сессию и сгенерирует свежий QR-код.
+              Старая привязка на телефоне станет недействительной.
+            </p>
+          </div>
+        )}
+
+        {/* DEBUG-ПАНЕЛЬ — временно для диагностики */}
         <div className="mt-6 border-t border-line pt-3 text-left">
-          <p className="text-[10px] text-ink-4 font-mono mb-1">debug · state={status}</p>
+          <p className="text-[10px] text-ink-4 font-mono mb-1">debug · state={status} · sec={connectingSeconds}</p>
           <pre className="text-[10px] font-mono bg-bg border border-line rounded p-2 max-h-[160px] overflow-auto whitespace-pre-wrap leading-tight">
 {debug.length === 0 ? '(нет событий)' : debug.join('\n')}
           </pre>
@@ -477,10 +534,6 @@ function QrConnectModal({
     </Modal>
   );
 }
-
-// ============================================================
-// TELEGRAM ряд и модалка подключения
-// ============================================================
 
 function TgRow({ account }: { account: TgAccount }) {
   const router = useRouter();
