@@ -14,6 +14,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyMetaSignature, handleMetaWebhook, type MetaWebhookPayload } from '@/lib/meta';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
   const sig     = req.headers.get('x-hub-signature-256');
 
   if (!verifyMetaSignature(account.appSecret, rawBody, sig)) {
-    console.warn(`[meta] bad signature for account ${accountId}`);
+    logger.warn(`[meta] bad signature for account ${accountId}`);
     return NextResponse.json({ error: 'bad signature' }, { status: 401 });
   }
 
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
     const result = await handleMetaWebhook(payload);
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
-    console.error('[meta] handler error', err);
+    logger.error('[meta] handler error', err);
     // Возвращаем 200 чтобы не было ретраев — событие в логах
     return NextResponse.json({ ok: true, logged: true });
   }
