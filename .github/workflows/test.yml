@@ -15,6 +15,9 @@ jobs:
   unit:
     name: Unit + Integration + Components (vitest)
     runs-on: ubuntu-latest
+    env:
+      # Тестовый ключ AES-256 (32 байта в hex). НЕ использовать в проде.
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +62,8 @@ jobs:
       ONLYOFFICE_JWT_SECRET:  test-onlyoffice-jwt-secret-32ch
       WHATSAPP_WORKER_TOKEN:  test-wa-worker-token
       CRON_SECRET:            test-cron-secret
+      # Тестовый AES-256 ключ для шифрования OAuth-токенов в БД.
+      ENCRYPTION_KEY:         0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
       APP_PUBLIC_URL:         http://localhost:3000
       ONLYOFFICE_PUBLIC_URL:  http://localhost:8080
       VAPID_PUBLIC_KEY:       BMQTU2_test_key_replace_in_real_use_only_for_e2e_tests_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
