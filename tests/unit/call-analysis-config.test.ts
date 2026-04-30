@@ -5,7 +5,7 @@
 //   3. Если и в БД и в ENV пусто — используется default (https://api.openai.com/v1, etc).
 //   4. Пустые строки в БД эквивалентны "не задано" — НЕ перезаписывают ENV.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   db: {
@@ -44,10 +44,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Восстанавливаем оригинальные ENV
+  // Восстанавливаем оригинальные ENV чтобы не утекли в соседние тест-файлы
   Object.assign(process.env, envSnapshot);
 });
-function afterEach(fn: () => void) { return import('vitest').then(({ afterEach: ae }) => ae(fn)); }
 
 describe('getCallAnalysisConfig — fallback логика', () => {
   it('БД пуста, ENV пуст -> defaults (api.openai.com, whisper-1, gpt-4o-mini)', async () => {
