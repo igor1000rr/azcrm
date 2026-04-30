@@ -1,7 +1,17 @@
 // GET /api/google/callback?code=...&state=...
+//
+// БЕЗОПАСНОСТЬ:
+//   1. state проверяется по cookie (CSRF protection).
+//   2. userId из state СВЕРЯЕТСЯ с текущей сессией — иначе атакующий мог бы
+//      инициировать OAuth-flow от своего юзера и подсунуть state-cookie
+//      в браузер жертвы (через XSS на любом другом субдомене), и при
+//      возврате callback'а привязать СВОЙ Google-аккаунт к чужому CRM-юзеру
+//      (после чего читать чужой Google Calendar, и т.д.).
+//      Защита: сессия должна совпадать с userId зашитым в state.
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { exchangeCodeForTokens } from '@/lib/google';
+import { auth } from '@/lib/auth';
 import { cookies } from 'next/headers';
 
 export async function GET(req: NextRequest) {
@@ -25,6 +35,18 @@ export async function GET(req: NextRequest) {
   cookieStore.delete('google_oauth_state');
 
   const userId = state.split(':')[0];
+  if (!userId) {
+    return NextResponse.redirect(new URL('/settings/profile?google=csrf', req.url));
+  }
+
+  // Доп. проверка: сессия должна принадлежать тому же юзеру что в state.
+  // Если кто-то подсунул чужую state-cookie через XSS на смежном домене,
+  // и жертва зашла в callback с code= — мы привяжем токены к атакующему,
+  // а не к жертве. Эта проверка это блокирует.
+  const session = await auth();
+  if (!session?.user || session.user.id !== userId) {
+    return NextResponse.redirect(new URL('/settings/profile?google=session', req.url));
+  }
 
   try {
     const tokens = await exchangeCodeForTokens(code);
