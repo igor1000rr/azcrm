@@ -4,6 +4,7 @@
 
 import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 
 const CRON_SECRET = process.env.CRON_SECRET ?? '';
 
@@ -14,7 +15,7 @@ const CRON_SECRET = process.env.CRON_SECRET ?? '';
  */
 export function checkCronAuth(req: Request): NextResponse | null {
   if (!CRON_SECRET) {
-    console.error('[cron] CRON_SECRET не задан — endpoint закрыт');
+    logger.error('[cron] CRON_SECRET не задан — endpoint закрыт');
     return NextResponse.json({ error: 'cron not configured' }, { status: 503 });
   }
 

@@ -1,6 +1,7 @@
 // Аудит-лог: запись действий пользователей для админа
 import { db } from '@/lib/db';
 import { headers } from 'next/headers';
+import { logger } from '@/lib/logger';
 
 interface AuditInput {
   userId?:    string | null;
@@ -38,6 +39,6 @@ export async function audit(input: AuditInput): Promise<void> {
       },
     });
   } catch (e) {
-    console.error('[audit] failed:', e);
+    logger.error('[audit] failed:', e);
   }
 }

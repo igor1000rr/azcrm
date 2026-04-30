@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { sendPushToUser } from '@/lib/push';
 import { sendEmail, renderEmailTemplate, isEmailConfigured } from '@/lib/email';
 import type { NotificationKind } from '@prisma/client';
+import { logger } from '@/lib/logger';
 
 interface NotifyInput {
   userId: string;
@@ -42,14 +43,14 @@ export async function notify(input: NotifyInput): Promise<void> {
     body:  input.body ?? undefined,
     url:   input.link ?? undefined,
     tag:   input.kind,
-  }).catch((e) => console.error('push failed:', e));
+  }).catch((e) => logger.error('push failed:', e));
 
   // 3. Email (если настроен и тип критичный)
   if (
     isEmailConfigured()
     && (input.forceEmail || CRITICAL_KINDS.includes(input.kind))
   ) {
-    sendEmailNotification(input).catch((e) => console.error('email failed:', e));
+    sendEmailNotification(input).catch((e) => logger.error('email failed:', e));
   }
 }
 
