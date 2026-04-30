@@ -2,6 +2,10 @@
 // Покрывает: шапку, склонения, группировку по дням, Bubble (IN/OUT, image/doc/text,
 // статусы доставки), ChannelSelect (открытие, выбор, статусы), Composer
 // (textarea, кнопка, Enter/Shift+Enter, disabled-состояния, fetch+refresh).
+//
+// После рефактора на мульти-канальность LeadChatAccount/LeadChatMessage
+// содержат поле `kind: ChannelKindStr`, ключ селектора — составной
+// `${kind}:${accountId}`, send идёт на универсальный /api/messages/lead-send.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
@@ -22,6 +26,7 @@ function makeMsg(over: Partial<LeadChatMessage> = {}): LeadChatMessage {
     isRead:       false,
     deliveredAt:  null,
     senderName:   null,
+    kind:         'WHATSAPP',
     accountId:    'acc-1',
     accountLabel: 'Anna WA',
     ...over,
@@ -30,13 +35,19 @@ function makeMsg(over: Partial<LeadChatMessage> = {}): LeadChatMessage {
 
 function makeAcc(over: Partial<LeadChatAccount> = {}): LeadChatAccount {
   return {
-    id:          'acc-1',
+    kind:        'WHATSAPP',
+    accountId:   'acc-1',
     label:       'Anna WA',
-    phoneNumber: '+48731006935',
+    subtitle:    '+48731006935',
     isConnected: true,
     isShared:    false,
     ...over,
   };
+}
+
+/** Ключ селектора: ${kind}:${accountId} — синхронизировано с accountKey() в компоненте. */
+function key(a: LeadChatAccount): string {
+  return `${a.kind}:${a.accountId}`;
 }
 
 const BASE = {
@@ -50,9 +61,7 @@ const BASE = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // scrollIntoView не реализован в jsdom — без этого падает useEffect
   Element.prototype.scrollIntoView = vi.fn();
-  // fetch by-default возвращает успех
   global.fetch = vi.fn().mockResolvedValue({
     json: () => Promise.resolve({ ok: true }),
   }) as unknown as typeof fetch;
@@ -166,7 +175,6 @@ describe('LeadChatPanel — группировка по дням', () => {
       makeMsg({ createdAt: '2025-01-15T10:00:00Z' }),
     ]} />);
     const label = screen.getByTestId('day-label-2025-01-15');
-    // ru-RU: "15 января 2025 г."
     expect(label.textContent).toMatch(/15.*январ.*2025/);
   });
 });
@@ -291,35 +299,31 @@ describe('LeadChatPanel — ChannelSelect', () => {
   });
 
   it('клик на кнопку → открывает dropdown', () => {
-    render(<LeadChatPanel {...BASE} availableAccounts={[
-      makeAcc({ id: 'a' }),
-      makeAcc({ id: 'b', label: 'Общий', isShared: true }),
-    ]} />);
+    const accA = makeAcc({ accountId: 'a' });
+    const accB = makeAcc({ accountId: 'b', label: 'Общий', isShared: true });
+    render(<LeadChatPanel {...BASE} availableAccounts={[accA, accB]} />);
     fireEvent.click(screen.getByTestId('channel-select-btn'));
     expect(screen.getByTestId('channel-dropdown')).toBeInTheDocument();
-    expect(screen.getByTestId('channel-option-a')).toBeInTheDocument();
-    expect(screen.getByTestId('channel-option-b')).toBeInTheDocument();
+    expect(screen.getByTestId(`channel-option-${key(accA)}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`channel-option-${key(accB)}`)).toBeInTheDocument();
   });
 
   it('shared канал → бейдж "общий"', () => {
-    render(<LeadChatPanel {...BASE} availableAccounts={[
-      makeAcc({ id: 'a' }),
-      makeAcc({ id: 'b', label: 'Общий', isShared: true }),
-    ]} />);
+    const accA = makeAcc({ accountId: 'a' });
+    const accB = makeAcc({ accountId: 'b', label: 'Общий', isShared: true });
+    render(<LeadChatPanel {...BASE} availableAccounts={[accA, accB]} />);
     fireEvent.click(screen.getByTestId('channel-select-btn'));
-    const sharedOption = screen.getByTestId('channel-option-b');
+    const sharedOption = screen.getByTestId(`channel-option-${key(accB)}`);
     expect(sharedOption).toHaveTextContent('общий');
   });
 
   it('клик по опции → меняет выбранный канал и закрывает dropdown', () => {
-    render(<LeadChatPanel {...BASE} availableAccounts={[
-      makeAcc({ id: 'a', label: 'Anna' }),
-      makeAcc({ id: 'b', label: 'Yuliia' }),
-    ]} />);
+    const accA = makeAcc({ accountId: 'a', label: 'Anna' });
+    const accB = makeAcc({ accountId: 'b', label: 'Yuliia' });
+    render(<LeadChatPanel {...BASE} availableAccounts={[accA, accB]} />);
     fireEvent.click(screen.getByTestId('channel-select-btn'));
-    fireEvent.click(screen.getByTestId('channel-option-b'));
+    fireEvent.click(screen.getByTestId(`channel-option-${key(accB)}`));
     expect(screen.queryByTestId('channel-dropdown')).not.toBeInTheDocument();
-    // После клика кнопка показывает Yuliia
     expect(screen.getByTestId('channel-select-btn')).toHaveTextContent('Yuliia');
   });
 
@@ -329,6 +333,16 @@ describe('LeadChatPanel — ChannelSelect', () => {
     expect(screen.getByTestId('channel-dropdown')).toBeInTheDocument();
     fireEvent.mouseDown(document.body);
     expect(screen.queryByTestId('channel-dropdown')).not.toBeInTheDocument();
+  });
+
+  it('Meta-аккаунт может быть и Messenger и Instagram — два пункта в селекторе', () => {
+    // Один metaAccountId, два kind — после рефактора это ожидаемо.
+    const fb = makeAcc({ kind: 'MESSENGER', accountId: 'meta-1', label: 'AZ · FB', subtitle: 'AZ Group Page' });
+    const ig = makeAcc({ kind: 'INSTAGRAM', accountId: 'meta-1', label: 'AZ · IG', subtitle: '@azgroup' });
+    render(<LeadChatPanel {...BASE} availableAccounts={[fb, ig]} />);
+    fireEvent.click(screen.getByTestId('channel-select-btn'));
+    expect(screen.getByTestId(`channel-option-${key(fb)}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`channel-option-${key(ig)}`)).toBeInTheDocument();
   });
 });
 
@@ -341,7 +355,10 @@ describe('LeadChatPanel — pickDefaultAccount', () => {
         makeMsg({ id: 'm1', direction: 'OUT', accountId: 'a' }),
         makeMsg({ id: 'm2', direction: 'IN',  accountId: 'b' }),
       ]}
-      availableAccounts={[makeAcc({ id: 'a', label: 'Anna' }), makeAcc({ id: 'b', label: 'Yuliia' })]}
+      availableAccounts={[
+        makeAcc({ accountId: 'a', label: 'Anna' }),
+        makeAcc({ accountId: 'b', label: 'Yuliia' }),
+      ]}
     />);
     expect(screen.getByTestId('channel-select-btn')).toHaveTextContent('Yuliia');
   });
@@ -350,8 +367,8 @@ describe('LeadChatPanel — pickDefaultAccount', () => {
     render(<LeadChatPanel {...BASE}
       messages={[]}
       availableAccounts={[
-        makeAcc({ id: 'a', label: 'Anna', isConnected: false }),
-        makeAcc({ id: 'b', label: 'Yuliia', isConnected: true }),
+        makeAcc({ accountId: 'a', label: 'Anna', isConnected: false }),
+        makeAcc({ accountId: 'b', label: 'Yuliia', isConnected: true }),
       ]}
     />);
     expect(screen.getByTestId('channel-select-btn')).toHaveTextContent('Yuliia');
@@ -361,8 +378,8 @@ describe('LeadChatPanel — pickDefaultAccount', () => {
     render(<LeadChatPanel {...BASE}
       messages={[]}
       availableAccounts={[
-        makeAcc({ id: 'a', label: 'Anna', isConnected: false }),
-        makeAcc({ id: 'b', label: 'Yuliia', isConnected: false }),
+        makeAcc({ accountId: 'a', label: 'Anna', isConnected: false }),
+        makeAcc({ accountId: 'b', label: 'Yuliia', isConnected: false }),
       ]}
     />);
     expect(screen.getByTestId('channel-select-btn')).toHaveTextContent('Anna');
@@ -397,13 +414,13 @@ describe('LeadChatPanel — composer', () => {
     expect(screen.getByTestId('not-connected-warn')).toBeInTheDocument();
   });
 
-  it('Enter без shift → отправляет', async () => {
+  it('Enter без shift → отправляет на /api/messages/lead-send', async () => {
     render(<LeadChatPanel {...BASE} />);
     const input = screen.getByTestId('msg-input');
     fireEvent.change(input, { target: { value: 'Hello' } });
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith('/api/whatsapp/lead-send', expect.objectContaining({
+      expect(global.fetch).toHaveBeenCalledWith('/api/messages/lead-send', expect.objectContaining({
         method: 'POST',
       }));
     });
@@ -421,7 +438,7 @@ describe('LeadChatPanel — composer', () => {
 // ====================== ОТПРАВКА: FETCH + REFRESH ======================
 
 describe('LeadChatPanel — отправка сообщения', () => {
-  it('успех → fetch с правильным body, router.refresh, очищает поле', async () => {
+  it('успех → fetch с правильным body (kind+accountId), router.refresh, очищает поле', async () => {
     const refresh = vi.fn();
     vi.mocked(useRouter).mockReturnValue({
       push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh, prefetch: vi.fn(),
@@ -435,16 +452,35 @@ describe('LeadChatPanel — отправка сообщения', () => {
       fireEvent.click(screen.getByTestId('send-btn'));
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/api/whatsapp/lead-send', expect.objectContaining({
+    expect(global.fetch).toHaveBeenCalledWith('/api/messages/lead-send', expect.objectContaining({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadId: 'lead-1', accountId: 'acc-1', body: 'Тест 123' }),
+      body: JSON.stringify({
+        leadId:    'lead-1',
+        kind:      'WHATSAPP',
+        accountId: 'acc-1',
+        body:      'Тест 123',
+      }),
     }));
 
     await waitFor(() => {
       expect(refresh).toHaveBeenCalled();
     });
     expect((screen.getByTestId('msg-input') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('Viber канал — body содержит kind=VIBER', async () => {
+    render(<LeadChatPanel {...BASE}
+      availableAccounts={[makeAcc({ kind: 'VIBER', accountId: 'viber-1', label: 'AZ Viber', subtitle: 'AZ Group' })]}
+    />);
+    fireEvent.change(screen.getByTestId('msg-input'), { target: { value: 'Hi' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('send-btn'));
+    });
+    const callArg = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    const parsed = JSON.parse(callArg.body);
+    expect(parsed.kind).toBe('VIBER');
+    expect(parsed.accountId).toBe('viber-1');
   });
 
   it('сервер вернул ok=false с error → показывает alert с error', async () => {
