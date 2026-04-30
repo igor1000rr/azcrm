@@ -12,6 +12,8 @@
     "typecheck":        "tsc --noEmit",
     "db:push":          "prisma db push",
     "db:migrate":       "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:baseline":      "mkdir -p prisma/migrations/0_init && prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/0_init/migration.sql && echo '✓ baseline сгенерирован: prisma/migrations/0_init/migration.sql'",
     "db:seed":          "tsx prisma/seed.ts",
     "db:studio":        "prisma studio",
     "vapid":            "node scripts/generate-vapid.js",
