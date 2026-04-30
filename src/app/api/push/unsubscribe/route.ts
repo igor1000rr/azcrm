@@ -1,16 +1,22 @@
 // POST /api/push/unsubscribe
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
+import { parseBody } from '@/lib/api-validation';
+
+const UnsubscribeSchema = z.object({
+  endpoint: z.string().url().min(20).max(2048),
+});
 
 export async function POST(req: NextRequest) {
   try {
     const user = await requireUser();
-    const body = await req.json() as { endpoint: string };
-    if (!body.endpoint) return NextResponse.json({ error: 'endpoint required' }, { status: 400 });
+    const parsed = await parseBody(req, UnsubscribeSchema);
+    if (!parsed.ok) return parsed.response;
 
     await db.pushSubscription.deleteMany({
-      where: { endpoint: body.endpoint, userId: user.id },
+      where: { endpoint: parsed.data.endpoint, userId: user.id },
     });
     return NextResponse.json({ ok: true });
   } catch (e) {
