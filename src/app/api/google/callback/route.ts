@@ -8,10 +8,14 @@
 //      возврате callback'а привязать СВОЙ Google-аккаунт к чужому CRM-юзеру
 //      (после чего читать чужой Google Calendar, и т.д.).
 //      Защита: сессия должна совпадать с userId зашитым в state.
+//   3. access_token и refresh_token шифруются перед сохранением в БД
+//      (AES-256-GCM с ENCRYPTION_KEY из .env). При утечке БД токены
+//      без ключа бесполезны.
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { exchangeCodeForTokens } from '@/lib/google';
 import { auth } from '@/lib/auth';
+import { encrypt, encryptNullable } from '@/lib/crypto';
 import { cookies } from 'next/headers';
 
 export async function GET(req: NextRequest) {
@@ -55,9 +59,13 @@ export async function GET(req: NextRequest) {
     await db.user.update({
       where: { id: userId },
       data: {
-        googleAccessToken:          tokens.access_token,
+        // Шифруем перед сохранением. encryptNullable вернёт undefined если
+        // refresh_token не пришёл (Google не выдаёт его при повторных connect'ах
+        // если access_type=offline + prompt=consent не указали) — это валидно
+        // для prisma и не перезатрёт существующее поле.
+        googleAccessToken:          encrypt(tokens.access_token),
         googleAccessTokenExpiresAt: expiresAt,
-        googleRefreshToken:         tokens.refresh_token ?? undefined,
+        googleRefreshToken:         encryptNullable(tokens.refresh_token),
         googleCalendarId:           'primary',
         googleConnectedAt:          new Date(),
       },
