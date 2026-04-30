@@ -28,6 +28,7 @@ AUTH_SECRET=$(openssl rand -hex 32)
 ONLYOFFICE_JWT_SECRET=$(openssl rand -hex 32)
 WHATSAPP_WORKER_TOKEN=$(openssl rand -hex 32)
 CRON_SECRET=$(openssl rand -hex 32)
+ENCRYPTION_KEY=$(openssl rand -hex 32)
 
 echo "==> apt update"
 apt-get update
@@ -105,6 +106,11 @@ AUTH_SECRET="$AUTH_SECRET"
 AUTH_URL="https://$APP_DOMAIN"
 APP_PUBLIC_URL="https://$APP_DOMAIN"
 
+# ----- ШИФРОВАНИЕ (AES-256-GCM для OAuth-токенов в БД) -----
+# КРИТИЧНО: после первой установки НЕ менять — иначе зашифрованные данные
+# становятся нечитаемыми, юзеры теряют связку с Google Calendar.
+ENCRYPTION_KEY="$ENCRYPTION_KEY"
+
 # ----- ONLYOFFICE -----
 ONLYOFFICE_PUBLIC_URL="https://$OO_DOMAIN"
 ONLYOFFICE_JWT_SECRET="$ONLYOFFICE_JWT_SECRET"
@@ -149,6 +155,15 @@ ENV
   chmod 600 "$ENV_FILE"
 else
   echo "==> $ENV_FILE уже существует — НЕ трогаю."
+  # ВАЖНО: для уже-установленных VPS нужно вручную добавить ENCRYPTION_KEY
+  # (если его там ещё нет) — иначе после деплоя crypto.ts упадёт.
+  if ! grep -q "^ENCRYPTION_KEY=" "$ENV_FILE"; then
+    echo "==> ВНИМАНИЕ: ENCRYPTION_KEY не найден в $ENV_FILE — добавляю свежесгенерированный"
+    echo "" >> "$ENV_FILE"
+    echo "# ----- ШИФРОВАНИЕ (AES-256-GCM для OAuth-токенов в БД) -----" >> "$ENV_FILE"
+    echo "# КРИТИЧНО: после установки НЕ менять — иначе зашифрованные данные нечитаемы" >> "$ENV_FILE"
+    echo "ENCRYPTION_KEY=\"$ENCRYPTION_KEY\"" >> "$ENV_FILE"
+  fi
 fi
 
 echo "==> nginx-конфиг для CRM (HTTPS через certbot после)"
