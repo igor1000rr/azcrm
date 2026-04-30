@@ -1,25 +1,38 @@
 'use client';
 
-// Inbox — три колонки: каналы / треды / переписка
+// Inbox — три колонки: каналы / треды / переписка.
+// Поддерживает WhatsApp, Telegram, Viber, Facebook Messenger, Instagram Direct.
+// Иконка канала с цветом — рядом с каждым тредом и в шапке чата.
+// Отправка идёт на универсальный POST /api/messages/thread-send,
+// который сам определяет kind из thread.channel.
+
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Send, Paperclip, Search, MessageSquare,
   ChevronLeft, FileText, Sparkles, Volume2, VolumeX,
+  Smartphone, MessageCircle, Facebook, Instagram,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Modal } from '@/components/ui/modal';
 import { cn, formatTime, formatPhone, formatDate } from '@/lib/utils';
 import { NOTIFY_SOUND_DATA_URL } from './notify-sound';
 
+type ChannelKindStr = 'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM';
+
 interface AccountLite {
-  id: string; label: string; phoneNumber: string;
-  isConnected: boolean; ownerId: string | null;
+  kind:        ChannelKindStr;
+  id:          string;
+  label:       string;
+  subtitle:    string;
+  isConnected: boolean;
+  ownerId:     string | null;
 }
 
 interface ThreadLite {
   id: string;
+  kind: ChannelKindStr;
   clientName: string;
   clientPhone: string;
   lastMessageAt: string | null;
@@ -50,9 +63,20 @@ interface InboxViewProps {
   activeThreadId: string | null;
   activeMessages: MessageLite[];
   activeThread: {
-    id: string; accountId: string; clientId: string | null;
+    id: string; kind: ChannelKindStr; clientId: string | null;
     clientName: string; clientPhone: string; leadId: string | null;
   } | null;
+}
+
+/** Цветная иконка канала — единый стиль во всём inbox. */
+function ChannelIcon({ kind, size = 11 }: { kind: ChannelKindStr; size?: number }) {
+  switch (kind) {
+    case 'WHATSAPP':  return <Smartphone size={size} style={{ color: '#25D366' }} />;
+    case 'TELEGRAM':  return <Send size={size} style={{ color: '#229ED9' }} />;
+    case 'VIBER':     return <MessageCircle size={size} style={{ color: '#7360F2' }} />;
+    case 'MESSENGER': return <Facebook size={size} style={{ color: '#1877F2' }} />;
+    case 'INSTAGRAM': return <Instagram size={size} style={{ color: '#E4405F' }} />;
+  }
 }
 
 export function InboxView({
@@ -60,12 +84,7 @@ export function InboxView({
 }: InboxViewProps) {
   const router = useRouter();
 
-  // Звук уведомлений при новом входящем. Состояние mute сохраняется в
-  // localStorage, кнопка mute — в шапке "Каналы". Детект "нового": запоминаем
-  // суммарный unreadCount всех тредов на прошлом рендере; если стало больше —
-  // звякнули. Так ловим новое сообщение в любом треде, не только в активном.
-  // На iOS Safari Audio.play() требует gesture — кнопка-toggle и есть тот gesture,
-  // после первого тапа браузер разрешает воспроизведение.
+  // Звук уведомлений (см. оригинальный комментарий)
   const [muted, setMuted] = useState<boolean>(false);
   const prevUnreadTotalRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -82,10 +101,10 @@ export function InboxView({
     const total = threads.reduce((s, t) => s + t.unreadCount, 0);
     const prev = prevUnreadTotalRef.current;
     prevUnreadTotalRef.current = total;
-    if (prev === null) return; // первый рендер — не пикаем
+    if (prev === null) return;
     if (total > prev && !muted && audioRef.current) {
       audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(() => { /* нет gesture-разрешения — молча */ });
+      audioRef.current.play().catch(() => {});
     }
   }, [threads, muted]);
 
@@ -93,8 +112,6 @@ export function InboxView({
     setMuted((m) => {
       const next = !m;
       try { localStorage.setItem('inbox.muted', next ? '1' : '0'); } catch {}
-      // Прогрев на iOS: если разрешения ещё нет — этот тап даст его, и
-      // следующий play() в useEffect выше сработает уже без блокировок.
       if (!next && audioRef.current) {
         audioRef.current.play().then(() => {
           audioRef.current?.pause();
@@ -105,75 +122,40 @@ export function InboxView({
     });
   }
 
-  // Авто-обновление: раз в 5 секунд тихо перезапрашиваем server-state
-  // через router.refresh() — это RSC-friendly, без full page reload.
-  // Когда вкладка не в фокусе — пауза (Page Visibility API), чтобы не
-  // долбить сервер открытыми вкладками. При возврате фокуса — мгновенный
-  // refresh + возобновление интервала.
+  // Авто-обновление каждые 5 сек когда вкладка в фокусе
   useEffect(() => {
     let intervalId: ReturnType<typeof setInterval> | null = null;
-
     const start = () => {
       if (intervalId) return;
       intervalId = setInterval(() => {
-        if (document.visibilityState === 'visible') {
-          router.refresh();
-        }
+        if (document.visibilityState === 'visible') router.refresh();
       }, 5000);
     };
-
-    const stop = () => {
-      if (intervalId) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-    };
-
+    const stop = () => { if (intervalId) { clearInterval(intervalId); intervalId = null; } };
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        router.refresh(); // мгновенный апдейт при возврате во вкладку
-        start();
-      } else {
-        stop();
-      }
+      if (document.visibilityState === 'visible') { router.refresh(); start(); }
+      else stop();
     };
-
     if (document.visibilityState === 'visible') start();
     document.addEventListener('visibilitychange', onVisibility);
-
-    return () => {
-      stop();
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
   }, [router]);
 
   return (
-    // position:fixed жёстко привязывает корень inbox-view к видимой области
-    // viewport, без зависимости от body-скролла и от viewport units (svh/dvh
-    // на iPad Safari при viewportFit:cover ведут себя непредсказуемо).
-    //   top:52px  — под Topbar (sticky 52px высотой)
-    //   left:0    — на mobile, md:left-[232px] — за Sidebar (232px на md+)
-    //   right:0, bottom:0 — до правого/нижнего края экрана
-    // Composer внутри (sticky bottom-0) всегда виден ровно над home indicator.
     <div className="fixed top-[52px] left-0 md:left-[232px] right-0 bottom-0 flex min-h-0 overflow-hidden bg-bg z-30">
       {/* Левая колонка — каналы */}
       <div className="w-56 border-r border-line bg-paper hidden lg:flex flex-col shrink-0 min-h-0">
         <div className="px-4 py-3 border-b border-line flex items-center justify-between gap-2">
-          {/* Заголовок "КАНАЛЫ" — navy брендовый */}
-          <h2 className="text-[11px] font-bold uppercase tracking-[0.06em] text-navy">
-            Каналы
-          </h2>
+          <h2 className="text-[11px] font-bold uppercase tracking-[0.06em] text-navy">Каналы</h2>
           <button
             type="button"
             onClick={toggleMute}
             className={cn(
               'w-7 h-7 rounded-md grid place-items-center transition-colors shrink-0',
-              muted
-                ? 'text-ink-4 hover:text-navy hover:bg-navy/[0.04]'
-                : 'text-success hover:bg-success/10',
+              muted ? 'text-ink-4 hover:text-navy hover:bg-navy/[0.04]' : 'text-success hover:bg-success/10',
             )}
-            title={muted ? 'Звук выключен — нажмите чтобы включить' : 'Звук включён — нажмите чтобы выключить'}
-            aria-label={muted ? 'Включить звук уведомлений' : 'Выключить звук уведомлений'}
+            title={muted ? 'Звук выключен' : 'Звук включён'}
+            aria-label={muted ? 'Включить звук' : 'Выключить звук'}
           >
             {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
           </button>
@@ -184,7 +166,6 @@ export function InboxView({
             href="/inbox"
             className={cn(
               'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px] transition-colors',
-              // "Все" активно когда channel-параметра нет
               activeChannelId === null
                 ? 'bg-navy text-white font-semibold'
                 : 'hover:bg-navy/[0.04] hover:text-navy',
@@ -193,6 +174,7 @@ export function InboxView({
             <MessageSquare size={13} className={activeChannelId === null ? 'text-white' : 'text-ink-3'} />
             <span className="flex-1">Все</span>
           </Link>
+
           {accounts.map((a) => {
             const isActive = activeChannelId === a.id;
             return (
@@ -201,11 +183,10 @@ export function InboxView({
                 href={`/inbox?channel=${a.id}`}
                 className={cn(
                   'flex items-center gap-2 px-3 py-2 rounded-md text-[12.5px] transition-colors',
-                  isActive
-                    ? 'bg-navy text-white font-semibold'
-                    : 'hover:bg-navy/[0.04] hover:text-navy',
+                  isActive ? 'bg-navy text-white font-semibold' : 'hover:bg-navy/[0.04] hover:text-navy',
                 )}
               >
+                <ChannelIcon kind={a.kind} size={12} />
                 <span className={cn(
                   'w-1.5 h-1.5 rounded-full shrink-0',
                   a.isConnected ? 'bg-success' : 'bg-ink-5',
@@ -215,16 +196,13 @@ export function InboxView({
                   <div className={cn(
                     'text-[10.5px] font-mono truncate',
                     isActive ? 'text-white/70' : 'text-ink-4',
-                  )}>{a.phoneNumber}</div>
+                  )}>{a.subtitle}</div>
                 </div>
               </Link>
             );
           })}
 
-          <Link
-            href="/settings/channels"
-            className="block mt-3 px-3 py-2 text-[11.5px] text-info hover:underline"
-          >
+          <Link href="/settings/channels" className="block mt-3 px-3 py-2 text-[11.5px] text-info hover:underline">
             Управление каналами →
           </Link>
         </div>
@@ -249,9 +227,7 @@ export function InboxView({
 
         <div className="flex-1 overflow-y-auto thin-scroll min-h-0">
           {threads.length === 0 ? (
-            <div className="text-center p-8 text-[13px] text-ink-4">
-              Переписок пока нет
-            </div>
+            <div className="text-center p-8 text-[13px] text-ink-4">Переписок пока нет</div>
           ) : (
             threads.map((t) => (
               <Link
@@ -259,7 +235,6 @@ export function InboxView({
                 href={`/inbox?thread=${t.id}`}
                 className={cn(
                   'flex gap-2.5 px-3 py-2.5 border-b border-line-2 transition-colors',
-                  // Активный тред — лёгкий navy фон + navy левый бордер
                   activeThreadId === t.id
                     ? 'bg-navy/[0.06] border-l-[3px] border-l-navy pl-[9px]'
                     : 'hover:bg-navy/[0.02]',
@@ -269,13 +244,12 @@ export function InboxView({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline justify-between gap-2 mb-0.5">
                     <span className={cn(
-                      'text-[13px] truncate',
+                      'text-[13px] truncate flex items-center gap-1.5',
                       t.unreadCount > 0
                         ? 'font-bold text-navy'
-                        : activeThreadId === t.id
-                          ? 'font-bold text-navy'
-                          : 'font-semibold text-ink-2',
+                        : activeThreadId === t.id ? 'font-bold text-navy' : 'font-semibold text-ink-2',
                     )}>
+                      <ChannelIcon kind={t.kind} size={11} />
                       {t.clientName}
                     </span>
                     {t.lastMessageAt && (
@@ -334,10 +308,7 @@ export function InboxView({
             </div>
           </div>
         ) : (
-          <ChatPane
-            thread={activeThread}
-            messages={activeMessages}
-          />
+          <ChatPane thread={activeThread} messages={activeMessages} />
         )}
       </div>
     </div>
@@ -356,7 +327,6 @@ function ChatPane({
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Авто-скролл вниз при новых сообщениях
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [messages.length]);
@@ -366,13 +336,13 @@ function ChatPane({
     if (!body.trim() || sending) return;
     setSending(true);
     try {
-      const res = await fetch('/api/whatsapp/send', {
+      // Универсальный endpoint — kind определяется из thread.channel в БД
+      const res = await fetch('/api/messages/thread-send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          accountId: thread.accountId,
-          threadId:  thread.id,
-          body:      body.trim(),
+          threadId: thread.id,
+          body:     body.trim(),
         }),
       });
       const data = await res.json();
@@ -414,9 +384,12 @@ function ChatPane({
     else grouped.push({ date: day, items: [m] });
   }
 
+  // Для не-WhatsApp каналов phone может быть пустой (используется externalId)
+  const showPhone = thread.kind === 'WHATSAPP' && thread.clientPhone;
+
   return (
     <>
-      {/* Шапка чата — имя клиента navy брендовый */}
+      {/* Шапка чата */}
       <div className="bg-paper border-b border-line h-12 flex items-center gap-3 px-3 shrink-0">
         <Link
           href="/inbox"
@@ -426,9 +399,12 @@ function ChatPane({
         </Link>
         <Avatar name={thread.clientName} size="sm" />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-bold text-navy truncate">{thread.clientName}</div>
+          <div className="text-[13px] font-bold text-navy truncate flex items-center gap-1.5">
+            <ChannelIcon kind={thread.kind} size={11} />
+            {thread.clientName}
+          </div>
           <div className="text-[11px] text-ink-4 font-mono">
-            {formatPhone(thread.clientPhone)}
+            {showPhone ? formatPhone(thread.clientPhone) : channelLabel(thread.kind)}
           </div>
         </div>
         {thread.leadId && (
@@ -438,12 +414,10 @@ function ChatPane({
         )}
       </div>
 
-      {/* Сообщения — flex-1 + min-h-0, чтобы скроллились внутри а не выпихивали форму вниз */}
+      {/* Сообщения */}
       <div className="flex-1 overflow-y-auto thin-scroll px-3 py-3 min-h-0">
         {grouped.length === 0 ? (
-          <div className="text-center text-[13px] text-ink-4 py-12">
-            Сообщений пока нет
-          </div>
+          <div className="text-center text-[13px] text-ink-4 py-12">Сообщений пока нет</div>
         ) : (
           grouped.map((g) => (
             <div key={g.date}>
@@ -461,8 +435,7 @@ function ChatPane({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Композер — shrink-0 + sticky bottom-0 как страховка если родитель плывёт.
-          pb-[env(safe-area-inset-bottom)] — отступ под home indicator на iPhone/iPad. */}
+      {/* Композер */}
       <form onSubmit={send} className="bg-paper border-t border-line px-3 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] shrink-0 sticky bottom-0 z-10">
         <div className="flex items-end gap-2">
           <button
@@ -519,6 +492,16 @@ function ChatPane({
   );
 }
 
+function channelLabel(kind: ChannelKindStr): string {
+  return ({
+    WHATSAPP:  'WhatsApp',
+    TELEGRAM:  'Telegram',
+    VIBER:     'Viber',
+    MESSENGER: 'Messenger',
+    INSTAGRAM: 'Instagram',
+  })[kind];
+}
+
 function TemplatesModal({
   onClose, onPick,
 }: {
@@ -537,7 +520,6 @@ function TemplatesModal({
       .finally(() => setLoading(false));
   }, []);
 
-  // Группируем по категории
   const grouped: Record<string, typeof templates> = {};
   for (const t of templates) {
     const cat = t.category || 'Прочее';
@@ -599,7 +581,7 @@ function MessageBubble({ m }: { m: MessageLite }) {
           : 'bg-paper border border-line text-ink rounded-bl-sm',
       )}>
         {m.type === 'IMAGE' && m.mediaUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
+          /* eslint-disable-next-line @next/next/no-img-element */
           <img src={m.mediaUrl} alt="" className="rounded mb-1 max-w-full" />
         )}
         {m.type === 'DOCUMENT' && m.mediaUrl && (
