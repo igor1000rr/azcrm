@@ -59,11 +59,6 @@ describe('flagsToSet', () => {
 });
 
 // ---------------- Integration: checkExpiringDocuments ----------------
-//
-// vi.mock хойстится в самый верх файла перед всеми import'ами. Поэтому
-// обычные const'ы определённые ниже ещё не существуют в момент вызова
-// factory. Для общих моков используем vi.hoisted — он тоже хойстится
-// и даёт стабильные ссылки.
 
 const mocks = vi.hoisted(() => ({
   db: {
@@ -86,21 +81,27 @@ function daysFromNow(d: number): Date {
   return new Date(NOW.getTime() + d * 86_400_000);
 }
 
-function mkClient(over: Partial<{
-  id:                       string;
-  fullName:                 string;
-  legalStayUntil:           Date | null;
-  passportExpiresAt:        Date | null;
-  legalStayReminder90Sent:  boolean;
-  legalStayReminder30Sent:  boolean;
-  legalStayReminder14Sent:  boolean;
-  passportReminder90Sent:   boolean;
-  passportReminder30Sent:   boolean;
-  passportReminder14Sent:   boolean;
-  legalManagerId:           string | null;
-  salesManagerId:           string | null;
-  leadId:                   string;
-}>) {
+interface OverProps {
+  id?:                       string;
+  fullName?:                 string;
+  legalStayUntil?:           Date | null;
+  passportExpiresAt?:        Date | null;
+  legalStayReminder90Sent?:  boolean;
+  legalStayReminder30Sent?:  boolean;
+  legalStayReminder14Sent?:  boolean;
+  passportReminder90Sent?:   boolean;
+  passportReminder30Sent?:   boolean;
+  passportReminder14Sent?:   boolean;
+  legalManagerId?:           string | null;
+  salesManagerId?:           string | null;
+  leadId?:                   string;
+}
+
+function mkClient(over: OverProps = {}) {
+  // Различаем «не передано» (undefined) и «явный null».
+  // `over.legalManagerId ?? 'mgr-legal'` тут НЕЛЬЗЯ — оператор ?? возвращает
+  // правую часть и для undefined, и для null. А тест «оба менеджера null»
+  // должен передавать именно null чтобы проверить ветку «нет менеджера».
   return {
     id:                      over.id ?? 'cl-1',
     fullName:                over.fullName ?? 'Иван Петров',
@@ -114,8 +115,8 @@ function mkClient(over: Partial<{
     passportReminder14Sent:  over.passportReminder14Sent  ?? false,
     leads: [{
       id:             over.leadId ?? 'lead-1',
-      legalManagerId: over.legalManagerId ?? 'mgr-legal',
-      salesManagerId: over.salesManagerId ?? 'mgr-sales',
+      legalManagerId: 'legalManagerId' in over ? over.legalManagerId! : 'mgr-legal',
+      salesManagerId: 'salesManagerId' in over ? over.salesManagerId! : 'mgr-sales',
     }],
   };
 }
@@ -245,11 +246,9 @@ describe('checkExpiringDocuments', () => {
 
     expect(r.sent).toBe(2);
     expect(mocks.notify).toHaveBeenCalledTimes(2);
-    // legalStay (80 дней) → 90-day
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining('легальный побыт'),
     }));
-    // passport (20 дней) → 30-day
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining('паспорт'),
     }));
