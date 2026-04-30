@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { LogoutButton } from './logout-button';
 import { PushSubscriptionButton } from '@/components/push-subscription-button';
+import { TwoFactorSection } from './two-factor/two-factor-section';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +17,7 @@ export default async function ProfilePage() {
     select: {
       id: true, email: true, name: true, role: true, phone: true,
       lastSeenAt: true, createdAt: true, googleConnectedAt: true,
+      twoFactorEnabled: true,
     },
   });
 
@@ -52,6 +54,8 @@ export default async function ProfilePage() {
                 : <a href="/api/google/auth" className="text-info hover:underline font-medium">Подключить</a>}
             </Field>
           </div>
+
+          <TwoFactorSection enabled={fullUser.twoFactorEnabled} />
 
           <div className="mt-6 pt-5 border-t border-line">
             <h3 className="text-[12px] font-bold uppercase tracking-[0.05em] text-ink-2 mb-3">

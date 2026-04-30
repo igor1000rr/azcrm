@@ -4,6 +4,7 @@ import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { db } from './db';
 import { checkRateLimit, resetRateLimit } from './rate-limit';
+import { verifyTotp, findBackupCodeMatch, isLikelyTotpCode } from './two-factor';
 import type { UserRole } from '@prisma/client';
 
 declare module 'next-auth' {
@@ -22,8 +23,9 @@ declare module 'next-auth' {
   }
 }
 
-// Лимит попыток логина: 10 за 15 минут на email. Достаточно для опечаток
-// и одновременно отбивает brute-force.
+// Лимит попыток логина: 10 за 15 минут на email. Защищает И от brute-force
+// пароля, И от перебора TOTP-кодов (всего 10^6 = миллион вариантов, при
+// 10 попытках в 15 мин подбор займёт миллионы лет).
 const LOGIN_MAX        = 10;
 const LOGIN_WINDOW_MS  = 15 * 60 * 1000;
 
@@ -36,10 +38,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       credentials: {
         email:    { label: 'Email',  type: 'email' },
         password: { label: 'Пароль', type: 'password' },
+        // 2FA: TOTP-код или backup-код (XXXX-XXXX). Передаётся только
+        // на втором шаге логина после precheckLogin().
+        totp:     { label: 'Код 2FA', type: 'text' },
       },
       async authorize(credentials) {
         const email    = String(credentials?.email ?? '').toLowerCase().trim();
         const password = String(credentials?.password ?? '');
+        const totp     = String(credentials?.totp ?? '').trim();
         if (!email || !password) return null;
 
         const rlKey = `login:${email}`;
@@ -54,6 +60,40 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) return null;
+
+        // ============ 2FA проверка ============
+        // Если у юзера активирована 2FA, требуем валидный TOTP или backup-код.
+        // Без них return null = ошибка signIn — фронт должен ДО этого сделать
+        // precheckLogin() и узнать что нужен код, чтобы показать второй шаг.
+        if (user.twoFactorEnabled && user.totpSecret) {
+          if (!totp) {
+            // Это страховка на случай если фронт не сделал precheck — без totp
+            // не пускаем. На UI это покажется как «Неверные данные», поэтому
+            // важно чтобы фронт правильно вызывал precheckLogin().
+            return null;
+          }
+
+          let twoFaOk = false;
+          if (isLikelyTotpCode(totp)) {
+            // 6 цифр — стандартный TOTP
+            twoFaOk = verifyTotp(user.totpSecret, totp);
+          } else {
+            // Иначе пробуем как backup-код (XXXX-XXXX)
+            const codes = (user.twoFactorBackupCodes ?? []) as string[];
+            const matchIdx = await findBackupCodeMatch(codes, totp);
+            if (matchIdx >= 0) {
+              twoFaOk = true;
+              // Удаляем использованный backup-код — они одноразовые
+              const remaining = codes.filter((_, i) => i !== matchIdx);
+              await db.user.update({
+                where: { id: user.id },
+                data:  { twoFactorBackupCodes: remaining },
+              });
+            }
+          }
+
+          if (!twoFaOk) return null;
+        }
 
         resetRateLimit(rlKey);
 
