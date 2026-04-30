@@ -6,7 +6,7 @@
   "scripts": {
     "dev":              "next dev",
     "build":            "prisma generate && next build",
-    "postbuild":        "rm -rf .next/standalone/public .next/standalone/.next/static && cp -r public .next/standalone/ && cp -r .next/static .next/standalone/.next/",
+    "postbuild":        "rm -rf .next/standalone/public .next/standalone/.next/static && cp -r public .next/standalone/ && cp -r .next/static .next/standalone/.next/ && (test -e .env && ln -sf $(pwd)/.env .next/standalone/.env || true)",
     "start":            "node .next/standalone/server.js",
     "lint":             "next lint",
     "typecheck":        "tsc --noEmit",
