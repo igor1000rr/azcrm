@@ -1,7 +1,7 @@
 // Unit + Integration: lib/call-analysis
 // Anna идея №12 — транскрипция + sentiment-анализ звонков.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Подменяем env ДО импорта модуля (он читает их на верхнем уровне).
 // Без этого helper сразу пометит SKIPPED по причине "ENV не заданы".
@@ -104,8 +104,7 @@ describe('parseAnalysisResponse', () => {
 // ============================================================
 //
 // vi.mock хойстится в самый верх файла, поэтому обычные const'ы выше
-// факториек ещё не существуют. Используем vi.hoisted чтобы получить
-// стабильные ссылки на моки.
+// факториек ещё не существуют. Используем vi.hoisted.
 
 const mocks = vi.hoisted(() => ({
   db: {
@@ -118,19 +117,29 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
 }));
 
-vi.mock('@/lib/db',     () => ({ db:     mocks.db }));
+vi.mock('@/lib/db',     () => ({ db: mocks.db }));
 vi.mock('@/lib/notify', () => ({ notify: mocks.notify }));
 
 const { processCall, processPendingCalls } = await import('@/lib/call-analysis');
 
+// Сохраняем оригинальный fetch чтобы корректно восстанавливать после каждого теста.
+const originalFetch = globalThis.fetch;
+
 beforeEach(() => {
+  // ВАЖНО: НЕ вызываем vi.restoreAllMocks() — это сбросит mockResolvedValue
+  // на db.update обратно к undefined (т.к. сами hoisted-моки тоже vi.fn).
+  // Используем явный mockReset + повторное mockResolvedValue.
   mocks.db.call.findUnique.mockReset();
   mocks.db.call.update.mockReset();
   mocks.db.call.findMany.mockReset();
   mocks.notify.mockReset();
   mocks.db.call.update.mockResolvedValue({});
   mocks.notify.mockResolvedValue(undefined);
-  vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  // Восстанавливаем оригинальный fetch т.к. в тестах подменяли через globalThis.fetch = vi.fn()
+  globalThis.fetch = originalFetch;
 });
 
 const fullCall = {
@@ -147,24 +156,29 @@ const fullCall = {
   },
 };
 
+/** Подменяет globalThis.fetch на функцию которая по очереди возвращает:
+ *  1) ответ с аудио-байтами (download recordLocalUrl)
+ *  2) ответ с текстом транскрипции (Whisper)
+ *  3) ответ с JSON в OpenAI-формате choices[0].message.content (LLM) */
 function mockFetchOk(transcriptText: string, llmJson: Record<string, unknown>) {
   let call = 0;
-  vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
+  globalThis.fetch = vi.fn(async () => {
     call++;
     if (call === 1) {
-      // download audio
       return new Response(new ArrayBuffer(1024), { status: 200 });
     }
     if (call === 2) {
-      // whisper
       return new Response(transcriptText, { status: 200 });
     }
-    // llm
     return new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify(llmJson) } }],
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-  }) as typeof fetch);
+  }) as typeof fetch;
 }
+
+// Транскрипция должна быть >= 10 символов чтобы пройти проверку «пустая транскрипция».
+// Для всех успешных кейсов используем подходящий по длине текст.
+const LONG_TRANSCRIPT = 'Здравствуйте, это разговор клиента и менеджера длиной более 10 символов.';
 
 describe('processCall', () => {
   it('не найден → FAILED', async () => {
@@ -204,7 +218,7 @@ describe('processCall', () => {
 
   it('успех POSITIVE → DONE + сохраняет все поля + notify НЕ вызывается', async () => {
     mocks.db.call.findUnique.mockResolvedValue(fullCall);
-    mockFetchOk('Здравствуйте, спасибо большое за консультацию!', {
+    mockFetchOk(LONG_TRANSCRIPT, {
       sentiment: 'POSITIVE', sentimentScore: 0.8,
       summary: 'Клиент благодарит',  tags: ['благодарность'],
     });
@@ -233,7 +247,7 @@ describe('processCall', () => {
 
   it('успех NEGATIVE → notify руководителю с правильным userId (legal приоритет)', async () => {
     mocks.db.call.findUnique.mockResolvedValue(fullCall);
-    mockFetchOk('Это безобразие! Уже месяц жду!', {
+    mockFetchOk(LONG_TRANSCRIPT, {
       sentiment: 'NEGATIVE', sentimentScore: -0.8,
       summary: 'Клиент возмущён сроками', tags: ['жалоба-сроки'],
     });
@@ -242,7 +256,7 @@ describe('processCall', () => {
 
     expect(mocks.notify).toHaveBeenCalledTimes(1);
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 'mgr-legal',                    // legal приоритет, не sales
+      userId: 'mgr-legal',
       kind:   'NEGATIVE_CALL_ALERT',
       title:  expect.stringContaining('Иван Петров'),
       body:   'Клиент возмущён сроками',
@@ -255,8 +269,8 @@ describe('processCall', () => {
       ...fullCall,
       lead: { ...fullCall.lead, legalManagerId: null },
     });
-    mockFetchOk('плохо', {
-      sentiment: 'NEGATIVE', sentimentScore: -0.6, summary: 'x', tags: [],
+    mockFetchOk(LONG_TRANSCRIPT, {
+      sentiment: 'NEGATIVE', sentimentScore: -0.6, summary: 'недоволен', tags: [],
     });
 
     await processCall('call-1');
@@ -270,8 +284,8 @@ describe('processCall', () => {
     mocks.db.call.findUnique.mockResolvedValue({
       ...fullCall, lead: null, managerId: 'mgr-call-direct',
     });
-    mockFetchOk('плохо', {
-      sentiment: 'NEGATIVE', sentimentScore: -0.6, summary: 'x', tags: [],
+    mockFetchOk(LONG_TRANSCRIPT, {
+      sentiment: 'NEGATIVE', sentimentScore: -0.6, summary: 'недоволен', tags: [],
     });
 
     await processCall('call-1');
@@ -284,8 +298,8 @@ describe('processCall', () => {
     mocks.db.call.findUnique.mockResolvedValue({
       ...fullCall, lead: null, managerId: null,
     });
-    mockFetchOk('плохо', {
-      sentiment: 'NEGATIVE', sentimentScore: -0.6, summary: 'x', tags: [],
+    mockFetchOk(LONG_TRANSCRIPT, {
+      sentiment: 'NEGATIVE', sentimentScore: -0.6, summary: 'недоволен', tags: [],
     });
 
     expect(await processCall('call-1')).toBe('DONE');
@@ -295,11 +309,11 @@ describe('processCall', () => {
   it('пустая транскрипция → SKIPPED, LLM не вызывается', async () => {
     mocks.db.call.findUnique.mockResolvedValue(fullCall);
     let fetchCount = 0;
-    vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
+    globalThis.fetch = vi.fn(async () => {
       fetchCount++;
       if (fetchCount === 1) return new Response(new ArrayBuffer(100), { status: 200 });
       return new Response('', { status: 200 });   // whisper вернул пусто
-    }) as typeof fetch);
+    }) as typeof fetch;
 
     expect(await processCall('call-1')).toBe('SKIPPED');
     expect(fetchCount).toBe(2);                    // LLM (3-й) не вызван
@@ -315,11 +329,11 @@ describe('processCall', () => {
   it('Whisper 401 → FAILED + transcriptError содержит код', async () => {
     mocks.db.call.findUnique.mockResolvedValue(fullCall);
     let fetchCount = 0;
-    vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
+    globalThis.fetch = vi.fn(async () => {
       fetchCount++;
       if (fetchCount === 1) return new Response(new ArrayBuffer(100), { status: 200 });
       return new Response('Unauthorized', { status: 401 });
-    }) as typeof fetch);
+    }) as typeof fetch;
 
     expect(await processCall('call-1')).toBe('FAILED');
     expect(mocks.db.call.update).toHaveBeenLastCalledWith({
@@ -334,14 +348,14 @@ describe('processCall', () => {
   it('LLM вернул мусор → FAILED', async () => {
     mocks.db.call.findUnique.mockResolvedValue(fullCall);
     let fetchCount = 0;
-    vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
+    globalThis.fetch = vi.fn(async () => {
       fetchCount++;
       if (fetchCount === 1) return new Response(new ArrayBuffer(100), { status: 200 });
-      if (fetchCount === 2) return new Response('Текст транскрипции достаточно длинный для прохождения', { status: 200 });
+      if (fetchCount === 2) return new Response(LONG_TRANSCRIPT, { status: 200 });
       return new Response(JSON.stringify({
         choices: [{ message: { content: 'это вообще не json' } }],
       }), { status: 200 });
-    }) as typeof fetch);
+    }) as typeof fetch;
 
     expect(await processCall('call-1')).toBe('FAILED');
     expect(mocks.db.call.update).toHaveBeenLastCalledWith({
@@ -357,12 +371,11 @@ describe('processCall', () => {
       if (args.data.transcriptStatus) order.push(`update:${args.data.transcriptStatus}`);
       return {};
     });
-    vi.spyOn(globalThis, 'fetch').mockImplementation((async () => {
+    globalThis.fetch = vi.fn(async () => {
       order.push('fetch');
       return new Response('text', { status: 200 });
-    }) as typeof fetch);
-    // Заставим LLM упасть чтобы не идти дальше — нам важен порядок update до fetch.
-    // На самом деле всё равно дойдёт до FAILED, проверим первые два события.
+    }) as typeof fetch;
+    // Дойдёт до FAILED (LLM ничего вменяемого не вернёт), но нам важен порядок.
     await processCall('call-1');
     expect(order[0]).toBe('update:PROCESSING');
     expect(order[1]).toBe('fetch');
@@ -393,15 +406,27 @@ describe('processPendingCalls', () => {
       .mockResolvedValueOnce({ ...fullCall, id: 'b' })
       .mockResolvedValueOnce({ ...fullCall, id: 'c' });
 
-    let cFetchCount = 0;
-    vi.spyOn(globalThis, 'fetch').mockImplementation((async (input: RequestInfo | URL) => {
-      cFetchCount++;
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+    // Считаем количество fetch'ей внутри обработки звонка b и c.
+    // Звонок a даже не дойдёт до fetch (SKIPPED раньше).
+    // b: 3 fetch (audio, whisper-ok, llm-ok)
+    // c: 2 fetch (audio, whisper-fail-500)
+    let n = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      n++;
+      const url = typeof input === 'string' ? input
+                : input instanceof URL ? input.href
+                : (input as Request).url;
 
-      // Для b — успешный pipeline
-      if (cFetchCount <= 3) {
-        if (url.includes('files/wa-media')) return new Response(new ArrayBuffer(100), { status: 200 });
-        if (url.includes('audio/transcriptions')) return new Response('Достаточно длинный текст разговора', { status: 200 });
+      // Аудио — всегда успешно
+      if (url.includes('files/wa-media')) {
+        return new Response(new ArrayBuffer(100), { status: 200 });
+      }
+
+      // b — fetch №2 (whisper) и №3 (llm)
+      if (n <= 3) {
+        if (url.includes('audio/transcriptions')) {
+          return new Response(LONG_TRANSCRIPT, { status: 200 });
+        }
         return new Response(JSON.stringify({
           choices: [{ message: { content: JSON.stringify({
             sentiment: 'NEUTRAL', sentimentScore: 0, summary: 'ok', tags: [],
@@ -409,10 +434,9 @@ describe('processPendingCalls', () => {
         }), { status: 200 });
       }
 
-      // Для c — Whisper падает
-      if (url.includes('files/wa-media')) return new Response(new ArrayBuffer(100), { status: 200 });
+      // c — Whisper падает с 500
       return new Response('server error', { status: 500 });
-    }) as typeof fetch);
+    }) as typeof fetch;
 
     const r = await processPendingCalls(10);
 
