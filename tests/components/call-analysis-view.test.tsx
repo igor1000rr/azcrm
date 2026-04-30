@@ -48,13 +48,15 @@ describe('CallAnalysisView — рендер и бейдж', () => {
       config={{ ...BASE_CONFIG, whisperApiKey: 'k1', llmApiKey: 'k2' }}
       envFlags={NO_ENV_FLAGS}
     />);
-    expect(screen.getByText(/включено/)).toBeInTheDocument();
+    // Только бейдж содержит "включено" — у "выключено" другая логика
+    expect(screen.getByText(/● включено/)).toBeInTheDocument();
   });
 
   it('обе карточки заголовки + кнопки «Тест подключения»', () => {
     render(<CallAnalysisView config={BASE_CONFIG} envFlags={NO_ENV_FLAGS} />);
-    expect(screen.getByText(/Whisper API/)).toBeInTheDocument();
-    expect(screen.getByText(/LLM/)).toBeInTheDocument();
+    // Заголовки секций — точные подстроки чтобы не матчилось с "LLM API ключ" в hint'ах
+    expect(screen.getByText(/Whisper API — транскрипция/)).toBeInTheDocument();
+    expect(screen.getByText(/LLM — sentiment/)).toBeInTheDocument();
     const testBtns = screen.getAllByRole('button', { name: /Тест подключения/ });
     expect(testBtns).toHaveLength(2);
   });
