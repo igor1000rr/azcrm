@@ -128,13 +128,16 @@ export default async function LeadPage({ params }: PageProps) {
 
   const visibleAccountFilter = whatsappAccountFilter(user);
 
+  // ВАЖНО: orderBy lastMessageAt desc — самый свежий thread будет первым,
+  // используется ниже для определения какую переписку открыть кнопкой WhatsApp.
   const clientThreads = await db.chatThread.findMany({
     where: {
       clientId:        lead.clientId,
       channel:         'WHATSAPP',
       whatsappAccount: visibleAccountFilter,
     },
-    select: { id: true },
+    select: { id: true, whatsappAccountId: true, lastMessageAt: true },
+    orderBy: { lastMessageAt: 'desc' },
   });
   const threadIds = clientThreads.map((t) => t.id);
 
@@ -159,6 +162,40 @@ export default async function LeadPage({ params }: PageProps) {
     },
     orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],   // общие (ownerId=null) первыми
   });
+
+  // ============ КНОПКА «WhatsApp» В КАРТОЧКЕ ============
+  // Раньше слала /inbox?phone=...&account=... — но /inbox эти параметры
+  // игнорирует и открывал дефолтный (общий) канал. Igor: «выбивает в общий
+  // WhatsApp». Теперь резолвим конкретные thread+channel здесь:
+  //
+  //   1. Если у клиента есть переписка в одном из доступных каналов —
+  //      открываем самый свежий thread (по lastMessageAt).
+  //   2. Иначе выбираем приоритетный канал: канал откуда пришёл лид
+  //      (lead.whatsappAccountId) → личный канал sales-менеджера →
+  //      личный канал legal-менеджера → null.
+  //   3. Если и канала нет — просто /inbox.
+  const latestThread = clientThreads[0] ?? null;
+
+  function pickPreferredAccountId(): string | null {
+    if (lead.whatsappAccountId) return lead.whatsappAccountId;
+    if (lead.salesManagerId) {
+      const sm = availableChatAccounts.find((a) => a.ownerId === lead.salesManagerId);
+      if (sm) return sm.id;
+    }
+    if (lead.legalManagerId) {
+      const lm = availableChatAccounts.find((a) => a.ownerId === lead.legalManagerId);
+      if (lm) return lm.id;
+    }
+    return null;
+  }
+
+  let whatsappHref = '/inbox';
+  if (latestThread && latestThread.whatsappAccountId) {
+    whatsappHref = `/inbox?thread=${latestThread.id}&channel=${latestThread.whatsappAccountId}`;
+  } else {
+    const preferred = pickPreferredAccountId();
+    if (preferred) whatsappHref = `/inbox?channel=${preferred}`;
+  }
 
   // ============ ЗВОНКИ ПО ЛИДУ (Anna идея №12) ============
   // Последние 10 звонков для отображения в карточке. Полный список со
@@ -207,6 +244,8 @@ export default async function LeadPage({ params }: PageProps) {
           stageName:    lead.stage.name,
           source:       lead.source,
           attorney:     lead.attorney,
+          // Номер дела (Anna 30.04.2026) — необязательное поле в секции «Сделка»
+          caseNumber:   lead.caseNumber,
           serviceName:  lead.service?.name ?? null,
           employerName: lead.employerName,
           employerPhone: lead.employerPhone,
@@ -258,6 +297,7 @@ export default async function LeadPage({ params }: PageProps) {
         salesManager={lead.salesManager}
         legalManager={lead.legalManager}
         whatsappAccount={lead.whatsappAccount}
+        whatsappHref={whatsappHref}
         stages={allStages.map((s) => ({
           id: s.id, name: s.name, color: s.color, position: s.position,
           isFinal: s.isFinal, isLost: s.isLost,
