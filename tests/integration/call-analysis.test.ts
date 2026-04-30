@@ -3,13 +3,19 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Подменяем env ДО импорта модуля (он читает их на верхнем уровне).
-// Без этого helper сразу пометит SKIPPED по причине "ENV не заданы".
-process.env.WHISPER_API_KEY  = 'test-whisper-key';
-process.env.LLM_API_KEY      = 'test-llm-key';
-process.env.WHISPER_API_BASE = 'https://api.test/v1';
-process.env.LLM_API_BASE     = 'https://api.test/v1';
-process.env.LLM_MODEL        = 'test-model';
+// КРИТИЧНО: env устанавливаем через vi.hoisted, иначе ESM-импорты ниже
+// сработают РАНЬШЕ присваивания process.env.* (статические import statement
+// хойстятся в самый верх модуля). При первом импорте call-analysis.ts
+// читает константы const WHISPER_API_KEY = process.env.WHISPER_API_KEY,
+// и если env пустой → isCallAnalysisEnabled()=false → все processCall
+// возвращают SKIPPED вместо ожидаемого DONE.
+vi.hoisted(() => {
+  process.env.WHISPER_API_KEY  = 'test-whisper-key';
+  process.env.LLM_API_KEY      = 'test-llm-key';
+  process.env.WHISPER_API_BASE = 'https://api.test/v1';
+  process.env.LLM_API_BASE     = 'https://api.test/v1';
+  process.env.LLM_MODEL        = 'test-model';
+});
 
 // ============================================================
 // Unit: parseAnalysisResponse
@@ -128,7 +134,6 @@ const originalFetch = globalThis.fetch;
 beforeEach(() => {
   // ВАЖНО: НЕ вызываем vi.restoreAllMocks() — это сбросит mockResolvedValue
   // на db.update обратно к undefined (т.к. сами hoisted-моки тоже vi.fn).
-  // Используем явный mockReset + повторное mockResolvedValue.
   mocks.db.call.findUnique.mockReset();
   mocks.db.call.update.mockReset();
   mocks.db.call.findMany.mockReset();
@@ -138,7 +143,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Восстанавливаем оригинальный fetch т.к. в тестах подменяли через globalThis.fetch = vi.fn()
   globalThis.fetch = originalFetch;
 });
 
@@ -176,8 +180,6 @@ function mockFetchOk(transcriptText: string, llmJson: Record<string, unknown>) {
   }) as typeof fetch;
 }
 
-// Транскрипция должна быть >= 10 символов чтобы пройти проверку «пустая транскрипция».
-// Для всех успешных кейсов используем подходящий по длине текст.
 const LONG_TRANSCRIPT = 'Здравствуйте, это разговор клиента и менеджера длиной более 10 символов.';
 
 describe('processCall', () => {
@@ -225,7 +227,6 @@ describe('processCall', () => {
 
     expect(await processCall('call-1')).toBe('DONE');
 
-    // 2 update: PROCESSING → DONE
     expect(mocks.db.call.update).toHaveBeenCalledTimes(2);
     expect(mocks.db.call.update).toHaveBeenNthCalledWith(1, {
       where: { id: 'call-1' }, data: { transcriptStatus: 'PROCESSING' },
@@ -375,7 +376,6 @@ describe('processCall', () => {
       order.push('fetch');
       return new Response('text', { status: 200 });
     }) as typeof fetch;
-    // Дойдёт до FAILED (LLM ничего вменяемого не вернёт), но нам важен порядок.
     await processCall('call-1');
     expect(order[0]).toBe('update:PROCESSING');
     expect(order[1]).toBe('fetch');
@@ -406,10 +406,6 @@ describe('processPendingCalls', () => {
       .mockResolvedValueOnce({ ...fullCall, id: 'b' })
       .mockResolvedValueOnce({ ...fullCall, id: 'c' });
 
-    // Считаем количество fetch'ей внутри обработки звонка b и c.
-    // Звонок a даже не дойдёт до fetch (SKIPPED раньше).
-    // b: 3 fetch (audio, whisper-ok, llm-ok)
-    // c: 2 fetch (audio, whisper-fail-500)
     let n = 0;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       n++;
@@ -417,12 +413,10 @@ describe('processPendingCalls', () => {
                 : input instanceof URL ? input.href
                 : (input as Request).url;
 
-      // Аудио — всегда успешно
       if (url.includes('files/wa-media')) {
         return new Response(new ArrayBuffer(100), { status: 200 });
       }
 
-      // b — fetch №2 (whisper) и №3 (llm)
       if (n <= 3) {
         if (url.includes('audio/transcriptions')) {
           return new Response(LONG_TRANSCRIPT, { status: 200 });
@@ -434,7 +428,6 @@ describe('processPendingCalls', () => {
         }), { status: 200 });
       }
 
-      // c — Whisper падает с 500
       return new Response('server error', { status: 500 });
     }) as typeof fetch;
 
