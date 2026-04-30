@@ -18,13 +18,17 @@ beforeEach(() => {
   mockSetSubmittedAt.mockReset();
   mockSetSubmittedAt.mockResolvedValue({ ok: true });
   mockRefresh.mockReset();
+  // Cast через unknown — vi.fn() возвращает Mock<Procedure>, а AppRouterInstance
+  // ожидает строгие сигнатуры push/replace. Для тестов это безопасно: компонент
+  // вызывает только refresh(), остальное никогда не дёргается.
   vi.mocked(useRouter).mockReturnValue({
     push:    vi.fn(),
     replace: vi.fn(),
     back:    vi.fn(),
     refresh: mockRefresh,
     prefetch: vi.fn(),
-  } as ReturnType<typeof useRouter>);
+    forward: vi.fn(),
+  } as unknown as ReturnType<typeof useRouter>);
 });
 
 // Динамический импорт ПОСЛЕ vi.mock — иначе модуль резолвится без мока.
