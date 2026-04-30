@@ -5,7 +5,7 @@
 // Архитектура:
 //  - Client (физ. лицо) <-1:N-> Lead (конкретное дело)
 //  - Funnel/Stage — кастомизируется админом
-//  - WhatsApp/Telegram каналы привязаны к менеджерам (общий + личные)
+//  - WhatsApp/Telegram/Viber/Meta каналы привязаны к менеджерам (общий + личные)
 //  - Звонки из Play импортируются и привязываются к Client
 //  - Документы: чек-лист (галочки) + внутренние через OnlyOffice
 //  - Календарь: Google Calendar OAuth для каждого менеджера
@@ -88,6 +88,8 @@ model User {
 
   whatsappAccounts WhatsappAccount[]
   telegramAccounts TelegramAccount[]
+  viberAccounts    ViberAccount[]
+  metaAccounts     MetaAccount[]
 
   notes          Note[]
   payments       Payment[]
@@ -284,11 +286,15 @@ model Lead {
   employerPhone String?
 
   source        String?      // детальное описание источника ("WhatsApp: Yuliia")
-  sourceKind    LeadSource?  // enum для аналитики (WHATSAPP/PHONE/TELEGRAM/MANUAL/...)
+  sourceKind    LeadSource?  // enum для аналитики (WHATSAPP/PHONE/TELEGRAM/VIBER/MESSENGER/INSTAGRAM/MANUAL/...)
   whatsappAccountId String?
   whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
   telegramAccountId String?
   telegramAccount   TelegramAccount? @relation(fields: [telegramAccountId], references: [id])
+  viberAccountId    String?
+  viberAccount      ViberAccount?    @relation(fields: [viberAccountId], references: [id])
+  metaAccountId     String?
+  metaAccount       MetaAccount?     @relation(fields: [metaAccountId], references: [id])
 
   // Основная услуга (legacy + быстрая фильтрация). Полный список — в services[].
   serviceId     String?
@@ -634,6 +640,9 @@ model CalendarEventParticipant {
 enum ChannelKind {
   WHATSAPP
   TELEGRAM
+  VIBER       // Viber Bot API (через https://chatapi.viber.com)
+  MESSENGER   // Facebook Messenger через Graph API
+  INSTAGRAM   // Instagram Direct через Graph API (тот же FB Page)
   PHONE
   EMAIL
 }
@@ -685,6 +694,87 @@ model TelegramAccount {
   @@index([ownerId])
 }
 
+// ============================================================
+// VIBER КАНАЛ
+// ============================================================
+// Viber Bot API: https://developers.viber.com/docs/api/rest-bot-api/
+// Поток:
+//   1. Создаём Viber Public Account на partners.viber.com → получаем authToken.
+//   2. Регистрируем webhook URL через POST /pa/set_webhook.
+//   3. Viber шлёт события (message, conversation_started, subscribed, ...) на webhook.
+//   4. Подпись X-Viber-Content-Signature = HMAC-SHA256(authToken, body).
+//   5. Отправка ответа: POST /pa/send_message с receiver = senderId.
+//
+// Один аккаунт = один Public Account. Может быть общим (ownerId=null) или
+// личным (ownerId=userId), как и WhatsApp/Telegram.
+
+model ViberAccount {
+  id          String   @id @default(cuid())
+  authToken   String   // X-Viber-Auth-Token из partners.viber.com
+  paName      String   @unique  // имя Public Account (например "AZ Group")
+  paUri       String?  // URI публичного аккаунта (для отладки)
+  label       String   // имя канала для UI
+  ownerId     String?
+  owner       User?    @relation(fields: [ownerId], references: [id])
+  isConnected Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  webhookUrl  String?  // установленный URL webhook'а
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime?
+
+  threads     ChatThread[]
+  leads       Lead[]
+  messages    ChatMessage[]
+
+  @@index([ownerId])
+}
+
+// ============================================================
+// META КАНАЛ — Facebook Messenger + Instagram Direct
+// ============================================================
+// Один MetaAccount = одна FB Page (которая может быть привязана к IG Business).
+// Через одну Page можно отвечать и в Messenger, и в Instagram Direct (если
+// IG привязан) — поэтому объединяем в один аккаунт с двумя флагами/каналами.
+//
+// Стек:
+//   - FB App (developers.facebook.com) с pages_messaging + instagram_manage_messages
+//   - Page Access Token (long-lived) — добывается через OAuth flow
+//   - App Secret — для проверки подписи X-Hub-Signature-256
+//   - Verify Token — для подтверждения webhook'а при регистрации
+//
+// Сообщения приходят на единый webhook /api/messenger/webhook. По полю
+// `object` различаем Messenger ("page") vs Instagram ("instagram").
+
+model MetaAccount {
+  id              String   @id @default(cuid())
+  pageId          String   @unique  // FB Page ID
+  pageAccessToken String   @db.Text // long-lived Page Access Token
+  pageName        String              // отображаемое имя Page
+  appSecret       String              // App Secret для HMAC проверки webhook
+  verifyToken     String              // используется при регистрации webhook'а
+  // Если эта Page связана с Instagram Business аккаунтом, заполняются
+  // следующие поля. Тогда канал поддерживает и Messenger, и Instagram DM.
+  igUserId        String?  @unique
+  igUsername      String?
+  hasMessenger    Boolean  @default(true)
+  hasInstagram    Boolean  @default(false)
+  label           String              // имя канала для UI
+  ownerId         String?
+  owner           User?    @relation(fields: [ownerId], references: [id])
+  isConnected     Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastSeenAt      DateTime?
+
+  threads         ChatThread[]
+  leads           Lead[]
+  messages        ChatMessage[]
+
+  @@index([ownerId])
+}
+
 model ChatThread {
   id          String   @id @default(cuid())
   channel     ChannelKind
@@ -696,6 +786,10 @@ model ChatThread {
   whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
   telegramAccountId String?
   telegramAccount   TelegramAccount? @relation(fields: [telegramAccountId], references: [id])
+  viberAccountId    String?
+  viberAccount      ViberAccount?    @relation(fields: [viberAccountId], references: [id])
+  metaAccountId     String?
+  metaAccount       MetaAccount?     @relation(fields: [metaAccountId], references: [id])
   externalId  String?
   externalPhoneNumber String?
   externalUserName    String?
@@ -740,6 +834,10 @@ model ChatMessage {
   whatsappAccount   WhatsappAccount? @relation(fields: [whatsappAccountId], references: [id])
   telegramAccountId String?
   telegramAccount   TelegramAccount? @relation(fields: [telegramAccountId], references: [id])
+  viberAccountId    String?
+  viberAccount      ViberAccount?    @relation(fields: [viberAccountId], references: [id])
+  metaAccountId     String?
+  metaAccount       MetaAccount?     @relation(fields: [metaAccountId], references: [id])
   direction   MessageDirection
   type        MessageType      @default(TEXT)
   body        String?          @db.Text
@@ -1049,6 +1147,9 @@ enum LeadSource {
   WHATSAPP
   PHONE
   TELEGRAM
+  VIBER
+  MESSENGER
+  INSTAGRAM
   EMAIL
   WEBSITE
   REFERRAL
