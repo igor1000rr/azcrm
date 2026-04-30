@@ -59,19 +59,24 @@ describe('flagsToSet', () => {
 });
 
 // ---------------- Integration: checkExpiringDocuments ----------------
+//
+// vi.mock хойстится в самый верх файла перед всеми import'ами. Поэтому
+// обычные const'ы определённые ниже ещё не существуют в момент вызова
+// factory. Для общих моков используем vi.hoisted — он тоже хойстится
+// и даёт стабильные ссылки.
 
-type AnyFn = ReturnType<typeof vi.fn>;
-
-const mockDb = {
-  client: {
-    findMany: vi.fn() as AnyFn,
-    update:   vi.fn() as AnyFn,
+const mocks = vi.hoisted(() => ({
+  db: {
+    client: {
+      findMany: vi.fn(),
+      update:   vi.fn(),
+    },
   },
-};
-const mockNotify = vi.fn();
+  notify: vi.fn(),
+}));
 
-vi.mock('@/lib/db', () => ({ db: mockDb }));
-vi.mock('@/lib/notify', () => ({ notify: mockNotify }));
+vi.mock('@/lib/db',     () => ({ db:     mocks.db }));
+vi.mock('@/lib/notify', () => ({ notify: mocks.notify }));
 
 const { checkExpiringDocuments } = await import('@/lib/document-reminders');
 
@@ -117,65 +122,65 @@ function mkClient(over: Partial<{
 
 describe('checkExpiringDocuments', () => {
   beforeEach(() => {
-    mockDb.client.findMany.mockReset();
-    mockDb.client.update.mockReset();
-    mockNotify.mockReset();
-    mockDb.client.update.mockResolvedValue({});
+    mocks.db.client.findMany.mockReset();
+    mocks.db.client.update.mockReset();
+    mocks.notify.mockReset();
+    mocks.db.client.update.mockResolvedValue({});
   });
 
   it('пусто → 0 sent', async () => {
-    mockDb.client.findMany.mockResolvedValue([]);
+    mocks.db.client.findMany.mockResolvedValue([]);
     const r = await checkExpiringDocuments(NOW);
     expect(r.sent).toBe(0);
-    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it('legalStayUntil через 60 дней → шлёт 90-day напоминание + ставит флаг r90', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(60) }),
     ]);
 
     const r = await checkExpiringDocuments(NOW);
 
     expect(r.sent).toBe(1);
-    expect(mockNotify).toHaveBeenCalledTimes(1);
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledTimes(1);
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'mgr-legal',                         // legal приоритетнее sales
       kind:   'DOCUMENT_EXPIRY_REMINDER',
       title:  expect.stringContaining('60'),
       body:   expect.stringContaining('легальный побыт'),
       link:   '/clients/lead-1',
     }));
-    expect(mockDb.client.update).toHaveBeenCalledWith({
+    expect(mocks.db.client.update).toHaveBeenCalledWith({
       where: { id: 'cl-1' },
       data:  { legalStayReminder90Sent: true },
     });
   });
 
   it('legalStayUntil через 20 дней → 30-day напоминание + флаги 30 и 90', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(20) }),
     ]);
 
     await checkExpiringDocuments(NOW);
 
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       title: expect.stringContaining('20'),
     }));
-    expect(mockDb.client.update).toHaveBeenCalledWith({
+    expect(mocks.db.client.update).toHaveBeenCalledWith({
       where: { id: 'cl-1' },
       data:  { legalStayReminder90Sent: true, legalStayReminder30Sent: true },
     });
   });
 
   it('legalStayUntil через 7 дней → 14-day + ВСЕ флаги (14/30/90)', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(7) }),
     ]);
 
     await checkExpiringDocuments(NOW);
 
-    expect(mockDb.client.update).toHaveBeenCalledWith({
+    expect(mocks.db.client.update).toHaveBeenCalledWith({
       where: { id: 'cl-1' },
       data:  {
         legalStayReminder90Sent: true,
@@ -186,50 +191,50 @@ describe('checkExpiringDocuments', () => {
   });
 
   it('legalStayReminder90Sent=true + days=60 → НЕ шлёт повторно', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(60), legalStayReminder90Sent: true }),
     ]);
 
     const r = await checkExpiringDocuments(NOW);
 
     expect(r.sent).toBe(0);
-    expect(mockNotify).not.toHaveBeenCalled();
-    expect(mockDb.client.update).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
+    expect(mocks.db.client.update).not.toHaveBeenCalled();
   });
 
   it('флаг 90Sent=true но days=20 → шлёт 30-day (новый порог, новый флаг)', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(20), legalStayReminder90Sent: true }),
     ]);
 
     const r = await checkExpiringDocuments(NOW);
 
     expect(r.sent).toBe(1);
-    expect(mockNotify).toHaveBeenCalled();
-    expect(mockDb.client.update).toHaveBeenCalledWith({
+    expect(mocks.notify).toHaveBeenCalled();
+    expect(mocks.db.client.update).toHaveBeenCalledWith({
       where: { id: 'cl-1' },
       data:  { legalStayReminder90Sent: true, legalStayReminder30Sent: true },
     });
   });
 
   it('passportExpiresAt отдельно — свои флаги, текст про паспорт', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ passportExpiresAt: daysFromNow(50) }),
     ]);
 
     await checkExpiringDocuments(NOW);
 
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining('паспорт'),
     }));
-    expect(mockDb.client.update).toHaveBeenCalledWith({
+    expect(mocks.db.client.update).toHaveBeenCalledWith({
       where: { id: 'cl-1' },
       data:  { passportReminder90Sent: true },
     });
   });
 
   it('обе даты заполнены → 2 уведомления, разные флаги', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({
         legalStayUntil:    daysFromNow(80),
         passportExpiresAt: daysFromNow(20),
@@ -239,30 +244,30 @@ describe('checkExpiringDocuments', () => {
     const r = await checkExpiringDocuments(NOW);
 
     expect(r.sent).toBe(2);
-    expect(mockNotify).toHaveBeenCalledTimes(2);
+    expect(mocks.notify).toHaveBeenCalledTimes(2);
     // legalStay (80 дней) → 90-day
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining('легальный побыт'),
     }));
     // passport (20 дней) → 30-day
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining('паспорт'),
     }));
   });
 
   it('legalStayUntil через 100 дней (вне 90) → не шлёт', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(100) }),
     ]);
 
     const r = await checkExpiringDocuments(NOW);
 
     expect(r.sent).toBe(0);
-    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it('legalManagerId=null → fallback на salesManager', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({
         legalStayUntil: daysFromNow(60),
         legalManagerId: null,
@@ -272,13 +277,13 @@ describe('checkExpiringDocuments', () => {
 
     await checkExpiringDocuments(NOW);
 
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'mgr-sales-2',
     }));
   });
 
   it('оба менеджера null → пропускает (не шлём в никуда)', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({
         legalStayUntil: daysFromNow(60),
         legalManagerId: null,
@@ -289,40 +294,40 @@ describe('checkExpiringDocuments', () => {
     const r = await checkExpiringDocuments(NOW);
 
     expect(r.sent).toBe(0);
-    expect(mockNotify).not.toHaveBeenCalled();
-    expect(mockDb.client.update).not.toHaveBeenCalled();
+    expect(mocks.notify).not.toHaveBeenCalled();
+    expect(mocks.db.client.update).not.toHaveBeenCalled();
   });
 
   it('notify бросил → errors инкрементируется, флаг НЕ ставится', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(60) }),
     ]);
-    mockNotify.mockRejectedValueOnce(new Error('push backend down'));
+    mocks.notify.mockRejectedValueOnce(new Error('push backend down'));
 
     const r = await checkExpiringDocuments(NOW);
 
     expect(r.sent).toBe(0);
     expect(r.errors).toBe(1);
-    expect(mockDb.client.update).not.toHaveBeenCalled();
+    expect(mocks.db.client.update).not.toHaveBeenCalled();
   });
 
   it('findMany запрос фильтрует isArchived=false и активные лиды', async () => {
-    mockDb.client.findMany.mockResolvedValue([]);
+    mocks.db.client.findMany.mockResolvedValue([]);
     await checkExpiringDocuments(NOW);
-    const where = mockDb.client.findMany.mock.calls[0][0].where;
+    const where = mocks.db.client.findMany.mock.calls[0][0].where;
     expect(where.isArchived).toBe(false);
     expect(where.leads).toEqual({ some: { isArchived: false } });
     expect(where.OR).toBeDefined();
   });
 
   it('link → /clients/{leadId} (не clientId, чтобы открывалась карточка лида)', async () => {
-    mockDb.client.findMany.mockResolvedValue([
+    mocks.db.client.findMany.mockResolvedValue([
       mkClient({ legalStayUntil: daysFromNow(60), leadId: 'lead-xyz' }),
     ]);
 
     await checkExpiringDocuments(NOW);
 
-    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
       link: '/clients/lead-xyz',
     }));
   });
