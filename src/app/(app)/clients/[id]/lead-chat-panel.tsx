@@ -1,8 +1,12 @@
 'use client';
 
 // Объединённая переписка по клиенту в карточке лида.
-// Показывает сообщения со всех каналов в одной ленте, с пометкой канала
-// рядом с каждым сообщением. Снизу — селектор канала и поле ввода.
+// Показывает сообщения со всех каналов (WhatsApp/Telegram/Viber/Messenger/Instagram)
+// в одной ленте, с пометкой канала рядом с каждым сообщением.
+// Снизу — селектор канала и поле ввода.
+//
+// Отправка идёт через единый POST /api/messages/lead-send который роутит
+// по `kind` канала.
 //
 // Права (через бэк, мы только отображаем доступные):
 //   ADMIN — все активные каналы
@@ -10,8 +14,13 @@
 
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Send, FileText, MessageSquare, ChevronDown } from 'lucide-react';
+import {
+  Send, FileText, MessageSquare, ChevronDown,
+  Smartphone, MessageCircle, Facebook, Instagram,
+} from 'lucide-react';
 import { cn, formatTime, formatDate } from '@/lib/utils';
+
+export type ChannelKindStr = 'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM';
 
 export interface LeadChatMessage {
   id:          string;
@@ -25,16 +34,22 @@ export interface LeadChatMessage {
   deliveredAt: string | null;
   senderName:  string | null;
   // Канал откуда пришло/отправлено сообщение
+  kind:         ChannelKindStr;
   accountId:    string;
   accountLabel: string;
 }
 
 export interface LeadChatAccount {
-  id:          string;
-  label:       string;
-  phoneNumber: string;
-  isConnected: boolean;
-  isShared:    boolean;  // ownerId === null
+  // Уникальный ключ — для Meta-аккаунта одна запись может развернуться
+  // в два пункта селектора (Messenger + Instagram), у них одинаковый
+  // accountId но разный kind. Поэтому ключ = `${kind}:${accountId}`.
+  kind:         ChannelKindStr;
+  accountId:    string;
+  label:        string;
+  // Подпись под label (телефон / username / paName / pageName)
+  subtitle:     string | null;
+  isConnected:  boolean;
+  isShared:     boolean;  // ownerId === null
 }
 
 interface Props {
@@ -42,6 +57,10 @@ interface Props {
   clientName:       string;
   messages:         LeadChatMessage[];
   availableAccounts: LeadChatAccount[];
+}
+
+function accountKey(a: { kind: ChannelKindStr; accountId: string }): string {
+  return `${a.kind}:${a.accountId}`;
 }
 
 export function LeadChatPanel({
@@ -54,33 +73,36 @@ export function LeadChatPanel({
 
   // Выбираем канал по умолчанию: тот откуда пришло последнее входящее.
   // Если входящих нет — первый доступный подключённый.
-  const defaultAccountId = pickDefaultAccount(messages, availableAccounts);
-  const [selectedAccountId, setSelectedAccountId] = useState(defaultAccountId);
+  const defaultKey = pickDefaultAccount(messages, availableAccounts);
+  const [selectedKey, setSelectedKey] = useState(defaultKey);
 
   // Если данные обновились (router.refresh) и сменился набор каналов —
   // переустанавливаем выбор только если текущий стал недоступен.
   useEffect(() => {
-    if (selectedAccountId && availableAccounts.some((a) => a.id === selectedAccountId)) {
+    if (selectedKey && availableAccounts.some((a) => accountKey(a) === selectedKey)) {
       return;
     }
-    setSelectedAccountId(pickDefaultAccount(messages, availableAccounts));
-  }, [availableAccounts, messages, selectedAccountId]);
+    setSelectedKey(pickDefaultAccount(messages, availableAccounts));
+  }, [availableAccounts, messages, selectedKey]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [messages.length]);
 
+  const selectedAccount = availableAccounts.find((a) => accountKey(a) === selectedKey);
+
   async function send(e: FormEvent) {
     e.preventDefault();
-    if (!body.trim() || sending || !selectedAccountId) return;
+    if (!body.trim() || sending || !selectedAccount) return;
     setSending(true);
     try {
-      const res = await fetch('/api/whatsapp/lead-send', {
+      const res = await fetch('/api/messages/lead-send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           leadId,
-          accountId: selectedAccountId,
+          kind:      selectedAccount.kind,
+          accountId: selectedAccount.accountId,
           body:      body.trim(),
         }),
       });
@@ -108,8 +130,6 @@ export function LeadChatPanel({
     else grouped.push({ date: day, items: [m] });
   }
 
-  const selectedAccount = availableAccounts.find((a) => a.id === selectedAccountId);
-
   return (
     <div className="bg-paper border border-line rounded-lg flex flex-col overflow-hidden" data-testid="chat-panel">
       {/* Шапка */}
@@ -123,7 +143,7 @@ export function LeadChatPanel({
         </span>
       </div>
 
-      {/* Лента сообщений — фиксированная высота с прокруткой */}
+      {/* Лента сообщений */}
       <div className="h-[480px] overflow-y-auto thin-scroll px-3 py-3 bg-bg" data-testid="messages-list">
         {grouped.length === 0 ? (
           <div className="h-full grid place-items-center text-center text-[13px] text-ink-4" data-testid="empty-state">
@@ -150,7 +170,7 @@ export function LeadChatPanel({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Композер с селектором канала */}
+      {/* Композер */}
       <form onSubmit={send} className="border-t border-line px-3 py-2.5" data-testid="composer">
         {availableAccounts.length === 0 ? (
           <div className="text-[12px] text-ink-4 text-center py-2" data-testid="no-channels">
@@ -162,8 +182,8 @@ export function LeadChatPanel({
               <span className="text-[11px] text-ink-4 shrink-0">Отправить через:</span>
               <ChannelSelect
                 accounts={availableAccounts}
-                selectedId={selectedAccountId}
-                onChange={setSelectedAccountId}
+                selectedKey={selectedKey}
+                onChange={setSelectedKey}
               />
               {selectedAccount && !selectedAccount.isConnected && (
                 <span className="text-[10.5px] text-warn" data-testid="not-connected-warn">канал не подключён</span>
@@ -182,13 +202,13 @@ export function LeadChatPanel({
                 rows={2}
                 placeholder="Напишите сообщение..."
                 className="flex-1 resize-none px-3 py-2 text-[13px] bg-bg border border-line rounded-md focus:bg-paper focus:border-navy focus:outline-none max-h-[120px]"
-                disabled={!selectedAccountId || (selectedAccount && !selectedAccount.isConnected)}
+                disabled={!selectedAccount || !selectedAccount.isConnected}
                 data-testid="msg-input"
               />
               <button
                 type="submit"
                 data-testid="send-btn"
-                disabled={!body.trim() || sending || !selectedAccountId || (selectedAccount && !selectedAccount.isConnected)}
+                disabled={!body.trim() || sending || !selectedAccount || !selectedAccount.isConnected}
                 className={cn(
                   'h-9 px-3 rounded-md flex items-center gap-1.5 text-[12.5px] font-semibold transition-colors',
                   body.trim() && !sending && selectedAccount?.isConnected
@@ -207,19 +227,28 @@ export function LeadChatPanel({
   );
 }
 
-/** Кастомный селектор канала — небольшой dropdown под "Отправить через:" */
+/** Иконка канала — показывается в селекторе и в bubble. */
+function ChannelIcon({ kind, size = 11 }: { kind: ChannelKindStr; size?: number }) {
+  switch (kind) {
+    case 'WHATSAPP':  return <Smartphone size={size} style={{ color: '#25D366' }} />;
+    case 'TELEGRAM':  return <Send size={size} style={{ color: '#229ED9' }} />;
+    case 'VIBER':     return <MessageCircle size={size} style={{ color: '#7360F2' }} />;
+    case 'MESSENGER': return <Facebook size={size} style={{ color: '#1877F2' }} />;
+    case 'INSTAGRAM': return <Instagram size={size} style={{ color: '#E4405F' }} />;
+  }
+}
+
 function ChannelSelect({
-  accounts, selectedId, onChange,
+  accounts, selectedKey, onChange,
 }: {
   accounts: LeadChatAccount[];
-  selectedId: string | null;
-  onChange: (id: string) => void;
+  selectedKey: string | null;
+  onChange: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const selected = accounts.find((a) => a.id === selectedId);
+  const selected = accounts.find((a) => accountKey(a) === selectedKey);
 
-  // Закрываем при клике снаружи
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
@@ -241,6 +270,7 @@ function ChannelSelect({
       >
         {selected ? (
           <>
+            <ChannelIcon kind={selected.kind} />
             <span className={cn(
               'w-1.5 h-1.5 rounded-full shrink-0',
               selected.isConnected ? 'bg-success' : 'bg-warn',
@@ -257,31 +287,37 @@ function ChannelSelect({
       </button>
 
       {open && (
-        <div className="absolute z-30 top-full left-0 mt-1 min-w-[220px] bg-paper border border-line rounded-md shadow-lg py-1" data-testid="channel-dropdown">
-          {accounts.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              data-testid={`channel-option-${a.id}`}
-              onClick={() => { onChange(a.id); setOpen(false); }}
-              className={cn(
-                'w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-left hover:bg-bg',
-                selectedId === a.id && 'bg-bg',
-              )}
-            >
-              <span className={cn(
-                'w-1.5 h-1.5 rounded-full shrink-0',
-                a.isConnected ? 'bg-success' : 'bg-ink-5',
-              )} />
-              <span className="flex-1 min-w-0">
-                <span className="font-semibold text-ink">{a.label}</span>
-                <span className="ml-1.5 text-ink-4 font-mono text-[10.5px]">{a.phoneNumber}</span>
-              </span>
-              {a.isShared && (
-                <span className="text-[10px] text-ink-4 px-1 bg-bg-alt rounded">общий</span>
-              )}
-            </button>
-          ))}
+        <div className="absolute z-30 top-full left-0 mt-1 min-w-[260px] bg-paper border border-line rounded-md shadow-lg py-1" data-testid="channel-dropdown">
+          {accounts.map((a) => {
+            const key = accountKey(a);
+            return (
+              <button
+                key={key}
+                type="button"
+                data-testid={`channel-option-${key}`}
+                onClick={() => { onChange(key); setOpen(false); }}
+                className={cn(
+                  'w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-left hover:bg-bg',
+                  selectedKey === key && 'bg-bg',
+                )}
+              >
+                <ChannelIcon kind={a.kind} />
+                <span className={cn(
+                  'w-1.5 h-1.5 rounded-full shrink-0',
+                  a.isConnected ? 'bg-success' : 'bg-ink-5',
+                )} />
+                <span className="flex-1 min-w-0">
+                  <span className="font-semibold text-ink">{a.label}</span>
+                  {a.subtitle && (
+                    <span className="ml-1.5 text-ink-4 font-mono text-[10.5px]">{a.subtitle}</span>
+                  )}
+                </span>
+                {a.isShared && (
+                  <span className="text-[10px] text-ink-4 px-1 bg-bg-alt rounded">общий</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -298,17 +334,17 @@ function Bubble({ m }: { m: LeadChatMessage }) {
           ? 'bg-navy text-white rounded-br-sm'
           : 'bg-paper border border-line text-ink rounded-bl-sm',
       )}>
-        {/* Тег канала — маленькая плашка над сообщением */}
         <div className={cn(
-          'text-[9.5px] font-semibold uppercase tracking-[0.04em] mb-0.5',
+          'flex items-center gap-1 text-[9.5px] font-semibold uppercase tracking-[0.04em] mb-0.5',
           isOut ? 'text-white/70' : 'text-ink-4',
         )} data-testid={`bubble-label-${m.id}`}>
-          {m.accountLabel}
-          {m.senderName && isOut && ` · ${m.senderName}`}
+          <ChannelIcon kind={m.kind} size={9} />
+          <span>{m.accountLabel}</span>
+          {m.senderName && isOut && <span>· {m.senderName}</span>}
         </div>
 
         {m.type === 'IMAGE' && m.mediaUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
+          /* eslint-disable-next-line @next/next/no-img-element */
           <img src={m.mediaUrl} alt="" className="rounded mb-1 max-w-full" data-testid={`bubble-img-${m.id}`} />
         )}
         {m.type === 'DOCUMENT' && m.mediaUrl && (
@@ -342,27 +378,25 @@ function Bubble({ m }: { m: LeadChatMessage }) {
   );
 }
 
-/** По умолчанию выбираем канал последнего входящего, если он доступен */
+/** По умолчанию выбираем канал последнего входящего, если он доступен. */
 function pickDefaultAccount(
   messages: LeadChatMessage[],
   accounts: LeadChatAccount[],
 ): string | null {
-  // последнее входящее в порядке от свежих к старым
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.direction === 'IN' && accounts.some((a) => a.id === m.accountId)) {
-      return m.accountId;
+    const matchKey = `${m.kind}:${m.accountId}`;
+    if (m.direction === 'IN' && accounts.some((a) => accountKey(a) === matchKey)) {
+      return matchKey;
     }
   }
-  // первый подключённый из доступных
   const connected = accounts.find((a) => a.isConnected);
-  if (connected) return connected.id;
-  // вообще любой доступный
-  return accounts[0]?.id ?? null;
+  if (connected) return accountKey(connected);
+  return accounts[0] ? accountKey(accounts[0]) : null;
 }
 
 function countChannels(messages: LeadChatMessage[]): number {
-  const set = new Set(messages.map((m) => m.accountId));
+  const set = new Set(messages.map((m) => `${m.kind}:${m.accountId}`));
   return set.size;
 }
 
