@@ -9,6 +9,7 @@ import {
   getMe, setWebhook, deleteWebhook, sendMessage,
   getWebhookSecret, getWebhookUrl,
 } from '@/lib/telegram';
+import { logger } from '@/lib/logger';
 
 const connectSchema = z.object({
   token:   z.string().min(40, 'Токен бота обязателен (получи у @BotFather)'),
@@ -80,7 +81,7 @@ export async function disconnectTelegramBot(accountId: string) {
   if (!account) throw new Error('Аккаунт не найден');
 
   try { await deleteWebhook(account.botToken); }
-  catch (e) { console.warn('[tg] deleteWebhook failed (игнорируем):', e); }
+  catch (e) { logger.warn('[tg] deleteWebhook failed (игнорируем):', e); }
 
   await db.telegramAccount.delete({ where: { id: accountId } });
   revalidatePath('/settings/channels');
