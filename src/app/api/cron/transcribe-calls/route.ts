@@ -5,9 +5,11 @@
 // Whisper + LLM, сохраняет sentiment/transcript/summary/tags в БД.
 // Лимит 5 за запуск чтобы не упереться в rate limits провайдера.
 //
+// Конфиг (API-ключи) — Настройки → Анализ звонков (БД), либо ENV fallback.
+//
 // crontab пример (рекомендую раз в 15 минут):
 //   */15 * * * * curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" \
-//                https://crm.azgroup.pl/api/cron/transcribe-calls
+//                https://crm.azgroupcompany.net/api/cron/transcribe-calls
 //
 // Параметры:
 //   ?limit=N — обработать до N звонков за один запуск (1..20, default 5)
@@ -20,11 +22,11 @@ export async function POST(req: NextRequest) {
   const fail = checkCronAuth(req);
   if (fail) return fail;
 
-  if (!isCallAnalysisEnabled()) {
+  if (!(await isCallAnalysisEnabled())) {
     return NextResponse.json({
       ok: false,
       enabled: false,
-      message: 'WHISPER_API_KEY или LLM_API_KEY не заданы — фича отключена',
+      message: 'Whisper или LLM ключ не настроен (Настройки → Анализ звонков или .env)',
     });
   }
 
