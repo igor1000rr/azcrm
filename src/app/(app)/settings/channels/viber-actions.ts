@@ -11,6 +11,7 @@ import { requireAdmin, requireUser } from '@/lib/auth';
 import { setViberWebhook, removeViberWebhook, sendViberText } from '@/lib/viber';
 import { canViewLead } from '@/lib/permissions';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 const connectSchema = z.object({
   authToken: z.string().min(40, 'Auth Token обязателен (получи на partners.viber.com)'),
@@ -81,7 +82,7 @@ export async function disconnectViberAccount(accountId: string) {
   if (!account) throw new Error('Аккаунт не найден');
 
   try { await removeViberWebhook(account.authToken); }
-  catch (e) { console.warn('[viber] removeWebhook failed (игнорируем):', e); }
+  catch (e) { logger.warn('[viber] removeWebhook failed (игнорируем):', e); }
 
   await db.viberAccount.delete({ where: { id: accountId } });
   revalidatePath('/settings/channels');
