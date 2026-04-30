@@ -24,6 +24,12 @@ const STORAGE_ROOT     = process.env.STORAGE_ROOT ?? path.resolve(process.cwd(),
 const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(STORAGE_ROOT, 'wa-sessions');
 const WA_MEDIA_DIR     = process.env.WA_MEDIA_DIR ?? path.join(STORAGE_ROOT, 'wa-media');
 
+// Если сессия залипла в authenticating дольше этого времени — делаем
+// принудительный destroy + переинициализацию. Это бывает когда puppeteer
+// не дождался полной загрузки UI WhatsApp Web и завис между authenticated
+// и ready event'ами.
+const AUTHENTICATING_TIMEOUT_MS = 60_000;
+
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 if (!fs.existsSync(WA_MEDIA_DIR)) fs.mkdirSync(WA_MEDIA_DIR, { recursive: true });
 
@@ -38,20 +44,15 @@ console.log('  CRM_WEBHOOK_URL =', CRM_WEBHOOK_URL);
 console.log('  SESSIONS_DIR    =', SESSIONS_DIR);
 
 const clients = new Map();
-// chatId последнего входящего сообщения (для ответа CRM используем его как есть)
 const lastIncomingChat = new Map();
 
-// Типы WhatsApp-событий, которые шлём в CRM как реальные сообщения.
-// Всё остальное (e2e_notification, notification_template, gp2, revoked, ciphertext
-// и пр.) — служебка от WhatsApp, в чате её показывать не нужно: иначе на каждый
-// "Тест" в чате появляется 3 пустых пузыря (одно сообщение + 2 системных события).
 const CONTENT_MESSAGE_TYPES = new Set([
-  'chat',        // обычный текст
+  'chat',
   'image',
   'document',
   'video',
   'audio',
-  'ptt',         // голосовое
+  'ptt',
   'location',
   'vcard',
   'sticker',
@@ -81,7 +82,7 @@ function getOrCreateClient(accountId) {
     },
   });
 
-  entry = { client, status: 'disconnected' };
+  entry = { client, status: 'disconnected', authenticatedAt: 0 };
   clients.set(accountId, entry);
 
   bindEvents(accountId, client, entry);
@@ -105,6 +106,7 @@ function bindEvents(accountId, client, entry) {
   client.on('authenticated', () => {
     console.log(`[${accountId}] authenticated`);
     entry.status = 'authenticating';
+    entry.authenticatedAt = Date.now();   // отметка для timeout'а
     sendWebhook({ kind: 'connection', accountId, status: 'authenticating' });
   });
 
@@ -112,6 +114,7 @@ function bindEvents(accountId, client, entry) {
     console.log(`[${accountId}] READY`);
     entry.status = 'ready';
     entry.qr = undefined;
+    entry.authenticatedAt = 0;
     try {
       const info = client.info;
       entry.phoneNumber = info?.wid?._serialized?.split('@')[0];
@@ -139,22 +142,15 @@ function bindEvents(accountId, client, entry) {
     try {
       console.log(`[${accountId}] msg from=${msg.from} type=${msg.type} body="${(msg.body || '').slice(0, 50)}"`);
 
-      // Игнорируем только статусы и группы. @lid НЕ игнорим — это новые
-      // юзеры WhatsApp. Из contact достанем реальный номер если возможно.
       if (msg.from === 'status@broadcast') return;
       if (msg.from.endsWith('@g.us')) return;
       if (msg.from.endsWith('@newsletter')) return;
 
-      // Фильтр служебных событий: e2e_notification, notification_template, gp2,
-      // ciphertext, revoked и т.д. — это технические уведомления WhatsApp, не
-      // сообщения от пользователя. Без этого фильтра CRM засоряется пустыми
-      // пузырями (3 события на каждое реальное сообщение).
       if (!CONTENT_MESSAGE_TYPES.has(msg.type)) {
         console.log(`[${accountId}] skip system event type=${msg.type}`);
         return;
       }
 
-      // Резолвим реальный номер. Для @c.us берём как есть, для @lid идём в contact.
       const contact = await msg.getContact().catch((e) => {
         console.error(`[${accountId}] getContact error:`, e.message);
         return null;
@@ -164,17 +160,14 @@ function bindEvents(accountId, client, entry) {
       if (msg.from.endsWith('@c.us')) {
         realPhone = msg.from.split('@')[0];
       } else if (contact?.id?.user && /^\d+$/.test(contact.id.user)) {
-        // contact.id.user — реальный номер даже если msg.from = @lid
         realPhone = contact.id.user;
       } else if (contact?.number) {
         realPhone = String(contact.number).replace(/^\+/, '');
       } else {
-        // Не смогли вычислить номер — используем то что есть в msg.from до @
         realPhone = msg.from.split('@')[0];
         console.warn(`[${accountId}] не смог резолвить реальный номер для ${msg.from}, использую raw`);
       }
 
-      // Запоминаем оригинальный chatId — пригодится при ответе из CRM
       lastIncomingChat.set(`${accountId}:${realPhone}`, msg.from);
 
       let mediaUrl, mediaName, mediaSize;
@@ -286,6 +279,21 @@ async function sendWebhook(payload) {
   }
 }
 
+/**
+ * Принудительно сбросить клиента: destroy + удалить из Map.
+ * Папку с сессией НЕ трогаем — LocalAuth её сам подхватит при следующем
+ * initialize если она валидна.
+ */
+async function hardResetClient(accountId) {
+  const entry = clients.get(accountId);
+  if (!entry) return;
+  console.log(`[${accountId}] hard reset (was status=${entry.status})`);
+  try { await entry.client.destroy(); } catch (e) {
+    console.error(`[${accountId}] destroy error:`, e.message);
+  }
+  clients.delete(accountId);
+}
+
 // ============ HTTP API ============
 
 const app = express();
@@ -303,10 +311,58 @@ app.use((req, res, next) => {
 
 app.get('/health', (_, res) => res.json({ ok: true, accounts: clients.size }));
 
+/**
+ * POST /accounts/:id/connect
+ *
+ * body: { force?: boolean, wipe?: boolean }
+ *   force — игнорировать текущий status и переинициализировать клиента
+ *   wipe  — дополнительно удалить папку сессии (нужен новый QR-скан)
+ *
+ * Логика:
+ *   1. Если force/wipe — destroy + опционально rm -rf session
+ *   2. Если статус authenticating дольше AUTHENTICATING_TIMEOUT_MS —
+ *      авто-destroy. Это лечит зависшие сессии без ручного reset'а.
+ *   3. Если ready — возвращаем сразу
+ *   4. Если qr и есть entry.qr — возвращаем QR
+ *   5. Иначе initialize() и ждём 30 сек
+ */
 app.post('/accounts/:id/connect', async (req, res) => {
   try {
     const id = req.params.id;
-    const entry = getOrCreateClient(id);
+    const force = req.body?.force === true;
+    const wipe  = req.body?.wipe === true;
+
+    // Авто-detect зависшего authenticating
+    let entry = clients.get(id);
+    if (entry && entry.status === 'authenticating' && entry.authenticatedAt > 0) {
+      const stuck = Date.now() - entry.authenticatedAt;
+      if (stuck > AUTHENTICATING_TIMEOUT_MS) {
+        console.log(`[${id}] authenticating stuck for ${stuck}ms — auto reset`);
+        await hardResetClient(id);
+        entry = null;
+      }
+    }
+
+    // Принудительный reset по запросу UI
+    if (force && entry) {
+      await hardResetClient(id);
+      entry = null;
+    }
+
+    // Удаление папки сессии для скана нового QR
+    if (wipe) {
+      const sessionDir = path.join(SESSIONS_DIR, `session-${id}`);
+      if (fs.existsSync(sessionDir)) {
+        try {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+          console.log(`[${id}] session dir wiped`);
+        } catch (e) {
+          console.error(`[${id}] wipe error:`, e.message);
+        }
+      }
+    }
+
+    entry = entry ?? getOrCreateClient(id);
 
     if (entry.status === 'ready') {
       return res.json({ status: 'ready', phoneNumber: entry.phoneNumber });
@@ -364,6 +420,20 @@ app.post('/accounts/:id/disconnect', async (req, res) => {
 app.get('/accounts/:id/status', (req, res) => {
   const entry = clients.get(req.params.id);
   if (!entry) return res.json({ status: 'disconnected' });
+
+  // Авто-detect зависшего authenticating и здесь — чтобы фронт не получал
+  // вечный 'authenticating' если сессия залипла. Возвращаем 'failed' и
+  // фронт покажет ошибку с кнопкой переподключить.
+  if (entry.status === 'authenticating' && entry.authenticatedAt > 0) {
+    const stuck = Date.now() - entry.authenticatedAt;
+    if (stuck > AUTHENTICATING_TIMEOUT_MS) {
+      return res.json({
+        status: 'failed',
+        error: `WhatsApp не дошёл до READY за ${Math.round(stuck/1000)}с — сессия залипла`,
+      });
+    }
+  }
+
   res.json({
     status:      entry.status,
     phoneNumber: entry.phoneNumber,
@@ -371,10 +441,6 @@ app.get('/accounts/:id/status', (req, res) => {
   });
 });
 
-// Важно — connect должен подниматься АВТОМАТИЧЕСКИ при старте worker'а если
-// есть сохранённая сессия, иначе после рестарта PM2 worker не подхватит сессию
-// до первого ручного клика «Подключить» в UI. Сейчас connect триггерится только
-// HTTP-запросом — добавим автоинициализацию по списку папок в SESSIONS_DIR.
 function autoRestoreSessions() {
   try {
     const entries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
@@ -471,7 +537,6 @@ app.post('/accounts/:id/send', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`whatsapp-worker listening on :${PORT}`);
   console.log(`webhook URL: ${CRM_WEBHOOK_URL}`);
-  // Поднимаем сохранённые сессии после старта worker'а
   setTimeout(autoRestoreSessions, 1000);
 });
 
