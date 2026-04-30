@@ -22,6 +22,7 @@
 import { db } from '@/lib/db';
 import { notify } from '@/lib/notify';
 import { plural } from '@/lib/utils';
+import { logger } from '@/lib/logger';
 
 interface CheckResult {
   sent:   number;
@@ -185,7 +186,7 @@ export async function checkExpiringDocuments(now: Date = new Date()): Promise<Ch
         const days = daysBetween(now, c.legalStayUntil);
         if (await processOne(c, 'legalStay', c.legalStayUntil, days)) sent++;
       } catch (e) {
-        console.error(`expiring legalStay for client ${c.id} failed:`, e);
+        logger.error(`expiring legalStay for client ${c.id} failed:`, e);
         errors++;
       }
     }
@@ -194,7 +195,7 @@ export async function checkExpiringDocuments(now: Date = new Date()): Promise<Ch
         const days = daysBetween(now, c.passportExpiresAt);
         if (await processOne(c, 'passport', c.passportExpiresAt, days)) sent++;
       } catch (e) {
-        console.error(`expiring passport for client ${c.id} failed:`, e);
+        logger.error(`expiring passport for client ${c.id} failed:`, e);
         errors++;
       }
     }

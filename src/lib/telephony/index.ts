@@ -2,6 +2,8 @@
 // Сейчас реализован Play (Польша). При смене провайдера — добавить новый класс
 // и переключить через TELEPHONY_PROVIDER в .env
 
+import { logger } from '@/lib/logger';
+
 export interface CallRecord {
   /** Уникальный ID звонка у провайдера — для дедупликации */
   externalId:  string;
@@ -71,7 +73,7 @@ export class PlayProvider implements TelephonyProvider {
       });
 
       if (!res.ok) {
-        console.error(`[play] fetch failed: ${res.status}`);
+        logger.error(`[play] fetch failed: ${res.status}`);
         return [];
       }
 
@@ -102,7 +104,7 @@ export class PlayProvider implements TelephonyProvider {
         metadata:    c as unknown as Record<string, unknown>,
       }));
     } catch (e) {
-      console.error('[play] error:', e);
+      logger.error('[play] error:', e);
       return [];
     }
   }
