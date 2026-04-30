@@ -10,6 +10,7 @@ import { saveBuffer } from '@/lib/storage';
 import { notify } from '@/lib/notify';
 import { sanitizeDownloadName } from '@/lib/storage';
 import { checkCronAuth } from '@/lib/cron-auth';
+import { logger } from '@/lib/logger';
 
 const SAVE_RECORDS_LOCALLY = process.env.SAVE_CALL_RECORDS === 'true';
 
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
             recordLocalUrl = saved.url;
           }
         } catch (e) {
-          console.error('record download failed:', e);
+          logger.error('record download failed:', e);
         }
       }
 
@@ -120,7 +121,7 @@ export async function POST(req: NextRequest) {
         });
       }
     } catch (e) {
-      console.error('import call failed:', e);
+      logger.error('import call failed:', e);
       errors++;
     }
   }
