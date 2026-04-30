@@ -11,6 +11,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyViberSignature, handleViberEvent, type ViberEvent } from '@/lib/viber';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 // Чтобы Next не кэшировал ответы webhook — каждый запрос обрабатывается заново
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
   const sig      = req.headers.get('x-viber-content-signature') ?? '';
 
   if (!verifyViberSignature(account.authToken, rawBody, sig)) {
-    console.warn(`[viber] bad signature for account ${accountId}`);
+    logger.warn(`[viber] bad signature for account ${accountId}`);
     return NextResponse.json({ error: 'bad signature' }, { status: 401 });
   }
 
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
     const result = await handleViberEvent(account, event);
     return NextResponse.json({ status: 0, status_message: 'ok', ...result });
   } catch (err) {
-    console.error('[viber] handler error', err);
+    logger.error('[viber] handler error', err);
     // Возвращаем 200 чтобы Viber не ретраил — событие в логах, разберёмся
     return NextResponse.json({ status: 0, status_message: 'logged' });
   }
