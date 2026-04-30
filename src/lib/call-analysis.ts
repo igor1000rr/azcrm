@@ -19,6 +19,7 @@ import {
   isCallAnalysisEnabled as isCfgEnabled,
   type CallAnalysisConfig,
 } from '@/lib/call-analysis-config';
+import { logger } from '@/lib/logger';
 import type { CallSentiment } from '@prisma/client';
 
 const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? 'http://localhost:3000';
@@ -261,7 +262,7 @@ export async function processCall(callId: string): Promise<'DONE' | 'SKIPPED' | 
           title:  `Проблемный звонок: ${call.lead?.client.fullName ?? call.lead?.client.phone ?? 'клиент'}`,
           body:   analysis.summary || 'Клиент раздражён в разговоре. Послушайте запись.',
           link:   call.lead ? `/clients/${call.lead.id}` : null,
-        }).catch((e) => console.error('NEGATIVE_CALL_ALERT notify failed:', e));
+        }).catch((e) => logger.error('NEGATIVE_CALL_ALERT notify failed:', e));
       }
     }
 
@@ -275,7 +276,7 @@ export async function processCall(callId: string): Promise<'DONE' | 'SKIPPED' | 
         transcriptError:  errMsg.slice(0, 500),
       },
     });
-    console.error(`processCall ${callId} failed:`, errMsg);
+    logger.error(`processCall ${callId} failed:`, errMsg);
     return 'FAILED';
   }
 }
