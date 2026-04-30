@@ -1,0 +1,4 @@
+# Provider lock для prisma/migrations.
+# Меняется ТОЛЬКО при смене типа БД — сейчас Postgres.
+# Подробнее: https://pris.ly/d/migration-lock-file
+provider = "postgresql"
