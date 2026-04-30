@@ -7,14 +7,32 @@
 //     любой мог подменить документ POST'ом без auth).
 //  2. body.url проверяется по hostname против белого списка (ONLYOFFICE_PUBLIC_URL
 //     и APP_INTERNAL_URL) — иначе SSRF: можно было заставить скачать любой URL.
+//  3. body валидируется через zod — битый JSON/левый формат не доходит до логики.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { db } from '@/lib/db';
 import {
   verifyJwt, OOCallbackStatus, type OOCallbackBody,
 } from '@/lib/onlyoffice';
 import { downloadAndSave } from '@/lib/storage';
+import { parseBody } from '@/lib/api-validation';
 import path from 'node:path';
+
+// Схема callback OnlyOffice — официальная документация:
+// https://api.onlyoffice.com/editors/callback
+// status — int 0..7, key — обязателен, url/users/actions — опциональны.
+const OOCallbackSchema = z.object({
+  key:    z.string().min(1).max(128),
+  status: z.number().int().min(0).max(7),
+  url:    z.string().url().max(4096).optional(),
+  users:  z.array(z.string().max(128)).max(50).optional(),
+  actions: z.array(z.object({
+    type:   z.number().int(),
+    userid: z.string().max(128),
+  })).max(50).optional(),
+  token:  z.string().max(8192).optional(),
+});
 
 /**
  * Разрешённые источники файла OnlyOffice. Помимо публичного URL — внутренний
@@ -56,7 +74,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 1, message: 'docId required' }, { status: 400 });
     }
 
-    const body = await req.json() as OOCallbackBody & { token?: string };
+    const parsed = await parseBody(req, OOCallbackSchema);
+    if (!parsed.ok) {
+      // OnlyOffice ждёт { error: <int> } — конвертим формат, но статус 400 сохраняем
+      return NextResponse.json({ error: 1, message: 'invalid body' }, { status: 400 });
+    }
+    const body: OOCallbackBody & { token?: string } = parsed.data;
 
     // Токен либо в Authorization, либо в body.token. ОБЯЗАТЕЛЕН.
     const authHeader = req.headers.get('authorization') ?? '';
