@@ -18,6 +18,7 @@ import { Modal } from '@/components/ui/modal';
 import { Input, Textarea, FormField, Select } from '@/components/ui/input';
 import { OnlyOfficeEditor } from '@/components/onlyoffice-editor';
 import { LeadChatPanel, type LeadChatMessage, type LeadChatAccount } from './lead-chat-panel';
+import { LeadCallsList, type LeadCallItem } from './lead-calls-list';
 import {
   cn, formatMoney, formatDate, formatDateTime, formatRelative,
   formatPhone, formatFileSize, plural, daysUntil,
@@ -135,6 +136,9 @@ interface LeadCardViewProps {
   chatMessages: LeadChatMessage[];
   // Доступные каналы для отправки (ADMIN — все, остальные — свои + общие)
   availableChatAccounts: LeadChatAccount[];
+  // Anna идея №12: последние звонки с клиентом + их транскрипция и sentiment.
+  // Полный список со всеми фильтрами и поиском по тексту — на /calls.
+  calls: LeadCallItem[];
 }
 
 const LEGAL_STAY_LABEL: Record<LegalStayType, string> = {
@@ -241,6 +245,9 @@ export function LeadCardView(props: LeadCardViewProps) {
           messages={props.chatMessages}
           availableAccounts={props.availableChatAccounts}
         />
+        {/* Anna идея №12: звонки с этим клиентом — sentiment + транскрипт.
+            Стоит после чата чтобы вся история контакта была рядом. */}
+        <CallsCard {...props} />
         <ServicesCard {...props} />
         <EmployerCard {...props} />
         <DocumentsCard {...props} />
@@ -256,6 +263,33 @@ export function LeadCardView(props: LeadCardViewProps) {
         <ActivityAside {...props} />
       </aside>
     </div>
+  );
+}
+
+function CallsCard({ calls, client }: LeadCardViewProps) {
+  // Считаем "проблемные" звонки — Anna просит видеть требующие внимания.
+  const negativeCount = calls.filter((c) => c.sentiment === 'NEGATIVE').length;
+  return (
+    <Section
+      title="Звонки"
+      count={calls.length}
+      action={
+        <Link
+          href={`/calls?q=${encodeURIComponent(client.fullName)}`}
+          className="text-[11.5px] text-navy hover:underline font-medium"
+        >
+          Поиск по разговорам →
+        </Link>
+      }
+    >
+      {negativeCount > 0 && (
+        <div className="mb-2.5 bg-danger/[0.04] border border-danger/20 rounded-md px-3 py-2 text-[12px] text-danger font-medium">
+          {negativeCount} {plural(negativeCount, 'проблемный звонок', 'проблемных звонка', 'проблемных звонков')} —
+          клиент был недоволен. Послушайте записи.
+        </div>
+      )}
+      <LeadCallsList calls={calls} clientName={client.fullName} />
+    </Section>
   );
 }
 
