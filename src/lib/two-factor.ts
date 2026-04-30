@@ -12,7 +12,10 @@
 //   XXXX-XXXX (Crockford base32, без неоднозначных символов).
 //   Хеши через bcrypt — даже при leak БД коды нельзя использовать.
 
-import crypto from 'node:crypto';
+// ВАЖНО: используем 'crypto' а не 'node:crypto' — webpack в Next.js
+// не справляется со схемой 'node:' и падает при сборке. Сам модуль
+// в Node.js одинаковый, разница только в синтаксисе импорта.
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { authenticator } from 'otplib';
 import QRCode from 'qrcode';
