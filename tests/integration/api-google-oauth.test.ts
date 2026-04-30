@@ -39,13 +39,16 @@ const mockDb = {
   user: { update: vi.fn() as AnyFn },
 };
 const mockRequireUser           = vi.fn(async () => ({ id: 'u-1', email: 'u@example.com', name: 'Ivan', role: 'SALES' }));
+// auth() добавлен в /api/google/callback для проверки совпадения session.user.id со state.
+const mockAuth                  = vi.fn(async () => ({ user: { id: 'u-1', email: 'u@example.com', name: 'Ivan', role: 'SALES' as const } }));
 const mockBuildAuthUrl          = vi.fn(() => 'https://accounts.google.com/o/oauth2/auth?state=...');
 const mockIsGoogleConfigured    = vi.fn(() => true);
 const mockExchangeCodeForTokens = vi.fn();
 
 vi.mock('@/lib/db',     () => ({ db: mockDb }));
 vi.mock('@/lib/auth',   () => ({
-  requireUser: mockRequireUser,
+  auth:         mockAuth,
+  requireUser:  mockRequireUser,
   requireAdmin: vi.fn(),
 }));
 vi.mock('@/lib/google', () => ({
@@ -70,6 +73,8 @@ beforeEach(() => {
   mockDb.user.update.mockReset();
   mockRequireUser.mockReset();
   mockRequireUser.mockImplementation(async () => ({ id: 'u-1', email: 'u@example.com', name: 'Ivan', role: 'SALES' }));
+  mockAuth.mockReset();
+  mockAuth.mockImplementation(async () => ({ user: { id: 'u-1', email: 'u@example.com', name: 'Ivan', role: 'SALES' as const } }));
   mockBuildAuthUrl.mockReset();
   mockBuildAuthUrl.mockReturnValue('https://accounts.google.com/o/oauth2/auth?state=...');
   mockIsGoogleConfigured.mockReset();
@@ -184,6 +189,7 @@ describe('GET /api/google/callback', () => {
   });
   it('userId в user.update — берётся из state ДО двоеточия', async () => {
     _cookieMap.set('google_oauth_state', 'u-real-id:long-random-nonce-with-dashes');
+    mockAuth.mockImplementation(async () => ({ user: { id: 'u-real-id', email: 'r@example.com', name: 'R', role: 'SALES' as const } }));
     mockExchangeCodeForTokens.mockResolvedValue({
       access_token: 'AT', refresh_token: 'RT', expires_in: 3600,
     });
@@ -192,5 +198,19 @@ describe('GET /api/google/callback', () => {
     expect(mockDb.user.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'u-real-id' } }),
     );
+  });
+
+  it('session-check: state.userId НЕ совпадает с session.user.id → redirect ?google=session', async () => {
+    // Защита от подсунутой через XSS state-cookie: атакующий мог инициировать
+    // OAuth-flow от своего юзера (state=u-attacker:nonce), и при возврате
+    // в callback на сессию жертвы — без этой проверки токены атакующего
+    // привязались бы к юзеру жертвы.
+    _cookieMap.set('google_oauth_state', 'u-attacker:nonce');
+    mockAuth.mockImplementation(async () => ({ user: { id: 'u-victim', email: 'v@example.com', name: 'V', role: 'SALES' as const } }));
+    const { GET } = await import('@/app/api/google/callback/route');
+    const res = (await GET(makeReq('http://localhost/api/google/callback?code=X&state=u-attacker:nonce') as never)) as CallbackRes;
+    expect(res.url).toContain('google=session');
+    expect(mockExchangeCodeForTokens).not.toHaveBeenCalled();
+    expect(mockDb.user.update).not.toHaveBeenCalled();
   });
 });
