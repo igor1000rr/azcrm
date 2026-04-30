@@ -1,8 +1,8 @@
 'use client';
 
-import { useTransition } from 'react';
-import { Check, RotateCcw } from 'lucide-react';
-import { markCommissionPaidOut } from './actions';
+import { useState, useTransition } from 'react';
+import { Check, RotateCcw, Calculator } from 'lucide-react';
+import { markCommissionPaidOut, recalcCommissionsForUser } from './actions';
 
 export function CommissionsActions({ id, paidOut }: { id: string; paidOut: boolean }) {
   const [pending, startTransition] = useTransition();
@@ -37,5 +37,56 @@ export function CommissionsActions({ id, paidOut }: { id: string; paidOut: boole
       <Check size={12} className="inline mr-1" />
       выплатить
     </button>
+  );
+}
+
+/**
+ * Кнопка «Пересчитать премии» в сводке по менеджеру.
+ * Применяет актуальный User.commissionPercent ко всем НЕвыплаченным комиссиям
+ * этого менеджера. Видна только админу (фильтрация на уровне action'а через requireAdmin).
+ *
+ * Сценарий: Igor выставил Юле %, но премии остались со старым/fallback процентом
+ * потому что были созданы при платеже до изменения. Кнопка пересчитывает их.
+ */
+export function RecalcUserCommissions({ userId, userName }: { userId: string; userName: string }) {
+  const [pending, startTransition] = useTransition();
+  const [result, setResult] = useState<string | null>(null);
+
+  function onClick() {
+    if (!confirm(`Пересчитать невыплаченные премии менеджера ${userName} по актуальному %?\n\nВыплаченные премии не изменятся.`)) {
+      return;
+    }
+    startTransition(async () => {
+      try {
+        const res = await recalcCommissionsForUser(userId);
+        if (res.updated === 0) {
+          setResult(`Проверено ${res.totalChecked}, изменений нет`);
+        } else {
+          const sign = res.delta >= 0 ? '+' : '';
+          setResult(`Обновлено ${res.updated} из ${res.totalChecked} · дельта ${sign}${res.delta} zł`);
+        }
+        setTimeout(() => location.reload(), 1500);
+      } catch (e) {
+        setResult('Ошибка: ' + (e as Error).message);
+      }
+    });
+  }
+
+  return (
+    <div className="inline-flex flex-col items-end gap-0.5">
+      <button
+        type="button"
+        disabled={pending}
+        onClick={onClick}
+        title={`Применить актуальный % к невыплаченным премиям ${userName}`}
+        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold border border-line text-ink-2 rounded hover:border-navy hover:text-navy transition-colors disabled:opacity-50"
+      >
+        <Calculator size={11} />
+        {pending ? 'Пересчёт...' : 'Пересчитать'}
+      </button>
+      {result && (
+        <span className="text-[10px] text-ink-3 whitespace-nowrap">{result}</span>
+      )}
+    </div>
   );
 }

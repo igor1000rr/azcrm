@@ -8,7 +8,7 @@ import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { canViewFinance, canMarkCommissionPaid } from '@/lib/permissions';
 import { formatDate, formatMoney } from '@/lib/utils';
-import { CommissionsActions } from './actions-view';
+import { CommissionsActions, RecalcUserCommissions } from './actions-view';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,7 +46,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
       orderBy: { createdAt: 'desc' },
       take: 500,
       include: {
-        user: { select: { id: true, name: true, role: true } },
+        user: { select: { id: true, name: true, role: true, commissionPercent: true } },
         payment: {
           select: {
             id: true, amount: true, paidAt: true, sequence: true,
@@ -74,6 +74,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   // Свод: группировка по менеджеру
   const byUser = new Map<string, {
     id: string; name: string; role: string;
+    currentPct: number | null;     // актуальный User.commissionPercent — для подсказки в сводке
     totalAmount: number; totalCommission: number; count: number;
     paidOut: number; pending: number;
   }>();
@@ -82,6 +83,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
     if (!byUser.has(k)) {
       byUser.set(k, {
         id: c.user.id, name: c.user.name, role: c.user.role,
+        currentPct: c.user.commissionPercent != null ? Number(c.user.commissionPercent) : null,
         totalAmount: 0, totalCommission: 0, count: 0, paidOut: 0, pending: 0,
       });
     }
@@ -140,11 +142,13 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
                   <tr className="border-b border-line bg-bg">
                     <Th>Менеджер</Th>
                     <Th>Роль</Th>
+                    <Th align="right">% сейчас</Th>
                     <Th align="right">Привод. сумма</Th>
                     <Th align="right">Премия всего</Th>
                     <Th align="right">Выплачено</Th>
                     <Th align="right">К выплате</Th>
                     <Th align="right">Платежей</Th>
+                    {isAdmin && <Th align="right">Действия</Th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -159,16 +163,31 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
                       <td className="px-4 py-2.5 text-ink-3">
                         {a.role === 'SALES' ? 'Продажи' : a.role === 'LEGAL' ? 'Легализация' : 'Админ'}
                       </td>
+                      <td className="px-4 py-2.5 text-right font-mono">
+                        {a.currentPct !== null
+                          ? <span className="text-ink">{a.currentPct}%</span>
+                          : <span className="text-ink-4" title="% не задан, используется fallback (по услуге или 5%)">—</span>}
+                      </td>
                       <td className="px-4 py-2.5 text-right font-mono">{formatMoney(a.totalAmount)} zł</td>
                       <td className="px-4 py-2.5 text-right font-mono font-bold text-success">{formatMoney(a.totalCommission)} zł</td>
                       <td className="px-4 py-2.5 text-right font-mono text-ink-3">{formatMoney(a.paidOut)} zł</td>
                       <td className="px-4 py-2.5 text-right font-mono font-bold text-warn">{formatMoney(a.pending)} zł</td>
                       <td className="px-4 py-2.5 text-right font-mono">{a.count}</td>
+                      {isAdmin && (
+                        <td className="px-4 py-2.5 text-right">
+                          <RecalcUserCommissions userId={a.id} userName={a.name} />
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {isAdmin && (
+              <div className="px-4 py-2 border-t border-line bg-bg/40 text-[11px] text-ink-3">
+                «Пересчитать» применяет актуальный % менеджера ко всем его невыплаченным премиям. Выплаченные не меняются.
+              </div>
+            )}
           </div>
         )}
 
