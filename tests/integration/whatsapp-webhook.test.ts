@@ -3,7 +3,8 @@
 // Покрываем:
 //   - Авторизация: неверный токен → 401
 //   - Дедупликация: то же externalId дважды → второй раз deduplicated
-//   - Новый клиент → создаётся client + lead + thread + message
+//   - Новый клиент → создаётся client + thread + message (БЕЗ лида —
+//     лид создаётся вручную из карточки клиента, Anna 01.05.2026)
 //   - Существующий клиент → client.create НЕ вызывается
 //   - thread.unreadCount инкрементится
 //   - notify вызывается владельцу канала
@@ -24,6 +25,10 @@ const mockDb = {
     update:     vi.fn() as AnyFn,
   },
   client:    { findUnique: vi.fn() as AnyFn, create: vi.fn() as AnyFn },
+  // funnel/lead больше не нужны в webhook (Anna 01.05.2026: автосоздание
+  // лида убрано — менеджер создаёт его вручную из карточки клиента).
+  // Моки оставлены чтобы тесты «существующий клиент» могли проверить что
+  // lead.create НЕ вызывается даже если бы кто-то добавил эту логику обратно.
   funnel:    { findFirst:  vi.fn() as AnyFn },
   lead:      { create:     vi.fn() as AnyFn },
   chatThread:{ findFirst:  vi.fn() as AnyFn, create: vi.fn() as AnyFn, update: vi.fn() as AnyFn },
@@ -118,16 +123,11 @@ describe('handleIncomingMessage: новый клиент', () => {
     });
     mockDb.client.findUnique.mockResolvedValue(null); // новый
     mockDb.client.create.mockResolvedValue({ id: 'c-new' });
-    mockDb.funnel.findFirst.mockResolvedValue({
-      id: 'f-default',
-      stages: [{ id: 's-first' }],
-    });
-    mockDb.lead.create.mockResolvedValue({ id: 'l-new' });
     mockDb.chatThread.findFirst.mockResolvedValue(null);
     mockDb.chatThread.create.mockResolvedValue({ id: 't-new' });
   });
 
-  it('создаётся client + lead + thread + message', async () => {
+  it('создаётся client + thread + message (без лида)', async () => {
     const res = await POST(makeReq({
       kind: 'message.in',
       accountId:  'acc-1',
@@ -146,19 +146,12 @@ describe('handleIncomingMessage: новый клиент', () => {
           fullName: 'Иван',
           phone:    '+48123456789',
           ownerId:  'u-anna',
+          source:   expect.stringContaining('WhatsApp'),
         }),
       }),
     );
-    expect(mockDb.lead.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          clientId:    'c-new',
-          sourceKind:  'WHATSAPP',
-          stageId:     's-first',
-          salesManagerId: 'u-anna',
-        }),
-      }),
-    );
+    // Лид НЕ создаётся автоматически — менеджер создаст вручную из карточки
+    expect(mockDb.lead.create).not.toHaveBeenCalled();
     expect(mockDb.chatThread.create).toHaveBeenCalled();
     expect(mockDb.chatMessage.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -188,31 +181,23 @@ describe('handleIncomingMessage: новый клиент', () => {
     expect(call.data.fullName).toContain('+48000');
   });
 
-  it('нет настроенной воронки → 500, лид не создаётся', async () => {
+  it('webhook возвращает 200 даже если в системе нет воронок (лид не создаём)', async () => {
+    // Раньше webhook искал дефолтную воронку и падал с 500 если её не было.
+    // Теперь воронка не нужна — webhook сохраняет только клиента и сообщение.
     mockDb.funnel.findFirst.mockResolvedValue(null);
     const res = await POST(makeReq({
       kind: 'message.in',
       accountId:  'acc-1',
       externalId: 'wa-msg-3',
-      fromPhone:  '+48',
+      fromPhone:  '+48555',
       type:       'text',
+      body:       'тест',
       timestamp:  Date.now(),
     }, { token: 't' }) as never);
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
     expect(mockDb.lead.create).not.toHaveBeenCalled();
-  });
-
-  it('воронка без этапов → 500', async () => {
-    mockDb.funnel.findFirst.mockResolvedValue({ id: 'f-1', stages: [] });
-    const res = await POST(makeReq({
-      kind: 'message.in',
-      accountId:  'acc-1',
-      externalId: 'wa-msg-4',
-      fromPhone:  '+48',
-      type:       'text',
-      timestamp:  Date.now(),
-    }, { token: 't' }) as never);
-    expect(res.status).toBe(500);
+    expect(mockDb.client.create).toHaveBeenCalled();
+    expect(mockDb.chatMessage.create).toHaveBeenCalled();
   });
 });
 
