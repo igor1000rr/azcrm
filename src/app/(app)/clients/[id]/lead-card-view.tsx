@@ -897,10 +897,18 @@ function FingerprintModal({ open, onClose, leadId, currentDate, currentLocation,
   const [date, setDate] = useState(currentDate ? currentDate.slice(0, 16) : '');
   const [loc, setLoc] = useState(currentLocation ?? '');
   const [busy, setBusy] = useState(false);
+  // Anna 01.05.2026: при «Не удалось сохранить» алерт выводил только общий
+  // текст, реальная ошибка сервера терялась в console.error. Теперь показываем
+  // её прямо в alert чтобы менеджер мог сразу понять что не так
+  // (нет прав / лид не найден / Google API недоступен / сессия истекла).
   async function save() {
     setBusy(true);
     try { await setFingerprintDate(leadId, date || null, loc || null); onSaved(); }
-    catch (e) { console.error(e); alert('Не удалось сохранить'); }
+    catch (e) {
+      console.error(e);
+      const msg = (e as Error).message || 'неизвестная ошибка';
+      alert('Не удалось сохранить: ' + msg);
+    }
     finally { setBusy(false); }
   }
   return (
