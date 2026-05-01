@@ -70,6 +70,20 @@ export default async function LeadPage({ params }: PageProps) {
     orderBy: { position: 'asc' },
   });
 
+  // Все воронки + их этапы — для UI селекторов смены воронки/этапа
+  // в карточке лида (Anna 01.05.2026). Подгружаем активные плюс,
+  // на всякий случай, текущую воронку лида (вдруг её отключили).
+  const allFunnels = await db.funnel.findMany({
+    where: { OR: [{ isActive: true }, { id: lead.funnelId }] },
+    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+    include: {
+      stages: {
+        orderBy: { position: 'asc' },
+        select: { id: true, name: true, position: true },
+      },
+    },
+  });
+
   const team = await db.user.findMany({
     where: { isActive: true, role: { in: ['SALES', 'LEGAL'] } },
     select: { id: true, name: true, email: true, role: true },
@@ -422,6 +436,10 @@ export default async function LeadPage({ params }: PageProps) {
         stages={allStages.map((s) => ({
           id: s.id, name: s.name, color: s.color, position: s.position,
           isFinal: s.isFinal, isLost: s.isLost,
+        }))}
+        funnels={allFunnels.map((f) => ({
+          id: f.id, name: f.name, isActive: f.isActive,
+          stages: f.stages,
         }))}
         documents={lead.documents.map((d) => ({
           id: d.id, name: d.name, isPresent: d.isPresent,
