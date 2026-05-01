@@ -6,7 +6,13 @@
 //
 // Логика для входящих:
 //   1. Найти клиента по номеру телефона (нормализованному)
-//   2. Если нет — создать нового клиента + лида (по правилу WA-номера)
+//   2. Если нет — создать ТОЛЬКО клиента (без лида).
+//      Лид менеджер создаст вручную через карточку клиента, выбрав
+//      нужную воронку и этап. Это поведение по требованию Anna —
+//      раньше лид создавался автоматом в дефолтной воронке "Praca",
+//      что было неудобно: бывают консультации, ошибочные обращения,
+//      просто переписка. Теперь сначала переписка → потом ручное
+//      решение в какую воронку положить.
 //   3. Найти/создать ChatThread
 //   4. Создать ChatMessage, инкрементить unreadCount
 //   5. Обновить lastMessageAt в треде
@@ -103,52 +109,18 @@ async function handleIncomingMessage(msg: IncomingMessage) {
   });
   if (!account) return NextResponse.json({ error: 'account not found' }, { status: 404 });
 
-  // Найти клиента по номеру
+  // Найти клиента по номеру. Если нет — создаём ТОЛЬКО клиента.
+  // Лид менеджер создаст вручную из карточки клиента (см. комментарий
+  // в шапке файла).
   let client = await db.client.findUnique({ where: { phone } });
 
-  // Если клиента нет — создаём + первый лид
   if (!client) {
-    // Назначение менеджера: владелец канала, если есть; иначе — без менеджера
-    const ownerId = account.ownerId;
-
-    // Берём первую активную воронку как дефолт ("Консультация" обычно)
-    const defaultFunnel = await db.funnel.findFirst({
-      where: { isActive: true },
-      include: { stages: { orderBy: { position: 'asc' }, take: 1 } },
-    });
-
-    if (!defaultFunnel || defaultFunnel.stages.length === 0) {
-      logger.error('[wa-webhook] no default funnel/stage configured');
-      return NextResponse.json({ error: 'no funnel configured' }, { status: 500 });
-    }
-
     client = await db.client.create({
       data: {
-        fullName:  msg.fromName?.trim() || `Клиент ${phone}`,
+        fullName: msg.fromName?.trim() || `Клиент ${phone}`,
         phone,
-        ownerId,
-        source:    `WhatsApp: ${account.label}`,
-      },
-    });
-
-    // Создаём первый лид
-    await db.lead.create({
-      data: {
-        clientId:           client.id,
-        funnelId:           defaultFunnel.id,
-        stageId:            defaultFunnel.stages[0].id,
-        salesManagerId:     ownerId,
-        whatsappAccountId:  account.id,
-        source:             `WhatsApp: ${account.label}`,
-        sourceKind:         'WHATSAPP',
-        firstContactAt:     new Date(msg.timestamp),
-        events: {
-          create: {
-            authorId: ownerId,
-            kind:     'LEAD_CREATED',
-            message:  `Лид создан автоматически из WhatsApp (${account.label})`,
-          },
-        },
+        ownerId: account.ownerId,
+        source:  `WhatsApp: ${account.label}`,
       },
     });
   }
@@ -222,6 +194,9 @@ async function handleIncomingMessage(msg: IncomingMessage) {
       link:   `/inbox?thread=${thread.id}`,
     });
   }
+
+  // Глушим неиспользуемый импорт пока нечем заглушить
+  void logger;
 
   revalidatePath('/inbox');
   return NextResponse.json({ ok: true });
