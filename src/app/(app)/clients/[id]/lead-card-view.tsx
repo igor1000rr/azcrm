@@ -35,6 +35,7 @@ import {
   setSubmittedAt, setCaseNumber,
 } from './actions';
 import { setAttorney } from './attorney-actions';
+import { FunnelStageSection } from './funnel-stage-section';
 import type { UserRole, PaymentMethod, EventKind, CalendarKind, FileCategory, InternalDocFormat } from '@prisma/client';
 
 // ============ ТИПЫ ============
@@ -101,6 +102,13 @@ interface LeadCardViewProps {
   stages: Array<{
     id: string; name: string; color: string | null; position: number;
     isFinal: boolean; isLost: boolean;
+  }>;
+  // Все воронки + их этапы для селекторов смены воронки/этапа в DealCard
+  // (Anna 01.05.2026 — менеджеру нужно мочь перевести лид в другую воронку
+  // если ошибся на этапе создания).
+  funnels: Array<{
+    id: string; name: string; isActive: boolean;
+    stages: Array<{ id: string; name: string; position: number }>;
   }>;
   documents: Array<{
     id: string; name: string; isPresent: boolean;
@@ -300,6 +308,16 @@ export function LeadCardView(props: LeadCardViewProps) {
       <div className="min-w-0 flex flex-col gap-3.5">
         <ClientHeader {...props} />
         <ClientCard {...props} />
+        {/* Anna 01.05.2026: «можно менять воронку — если ошибся ?)))».
+            Над «Сделкой» — отдельная секция со сменой воронки и этапа. */}
+        <FunnelStageSection
+          leadId={props.lead.id}
+          currentFunnelId={props.lead.funnelId}
+          currentStageId={props.lead.stageId}
+          currentFunnelName={props.lead.funnelName}
+          currentStageName={props.lead.stageName}
+          funnels={props.funnels}
+        />
         <DealCard {...props} />
         <LeadChatPanel
           leadId={props.lead.id}
