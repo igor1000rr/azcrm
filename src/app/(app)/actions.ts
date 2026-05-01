@@ -673,10 +673,18 @@ export async function setFingerprintDate(
   });
 
   if (existingEvent?.googleId && existingEvent.ownerId) {
-    const { deleteGoogleEvent } = await import('@/lib/google');
-    deleteGoogleEvent(existingEvent.ownerId, existingEvent.googleId).catch((e) => {
-      logger.error('failed to delete google event:', e);
-    });
+    // Google delete — best-effort. Импорт + сама функция не должны валить
+    // основное действие (запись в БД). Импорт оборачиваем тоже — если
+    // модуль @/lib/google не загрузится (например crypto-key битый),
+    // мы должны увидеть запись в логах а не алерт у пользователя.
+    try {
+      const { deleteGoogleEvent } = await import('@/lib/google');
+      deleteGoogleEvent(existingEvent.ownerId, existingEvent.googleId).catch((e) => {
+        logger.error('[setFingerprintDate] failed to delete google event:', e);
+      });
+    } catch (e) {
+      logger.error('[setFingerprintDate] failed to import google module:', e);
+    }
   }
 
   await db.$transaction(async (tx) => {
@@ -717,28 +725,38 @@ export async function setFingerprintDate(
     });
   });
 
+  // Google Calendar sync — best-effort. Если упадёт (network error,
+  // expired refresh token, отозванный доступ, dns timeout) — логируем и
+  // идём дальше. Запись в БД уже прошла, для пользователя главное это.
+  // Раньше тут createGoogleEvent был вне try/catch — fetch внутри него
+  // мог бросить network error, и весь setFingerprintDate падал → Anna
+  // видела «Не удалось сохранить» хотя в БД уже всё есть.
   if (dt && lead.legalManagerId) {
-    const { createGoogleEvent } = await import('@/lib/google');
-    const googleId = await createGoogleEvent(lead.legalManagerId, {
-      summary:     `Отпечатки: ${lead.client.fullName}`,
-      description: `Клиент: ${lead.client.fullName}\nТелефон: ${lead.client.phone}`,
-      location:    location || undefined,
-      start: { dateTime: dt.toISOString(), timeZone: 'Europe/Warsaw' },
-      end:   { dateTime: new Date(dt.getTime() + 30 * 60 * 1000).toISOString(), timeZone: 'Europe/Warsaw' },
-      reminders: {
-        useDefault: false,
-        overrides: [
-          { method: 'popup', minutes: 60 },
-          { method: 'popup', minutes: 24 * 60 },
-        ],
-      },
-    });
-
-    if (googleId) {
-      await db.calendarEvent.updateMany({
-        where: { leadId, kind: 'FINGERPRINT' },
-        data:  { googleId },
+    try {
+      const { createGoogleEvent } = await import('@/lib/google');
+      const googleId = await createGoogleEvent(lead.legalManagerId, {
+        summary:     `Отпечатки: ${lead.client.fullName}`,
+        description: `Клиент: ${lead.client.fullName}\nТелефон: ${lead.client.phone}`,
+        location:    location || undefined,
+        start: { dateTime: dt.toISOString(), timeZone: 'Europe/Warsaw' },
+        end:   { dateTime: new Date(dt.getTime() + 30 * 60 * 1000).toISOString(), timeZone: 'Europe/Warsaw' },
+        reminders: {
+          useDefault: false,
+          overrides: [
+            { method: 'popup', minutes: 60 },
+            { method: 'popup', minutes: 24 * 60 },
+          ],
+        },
       });
+
+      if (googleId) {
+        await db.calendarEvent.updateMany({
+          where: { leadId, kind: 'FINGERPRINT' },
+          data:  { googleId },
+        });
+      }
+    } catch (e) {
+      logger.error('[setFingerprintDate] failed to sync Google Calendar:', e);
     }
   }
 
@@ -826,28 +844,33 @@ export async function addExtraCall(input: {
     return created;
   });
 
-  // Google Calendar (если у legal-менеджера подключён Google)
+  // Google Calendar sync — best-effort, как и в setFingerprintDate.
+  // Ошибка не должна валить основное действие (запись в БД уже прошла).
   if (lead.legalManagerId) {
-    const { createGoogleEvent } = await import('@/lib/google');
-    const googleId = await createGoogleEvent(lead.legalManagerId, {
-      summary:     fullTitle,
-      description,
-      start: { dateTime: dueDt.toISOString(), timeZone: 'Europe/Warsaw' },
-      end:   { dateTime: new Date(dueDt.getTime() + 30 * 60 * 1000).toISOString(), timeZone: 'Europe/Warsaw' },
-      reminders: {
-        useDefault: false,
-        overrides: [
-          { method: 'popup', minutes: 60 },
-          { method: 'popup', minutes: 24 * 60 },
-        ],
-      },
-    });
-
-    if (googleId) {
-      await db.calendarEvent.update({
-        where: { id: event.id },
-        data:  { googleId },
+    try {
+      const { createGoogleEvent } = await import('@/lib/google');
+      const googleId = await createGoogleEvent(lead.legalManagerId, {
+        summary:     fullTitle,
+        description,
+        start: { dateTime: dueDt.toISOString(), timeZone: 'Europe/Warsaw' },
+        end:   { dateTime: new Date(dueDt.getTime() + 30 * 60 * 1000).toISOString(), timeZone: 'Europe/Warsaw' },
+        reminders: {
+          useDefault: false,
+          overrides: [
+            { method: 'popup', minutes: 60 },
+            { method: 'popup', minutes: 24 * 60 },
+          ],
+        },
       });
+
+      if (googleId) {
+        await db.calendarEvent.update({
+          where: { id: event.id },
+          data:  { googleId },
+        });
+      }
+    } catch (e) {
+      logger.error('[addExtraCall] failed to sync Google Calendar:', e);
     }
   }
 
@@ -885,10 +908,18 @@ export async function deleteCalendarEvent(eventId: string) {
     assert(user.role === 'ADMIN' || ev.ownerId === user.id);
   }
 
-  // Асинхронно удалить из Google
+  // Асинхронно удалить из Google. Импорт тоже под try/catch — если
+  // модуль @/lib/google не загрузится (битый crypto key и т.п.) —
+  // не валим основное действие.
   if (ev.googleId && ev.ownerId) {
-    const { deleteGoogleEvent } = await import('@/lib/google');
-    deleteGoogleEvent(ev.ownerId, ev.googleId).catch(() => {});
+    try {
+      const { deleteGoogleEvent } = await import('@/lib/google');
+      deleteGoogleEvent(ev.ownerId, ev.googleId).catch((e) => {
+        logger.error('[deleteCalendarEvent] failed to delete google event:', e);
+      });
+    } catch (e) {
+      logger.error('[deleteCalendarEvent] failed to import google module:', e);
+    }
   }
 
   await db.calendarEvent.delete({ where: { id: eventId } });
