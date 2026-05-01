@@ -553,10 +553,9 @@ function DealCard({ lead, salesManager, legalManager, city, workCity, cities, te
             ? <ManagerPill name={legalManager.name} onClick={() => setShowLegalModal(true)} clickable />
             : <button onClick={() => setShowLegalModal(true)} className="text-[12px] text-navy hover:underline font-medium">+ Назначить</button> },
         ],
-        [
-          { label: 'Этап воронки', value: <Badge variant="warn" withDot>{lead.stageName}</Badge> },
-          { label: 'Воронка', value: lead.funnelName },
-        ],
+        // Раньше тут была плоская строка [Этап воронки / Воронка] — теперь её
+        // показывает отдельная секция «Воронка и этап» сверху над «Сделкой»
+        // (с возможностью смены воронки/этапа через селекторы). Anna 01.05.2026.
         [
           { label: 'Город обращения', value: city?.name },
           { label: 'Город работы', value: (
