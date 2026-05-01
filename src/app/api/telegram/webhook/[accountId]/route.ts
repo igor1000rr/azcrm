@@ -2,12 +2,13 @@
 // Telegram Bot API слёт обновления прямо сюда. Аутентификация через заголовок
 // X-Telegram-Bot-Api-Secret-Token, который мы задали при setWebhook (HMAC от accountId).
 //
-// Логика аналогична WhatsApp:
+// Логика:
 //   1. Проверить secret
 //   2. Найти или создать клиента (по телефону из contact, или fallback по tg:<chatId>)
-//   3. Если новый клиент — создать первый лид
-//   4. Найти/создать ChatThread (channel=TELEGRAM, externalId=chatId)
-//   5. Сохранить ChatMessage с дедупликацией по externalId = update_id
+//      БЕЗ автосоздания лида — менеджер создаст лид вручную из карточки
+//      клиента (Anna 01.05.2026).
+//   3. Найти/создать ChatThread (channel=TELEGRAM, externalId=chatId)
+//   4. Сохранить ChatMessage с дедупликацией по externalId = update_id
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -24,11 +25,6 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 // ============ ZOD-СХЕМА TG UPDATE ============
-// Минимальная защитная валидация: гарантируем что update_id есть и это число,
-// а message/edited_message — корректный объект если присутствует. Внутрь
-// TelegramMessage детально не лезем — Telegram API стабилен и поля могут
-// добавляться (forward_from, reply_to_message и т.п.) — расширяемая схема
-// через .passthrough(). Главное защитить от мусора в кривых полях.
 const TgUserSchema = z.object({
   id:         z.number().int(),
   is_bot:     z.boolean().optional(),
@@ -94,9 +90,6 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
-  // 2. Парсим update через zod. Telegram ретраит на не-2xx, так что
-  // на reaaaaally невалидные апдейты возвращаем 200 со skipped — иначе
-  // Telegram забьёт очередь.
   const parsed = await parseBody(req, TgUpdateSchema);
   if (!parsed.ok) {
     logger.warn('[tg-webhook] invalid update payload, skipping');
@@ -106,11 +99,9 @@ export async function POST(
 
   const message = update.message ?? update.edited_message;
   if (!message) {
-    // Сейчас callback_query и другие типы update’ов просто пропускаем (200, иначе Telegram будет ретраить)
     return NextResponse.json({ ok: true, skipped: true });
   }
 
-  // 3. Находим аккаунт
   const account = await db.telegramAccount.findUnique({
     where: { id: accountId },
     select: { id: true, ownerId: true, label: true, isActive: true },
@@ -127,7 +118,6 @@ async function handleIncomingMessage(
   updateId: number,
   account: { id: string; ownerId: string | null; label: string },
 ) {
-  // Дедуп по externalId
   const externalId = `${updateId}`;
   const existing = await db.chatMessage.findFirst({
     where: { externalId, telegramAccountId: account.id },
@@ -143,18 +133,10 @@ async function handleIncomingMessage(
     || `Telegram ${chatId}`;
   const tgUsername = fromUser?.username ?? null;
 
-  // Находим/создаём клиента.
-  // Приоритет поиска:
-  //   1. Если пришёл contact с телефоном — ищем по этому номеру
-  //   2. Иначе ищем существующий thread по tg-chatId и берём клиента оттуда
-  //   3. Иначе — новый клиент с фиктивным телефоном (tg:<chatId>)
-
+  // Находим/создаём клиента (без автосоздания лида — Anna 01.05.2026).
   let client: { id: string } | null = null;
   let phone: string | null = null;
 
-  // contact приходит когда юзер сам шарит свой номер через "📎 → Contact".
-  // Раньше тут было `(A && A === userId.toString()) || A` — что эквивалентно
-  // просто `A`. Упрощено: любой contact с phone_number используется.
   if (msg.contact?.phone_number) {
     try { phone = normalizePhone(msg.contact.phone_number); } catch {}
   }
@@ -172,45 +154,17 @@ async function handleIncomingMessage(
   }
 
   if (!client) {
-    const defaultFunnel = await db.funnel.findFirst({
-      where: { isActive: true },
-      include: { stages: { orderBy: { position: 'asc' }, take: 1 } },
-    });
-    if (!defaultFunnel || defaultFunnel.stages.length === 0) {
-      logger.error('[tg-webhook] no default funnel/stage configured');
-      return NextResponse.json({ ok: false, error: 'no funnel configured' }, { status: 500 });
-    }
-
+    // Создаём ТОЛЬКО клиента. Лид менеджер создаст вручную через карточку.
     const fakePhone = phone || `tg:${chatId}`;
     const created = await db.client.create({
       data: {
         fullName: tgUserName,
         phone:    fakePhone,
         ownerId:  account.ownerId,
-        source:   `Telegram: ${account.label}`,
+        source:   `Telegram: ${account.label}${tgUsername ? ' (@' + tgUsername + ')' : ''}`,
       },
     });
     client = { id: created.id };
-
-    await db.lead.create({
-      data: {
-        clientId:          created.id,
-        funnelId:          defaultFunnel.id,
-        stageId:           defaultFunnel.stages[0].id,
-        salesManagerId:    account.ownerId,
-        telegramAccountId: account.id,
-        source:            `Telegram: ${account.label}${tgUsername ? ' (@' + tgUsername + ')' : ''}`,
-        sourceKind:        'TELEGRAM',
-        firstContactAt:    new Date(msg.date * 1000),
-        events: account.ownerId ? {
-          create: {
-            authorId: account.ownerId,
-            kind:     'LEAD_CREATED',
-            message:  `Лид создан автоматически из Telegram (${account.label})`,
-          },
-        } : undefined,
-      },
-    });
   }
 
   // 4. Тред
@@ -228,11 +182,9 @@ async function handleIncomingMessage(
       },
     });
   } else if (thread.clientId !== client.id) {
-    // Привязываем к найденному клиенту
     await db.chatThread.update({ where: { id: thread.id }, data: { clientId: client.id } });
   }
 
-  // 5. Тип сообщения + тело
   const { type, body, mediaName, mediaSize } = mapMessageContent(msg);
   const preview = body?.slice(0, 200) || `[${type.toLowerCase()}]`;
 
