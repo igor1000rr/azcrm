@@ -12,7 +12,7 @@ import Link from 'next/link';
 import {
   Send, Paperclip, Search, MessageSquare,
   ChevronLeft, FileText, Sparkles, Volume2, VolumeX,
-  Smartphone, MessageCircle, Facebook, Instagram,
+  Smartphone, MessageCircle, Facebook, Instagram, Plus,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Modal } from '@/components/ui/modal';
@@ -407,11 +407,28 @@ function ChatPane({
             {showPhone ? formatPhone(thread.clientPhone) : channelLabel(thread.kind)}
           </div>
         </div>
-        {thread.leadId && (
-          <Link href={`/clients/${thread.leadId}`} className="text-[12px] text-info hover:underline">
+        {/*
+          Если у клиента уже есть лид (thread.leadId) — кнопка ведёт в карточку лида.
+          Если лида ещё нет (новый клиент написал — но менеджер пока не оформил) —
+          предлагаем создать его через готовую форму /clients/new (Anna 01.05.2026).
+          В форме можно выбрать воронку и этап.
+        */}
+        {thread.leadId ? (
+          <Link
+            href={`/clients/${thread.leadId}`}
+            className="text-[12px] text-info hover:underline shrink-0"
+          >
             Открыть карточку →
           </Link>
-        )}
+        ) : thread.clientId ? (
+          <Link
+            href={`/clients/new?clientId=${thread.clientId}`}
+            className="text-[12px] font-semibold text-success hover:underline shrink-0 flex items-center gap-1"
+          >
+            <Plus size={12} />
+            Создать лид
+          </Link>
+        ) : null}
       </div>
 
       {/* Сообщения */}
