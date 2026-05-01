@@ -163,6 +163,23 @@ const LEGAL_STAY_LABEL: Record<LegalStayType, string> = {
   VISA_FREE: 'Безвиз',
 };
 
+/** Конвертит UTC ISO строку из БД → "YYYY-MM-DDTHH:MM" в Europe/Warsaw
+ *  для <input type="datetime-local"> (он не понимает таймзоны).
+ *
+ *  Anna 01.05.2026: «Пишу 12 — оно ставит 14». Раньше было slice(0,16),
+ *  что брало UTC компоненты как есть → при отправке на сервер тот их
+ *  парсил тоже как UTC → +2h в БД для Warsaw летом. Теперь конвертим явно.
+ *  sv-SE даёт ISO-формат "YYYY-MM-DD HH:MM", меняем пробел на T. */
+function toWarsawLocalInput(utcIso: string): string {
+  const d = new Date(utcIso);
+  const fmt = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Warsaw',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  return fmt.format(d).replace(' ', 'T');
+}
+
 /** Отображение «Действует до» с подсветкой по близости срока:
  *  истёк — красный, < 30 дн — жёлтый, < 90 дн — info, иначе обычный.
  *  Используется и для legalStayUntil, и для passportExpiresAt. */
@@ -853,9 +870,12 @@ function CalendarCard({ lead, calendarEvents, legalManager, currentUser }: LeadC
           <div className="flex flex-col gap-1.5">
             {calendarEvents.map((e) => {
               const dt = new Date(e.startsAt);
-              const dayNum = dt.getDate();
-              const monthShort = dt.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '');
-              const time = dt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+              // Явно указываем Europe/Warsaw — чтобы дата/время отображались
+              // одинаково независимо от TZ браузера менеджера (Anna в Польше,
+              // Igor может зайти из Беларуси с TZ=+3, не должно ехать).
+              const dayNum = dt.toLocaleDateString('ru-RU', { day: '2-digit', timeZone: 'Europe/Warsaw' });
+              const monthShort = dt.toLocaleDateString('ru-RU', { month: 'short', timeZone: 'Europe/Warsaw' }).replace('.', '');
+              const time = dt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Warsaw' });
               const days = daysUntil(e.startsAt);
               const accent = e.kind === 'FINGERPRINT' ? 'border-l-warn' : e.kind === 'EXTRA_CALL' ? 'border-l-danger' : 'border-l-navy';
               return (
@@ -894,7 +914,13 @@ function CalendarCard({ lead, calendarEvents, legalManager, currentUser }: LeadC
 }
 
 function FingerprintModal({ open, onClose, leadId, currentDate, currentLocation, onSaved }: { open: boolean; onClose: () => void; leadId: string; currentDate: string | null; currentLocation: string | null; onSaved: () => void }) {
-  const [date, setDate] = useState(currentDate ? currentDate.slice(0, 16) : '');
+  // Anna 01.05.2026: «Пишу 12 — оно ставит 14». Раньше тут было
+  // currentDate.slice(0,16) — это брало UTC компоненты как есть и
+  // показывало в input как локальные. На сервере potом получалось
+  // двойное смещение. toWarsawLocalInput явно конвертит UTC ISO
+  // (как в БД) в локальное время Europe/Warsaw для datetime-local
+  // (этот input не понимает таймзоны).
+  const [date, setDate] = useState(currentDate ? toWarsawLocalInput(currentDate) : '');
   const [loc, setLoc] = useState(currentLocation ?? '');
   const [busy, setBusy] = useState(false);
   // Anna 01.05.2026: при «Не удалось сохранить» алерт выводил только общий
@@ -915,7 +941,7 @@ function FingerprintModal({ open, onClose, leadId, currentDate, currentLocation,
     <Modal open={open} onClose={onClose} title="Дата отпечатков"
       footer={<><Button onClick={onClose}>Отмена</Button><Button variant="primary" onClick={save} disabled={busy}>{busy ? 'Сохранение...' : 'Сохранить'}</Button></>}>
       <div className="flex flex-col gap-3">
-        <FormField label="Дата и время"><Input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></FormField>
+        <FormField label="Дата и время" hint="Время по Польше (Europe/Warsaw)"><Input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></FormField>
         <FormField label="Место" hint="Например: Urząd Wojewódzki Łódzki, ауд. 12"><Input value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="УВ Łódzki" /></FormField>
         <p className="text-[11.5px] text-ink-4">Событие будет добавлено в Google Calendar менеджера легализации. Клиенту автоматически придёт напоминание в WhatsApp за 7 и за 1 день.</p>
       </div>

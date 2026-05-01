@@ -664,7 +664,13 @@ export async function setFingerprintDate(
   if (!lead) throw new Error('Лид не найден');
   assert(canEditLead(user, lead));
 
-  const dt = date ? new Date(date) : null;
+  // Anna 01.05.2026: «Пишу 12 — оно ставит 14». Раньше тут был
+  // `new Date(date)`. Строка из <input type="datetime-local"> приходит
+  // без таймзоны ("2026-05-12T12:00"), и `new Date` на сервере с TZ=UTC
+  // парсил её как UTC → в БД писалось 12:00 UTC = 14:00 Warsaw летом.
+  // parseWarsawLocalToUtc явно интерпретирует ввод как локальное время
+  // в Europe/Warsaw — DST учитывается через Intl.
+  const dt = date ? parseWarsawLocalToUtc(date) : null;
 
   // Удаляем старое событие отпечатков если было
   const existingEvent = await db.calendarEvent.findFirst({
@@ -719,7 +725,7 @@ export async function setFingerprintDate(
         leadId,
         authorId: user.id,
         kind:     'FINGERPRINT_SET',
-        message:  dt ? `Отпечатки: ${dt.toLocaleString('ru-RU')}` : 'Дата отпечатков снята',
+        message:  dt ? `Отпечатки: ${dt.toLocaleString('ru-RU', { timeZone: 'Europe/Warsaw' })}` : 'Дата отпечатков снята',
         payload:  { date: dt?.toISOString() ?? null, location },
       },
     });
@@ -803,7 +809,7 @@ export async function addExtraCall(input: {
   const fullTitle = `Доп. вызвание: ${lead.client.fullName} — ${requestText}`;
 
   // Дата для отображения "от 14.04.2026 по 21.04.2026"
-  const fmt = (d: Date) => d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const fmt = (d: Date) => d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Europe/Warsaw' });
   const periodLabel = `от ${fmt(notifiedDt)} по ${fmt(dueDt)}`;
 
   const description = [
@@ -1070,4 +1076,41 @@ export async function restoreLead(leadId: string) {
 
 function methodLabel(m: 'CARD' | 'CASH' | 'TRANSFER' | 'OTHER'): string {
   return { CARD: 'карта', CASH: 'наличные', TRANSFER: 'перевод', OTHER: 'другое' }[m];
+}
+
+/**
+ * Парсит datetime-local строку "YYYY-MM-DDTHH:MM" как локальное время
+ * Europe/Warsaw и возвращает соответствующий UTC момент.
+ *
+ * Без этого `new Date('2026-05-12T12:00')` на сервере с TZ=UTC
+ * интерпретирует вход как UTC → в БД пишется 12:00 UTC = 14:00 Warsaw
+ * летом (CEST). Anna 01.05.2026: «Пишу 12 — оно ставит 14».
+ *
+ * DST учитывается автоматически через Intl: летом offset +2 (CEST),
+ * зимой +1 (CET). Без сторонних библиотек.
+ */
+function parseWarsawLocalToUtc(localStr: string): Date {
+  const [datePart, timePart] = localStr.split('T');
+  const [yyyy, mm, dd] = datePart.split('-').map(Number);
+  const [hh, mi] = (timePart || '00:00').split(':').map(Number);
+
+  // Шаг 1: создаём UTC-момент с этими компонентами (просто арифметика).
+  const utcMs = Date.UTC(yyyy, mm - 1, dd, hh, mi);
+
+  // Шаг 2: узнаём как этот UTC-момент выглядит в Europe/Warsaw — компоненты.
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Warsaw',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(utcMs));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)!.value);
+  const wMs = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'));
+
+  // Шаг 3: offset = насколько Warsaw впереди UTC. Вычитаем чтобы получить настоящий UTC.
+  // Пример: localStr="2026-05-12T12:00", летом +2h →
+  //   utcMs = 12:00 UTC, в Warsaw это 14:00 → wMs = 14:00 UTC
+  //   offset = 2h, return = 12:00 - 2h = 10:00 UTC = 12:00 Warsaw ✓
+  const offset = wMs - utcMs;
+  return new Date(utcMs - offset);
 }
