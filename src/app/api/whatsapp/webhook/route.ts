@@ -25,7 +25,6 @@ import { normalizePhone } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
 import { notify } from '@/lib/notify';
 import { parseBody } from '@/lib/api-validation';
-import { logger } from '@/lib/logger';
 
 // ============ ZOD-СХЕМЫ ============
 // Worker — наш код, но JSON.parse от него всё равно может прийти битый
@@ -194,9 +193,6 @@ async function handleIncomingMessage(msg: IncomingMessage) {
       link:   `/inbox?thread=${thread.id}`,
     });
   }
-
-  // Глушим неиспользуемый импорт пока нечем заглушить
-  void logger;
 
   revalidatePath('/inbox');
   return NextResponse.json({ ok: true });
