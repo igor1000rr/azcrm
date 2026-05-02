@@ -180,6 +180,26 @@ function toWarsawLocalInput(utcIso: string): string {
   return fmt.format(d).replace(' ', 'T');
 }
 
+/** Принудительное открытие native date picker по клику.
+ *  В Firefox и некоторых embedded-браузерах <input type="date"> не
+ *  открывает picker при клике на иконку календаря — Anna 01.05.2026:
+ *  «календарик не работает». showPicker() — нативный API, гарантированно
+ *  открывает picker в user gesture. Throws если input в неправильном
+ *  состоянии (focus issues etc) — graceful fallback на ввод с клавиатуры. */
+function openDatePicker(e: React.MouseEvent<HTMLInputElement> | React.FocusEvent<HTMLInputElement>) {
+  try { (e.currentTarget as HTMLInputElement).showPicker?.(); } catch { /* graceful fallback */ }
+}
+
+/** Валидация yyyy-mm-dd с разумным диапазоном лет.
+ *  Anna 01.05.2026: «09.02.0002» сохранилось в БД — input принял мусорный
+ *  год при ручном вводе. Без явной проверки JS Date('0002-02-09') валиден.
+ *  Допускаем 2000–2100, остальное — пользовательский мусор. */
+function isValidDateInput(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const year = Number(s.slice(0, 4));
+  return year >= 2000 && year <= 2100;
+}
+
 /** Отображение «Действует до» с подсветкой по близости срока:
  *  истёк — красный, < 30 дн — жёлтый, < 90 дн — info, иначе обычный.
  *  Используется и для legalStayUntil, и для passportExpiresAt. */
@@ -204,7 +224,13 @@ function StayUntilDisplay({ until }: { until: string | null }) {
 
 /** Inline-редактор даты подачи в уженд (Anna 30.04.2026).
  *  null → красная плашка «не подан» + поле выбора даты.
- *  Дата → отображается + кнопка очистки. Сохранение по onChange. */
+ *  Дата → отображается + кнопка очистки. Сохранение по onChange.
+ *
+ *  Anna 01.05.2026: «календарик не работает» + в БД попало «09.02.0002».
+ *  Фиксы:
+ *   - onClick → openDatePicker() явно открывает native picker
+ *   - min/max + клиентская валидация года 2000-2100
+ *   - сервер тоже валидирует диапазон (см. setSubmittedAt) */
 function SubmittedAtField({ leadId, initial }: { leadId: string; initial: string | null }) {
   const router = useRouter();
   const [value, setValue] = useState(initial ? initial.slice(0, 10) : '');
@@ -215,7 +241,12 @@ function SubmittedAtField({ leadId, initial }: { leadId: string; initial: string
   useEffect(() => { setValue(initial ? initial.slice(0, 10) : ''); }, [initial]);
 
   async function commit(next: string | null) {
-    setErr(null); setBusy(true);
+    setErr(null);
+    if (next !== null && !isValidDateInput(next)) {
+      setErr('Неверная дата (год должен быть 2000–2100)');
+      return;
+    }
+    setBusy(true);
     try { await setSubmittedAt(leadId, next); router.refresh(); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
@@ -228,9 +259,12 @@ function SubmittedAtField({ leadId, initial }: { leadId: string; initial: string
           <Input
             type="date"
             value=""
+            min="2000-01-01"
+            max="2100-12-31"
             disabled={busy}
+            onClick={openDatePicker}
             onChange={(e) => { const v = e.target.value; setValue(v); if (v) commit(v); }}
-            className="text-[12.5px] py-0.5 border-danger/40"
+            className="text-[12.5px] py-0.5 border-danger/40 cursor-pointer"
           />
           <span className="inline-flex items-center gap-1 text-[10.5px] font-bold text-danger uppercase tracking-[0.05em] whitespace-nowrap">
             <AlertCircle size={11} /> не подан
@@ -246,9 +280,12 @@ function SubmittedAtField({ leadId, initial }: { leadId: string; initial: string
         <Input
           type="date"
           value={value}
+          min="2000-01-01"
+          max="2100-12-31"
           disabled={busy}
+          onClick={openDatePicker}
           onChange={(e) => { setValue(e.target.value); if (e.target.value) commit(e.target.value); }}
-          className="text-[12.5px] py-0.5"
+          className="text-[12.5px] py-0.5 cursor-pointer"
         />
         <button
           type="button"
@@ -511,7 +548,7 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
       footer={<><Button onClick={onClose}>Отмена</Button><Button variant="primary" onClick={save} disabled={busy || !fullName || !phone}>{busy ? 'Сохранение...' : 'Сохранить'}</Button></>}>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <FormField label="ФИО" required><Input value={fullName} onChange={(e) => setFullName(e.target.value)} autoFocus /></FormField>
-        <FormField label="Дата рождения"><Input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} /></FormField>
+        <FormField label="Дата рождения"><Input type="date" min="1900-01-01" max="2100-12-31" onClick={openDatePicker} value={birthDate} onChange={(e) => setBirthDate(e.target.value)} /></FormField>
         <FormField label="Телефон (основной)" required hint="Уникален в системе"><Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} /></FormField>
         <FormField label="Доп. телефон 1"><Input type="tel" value={altPhone} onChange={(e) => setAltPhone(e.target.value)} placeholder="+48..." /></FormField>
         <FormField label="Доп. телефон 2"><Input type="tel" value={altPhone2} onChange={(e) => setAltPhone2(e.target.value)} placeholder="+48..." /></FormField>
@@ -528,13 +565,13 @@ function ClientEditModal({ client, onClose }: { client: LeadCardViewProps['clien
           </Select>
         </FormField>
         <FormField label="Действует до" hint="Дата окончания текущего побыта">
-          <Input type="date" value={legalStayUntil} onChange={(e) => setLegalStayUntil(e.target.value)} />
+          <Input type="date" min="2000-01-01" max="2100-12-31" onClick={openDatePicker} value={legalStayUntil} onChange={(e) => setLegalStayUntil(e.target.value)} />
         </FormField>
         {/* Срок паспорта (Anna идея №7) — отдельная строка, занимает обе колонки
             чтобы выделить визуально. Cron шлёт менеджеру push за 90/30/14 дней. */}
         <div className="sm:col-span-2">
           <FormField label="Паспорт действует до" hint="Система напомнит менеджеру за 90, 30 и 14 дней до истечения">
-            <Input type="date" value={passportExpiresAt} onChange={(e) => setPassportExpiresAt(e.target.value)} />
+            <Input type="date" min="2000-01-01" max="2100-12-31" onClick={openDatePicker} value={passportExpiresAt} onChange={(e) => setPassportExpiresAt(e.target.value)} />
           </FormField>
         </div>
         <div className="sm:col-span-2"><FormField label="Адрес проживания в Польше"><Input value={addressPL} onChange={(e) => setAddressPL(e.target.value)} /></FormField></div>
@@ -941,7 +978,7 @@ function FingerprintModal({ open, onClose, leadId, currentDate, currentLocation,
     <Modal open={open} onClose={onClose} title="Дата отпечатков"
       footer={<><Button onClick={onClose}>Отмена</Button><Button variant="primary" onClick={save} disabled={busy}>{busy ? 'Сохранение...' : 'Сохранить'}</Button></>}>
       <div className="flex flex-col gap-3">
-        <FormField label="Дата и время" hint="Время по Польше (Europe/Warsaw)"><Input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></FormField>
+        <FormField label="Дата и время" hint="Время по Польше (Europe/Warsaw)"><Input type="datetime-local" min="2000-01-01T00:00" max="2100-12-31T23:59" onClick={openDatePicker} value={date} onChange={(e) => setDate(e.target.value)} /></FormField>
         <FormField label="Место" hint="Например: Urząd Wojewódzki Łódzki, ауд. 12"><Input value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="УВ Łódzki" /></FormField>
         <p className="text-[11.5px] text-ink-4">Событие будет добавлено в Google Calendar менеджера легализации. Клиенту автоматически придёт напоминание в WhatsApp за 7 и за 1 день.</p>
       </div>
@@ -983,10 +1020,10 @@ function ExtraCallModal({ open, onClose, leadId, onSaved }: { open: boolean; onC
       footer={<><Button onClick={onClose}>Закрыть</Button><Button variant="primary" onClick={save} disabled={busy || !notifiedAt || !dueDate}>{busy ? 'Сохранение...' : 'Добавить'}</Button></>}>
       <div className="flex flex-col gap-3">
         <FormField label="Дата вызвания" required hint="Когда УВ прислал уведомление">
-          <Input type="date" value={notifiedAt} onChange={(e) => setNotifiedAt(e.target.value)} autoFocus />
+          <Input type="date" min="2000-01-01" max="2100-12-31" onClick={openDatePicker} value={notifiedAt} onChange={(e) => setNotifiedAt(e.target.value)} autoFocus />
         </FormField>
         <FormField label="Срок" required hint="Дедлайн — до какой даты нужно донести документы">
-          <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} min={notifiedAt || undefined} />
+          <Input type="date" min={notifiedAt || '2000-01-01'} max="2100-12-31" onClick={openDatePicker} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
         </FormField>
         <FormField label="Запрос документов" hint="Какие документы затребовал УВ">
           <Textarea value={request} onChange={(e) => setRequest(e.target.value)} rows={3} placeholder="Например: справка о доходах за последние 6 месяцев, копия договора аренды, выписка из банка" />
@@ -1095,7 +1132,7 @@ function AddPaymentModal({ open, onClose, leadId, onSaved }: { open: boolean; on
           </FormField>
         </div>
         <FormField label="Дата платежа" required>
-          <Input type="date" value={paidAt} onChange={(e) => setPaidAt(e.target.value)} max={today} />
+          <Input type="date" min="2000-01-01" max={today} onClick={openDatePicker} value={paidAt} onChange={(e) => setPaidAt(e.target.value)} />
         </FormField>
         <FormField label="Примечание"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Аванс, доплата..." /></FormField>
       </div>

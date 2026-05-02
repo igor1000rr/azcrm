@@ -55,6 +55,19 @@ function datesDiffer(a: Date | null | undefined, b: Date | null | undefined): bo
   return an.getTime() !== bn.getTime();
 }
 
+/** Проверка диапазона года для дат вводимых юзером. Anna 01.05.2026:
+ *  ввод «09.02.2026» с клавиатуры в input type="date" может проскочить
+ *  как «09.02.0002» (год 2). new Date('0002-02-09') — валидный JS Date,
+ *  без явной проверки уходит в БД. Принимаем 1900–2100 для дат рождения
+ *  (могут быть пожилые клиенты) и более узкий диапазон 2000–2100 для
+ *  бизнес-дат типа submittedAt/legalStayUntil/passportExpiresAt. */
+function assertReasonableYear(d: Date, label: string, minYear = 2000, maxYear = 2100): void {
+  const y = d.getUTCFullYear();
+  if (y < minYear || y > maxYear) {
+    throw new Error(`${label}: год должен быть в диапазоне ${minYear}–${maxYear} (получено ${y})`);
+  }
+}
+
 export async function updateClient(input: z.infer<typeof clientSchema>) {
   const user = await requireUser();
   const data = clientSchema.parse(input);
@@ -102,6 +115,13 @@ export async function updateClient(input: z.infer<typeof clientSchema>) {
   const stayType = data.legalStayType || null;
   const stayUntil = parseOptionalDate(data.legalStayUntil, 'Некорректная дата окончания побыта');
   const passportExp = parseOptionalDate(data.passportExpiresAt, 'Некорректная дата истечения паспорта');
+  const birthDt = parseOptionalDate(data.birthDate, 'Некорректная дата рождения');
+
+  // Защита от мусорных годов (Anna: «09.02.0002» уходило в БД).
+  // Дата рождения может быть до 2000 — поэтому диапазон 1900-2100.
+  if (stayUntil)   assertReasonableYear(stayUntil,   'Дата окончания побыта');
+  if (passportExp) assertReasonableYear(passportExp, 'Дата истечения паспорта');
+  if (birthDt)     assertReasonableYear(birthDt,     'Дата рождения', 1900, 2100);
 
   // Anna идея №7: при смене даты истечения сбрасываем флаги отправленных
   // напоминаний — иначе при продлении карты на 5 лет ни одно напоминание
@@ -131,7 +151,7 @@ export async function updateClient(input: z.infer<typeof clientSchema>) {
       altPhone2:         data.altPhone2 || null,
       altPhone3:         data.altPhone3 || null,
       email:             data.email || null,
-      birthDate:         data.birthDate ? new Date(data.birthDate) : null,
+      birthDate:         birthDt,
       nationality:       data.nationality || null,
       addressPL:         data.addressPL || null,
       addressHome:       data.addressHome || null,
@@ -280,6 +300,10 @@ export async function setWorkCity(leadId: string, cityId: string | null) {
  * Редактируется inline в карточке лида. date — ISO yyyy-mm-dd или null.
  * При null все calendar events связанные с лидом получают красный маркер
  * «внесок не подан».
+ *
+ * Anna 01.05.2026: в БД попало «09.02.0002» — input принял мусорный год.
+ * Добавлена явная проверка диапазона года (defense in depth, на случай
+ * если клиент пришёл с пропатченным фронтом или прямым вызовом action).
  */
 export async function setSubmittedAt(leadId: string, date: string | null) {
   const user = await requireUser();
@@ -297,6 +321,7 @@ export async function setSubmittedAt(leadId: string, date: string | null) {
     if (isNaN(newDate.getTime())) {
       throw new Error('Некорректная дата подачи');
     }
+    assertReasonableYear(newDate, 'Дата подачи');
   }
 
   await db.lead.update({
