@@ -34,8 +34,15 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   // Менеджер видит только свои; админ может фильтровать по конкретному
   const userIdFilter = isAdmin ? (params.user || undefined) : user.id;
 
+  // Anna 02.05.2026: «Оно зачем-то вычитывает старые даты — в новые периоды.
+  // Оно же должно по месяцам считать». Раньше фильтровали по
+  // commission.createdAt (когда комиссия создана в системе) — но Anna вводит
+  // платежи задним числом (paidAt 30.04.2025 в мае 2026), и такие комиссии
+  // попадали в текущий месяц по createdAt хотя в таблице показывался paidAt.
+  // Семантически премия относится к месяцу когда платёж фактически получен,
+  // поэтому фильтруем по payment.paidAt — что и видит Anna в столбце «Дата».
   const where = {
-    createdAt: { gte: from, lte: to },
+    payment: { paidAt: { gte: from, lte: to } },
     ...(userIdFilter ? { userId: userIdFilter } : {}),
     ...(paidFilter !== 'all' ? { paidOut: paidFilter === '1' } : {}),
   };
@@ -43,7 +50,10 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   const [commissions, allUsers] = await Promise.all([
     db.commission.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      // Сортировка тоже по paidAt — чтобы порядок в таблице совпадал
+      // с тем по чему мы фильтруем. Внутри одного дня дополнительно
+      // сортируем по createdAt чтобы порядок был стабилен.
+      orderBy: [{ payment: { paidAt: 'desc' } }, { createdAt: 'desc' }],
       take: 500,
       include: {
         user: { select: { id: true, name: true, role: true, commissionPercent: true } },
@@ -95,18 +105,43 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   }
   const aggregated = [...byUser.values()].sort((a, b) => b.totalCommission - a.totalCommission);
 
+  // Быстрые пресеты периода (Anna 02.05.2026 — чтобы быстро переключаться
+  // «этот месяц / прошлый / всё»). Передаём через URL search params.
+  const prevMonthFrom = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevMonthTo   = new Date(now.getFullYear(), now.getMonth(), 0);
+  const yearStart     = new Date(now.getFullYear(), 0, 1);
+  const yearEnd       = new Date(now.getFullYear(), 11, 31);
+  const presetParams = (f: Date, t: Date) => {
+    const sp = new URLSearchParams();
+    sp.set('from', toDateStr(f));
+    sp.set('to', toDateStr(t));
+    if (params.user) sp.set('user', params.user);
+    if (params.paid) sp.set('paid', params.paid);
+    return `?${sp.toString()}`;
+  };
+  const isCurrentMonth = toDateStr(from) === toDateStr(defaultFrom) && toDateStr(to) === toDateStr(defaultTo);
+  const isPrevMonth    = toDateStr(from) === toDateStr(prevMonthFrom) && toDateStr(to) === toDateStr(prevMonthTo);
+  const isYear         = toDateStr(from) === toDateStr(yearStart) && toDateStr(to) === toDateStr(yearEnd);
+
   return (
     <>
       <Topbar breadcrumbs={[{ label: 'Финансы' }, { label: 'Премии менеджеров' }]} />
 
       <div className="p-4 md:p-5 max-w-[1400px] w-full">
+        {/* Быстрые пресеты периода */}
+        <div className="flex gap-1.5 mb-2 flex-wrap">
+          <PresetLink href={presetParams(defaultFrom, defaultTo)} active={isCurrentMonth}>Этот месяц</PresetLink>
+          <PresetLink href={presetParams(prevMonthFrom, prevMonthTo)} active={isPrevMonth}>Прошлый месяц</PresetLink>
+          <PresetLink href={presetParams(yearStart, yearEnd)} active={isYear}>{now.getFullYear()} год</PresetLink>
+        </div>
+
         {/* Фильтры */}
         <form method="GET" className="bg-paper border border-line rounded-lg p-3 mb-3 flex items-end gap-3 flex-wrap">
           <Field label="С">
-            <input type="date" name="from" defaultValue={toDateStr(from)} className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="from" defaultValue={toDateStr(from)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           <Field label="По">
-            <input type="date" name="to" defaultValue={toDateStr(to)} className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="to" defaultValue={toDateStr(to)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           {isAdmin && (
             <Field label="Менеджер">
@@ -126,6 +161,9 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
             </select>
           </Field>
           <button type="submit" className="px-3 py-1.5 text-[12px] font-semibold bg-navy text-white rounded">Применить</button>
+          <span className="text-[11px] text-ink-4 ml-auto">
+            Период считается по дате платежа (когда деньги получены)
+          </span>
         </form>
 
         {/* Сводка по менеджерам */}
@@ -289,6 +327,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="text-[10.5px] uppercase tracking-[0.05em] text-ink-4 font-semibold">{label}</span>
       {children}
     </label>
+  );
+}
+
+function PresetLink({ href, active, children }: { href: string; active: boolean; children: React.ReactNode }) {
+  return (
+    <Link
+      href={`/finance/commissions${href}`}
+      className={
+        active
+          ? 'inline-flex items-center px-2.5 py-1 text-[11.5px] font-semibold rounded bg-navy text-white'
+          : 'inline-flex items-center px-2.5 py-1 text-[11.5px] font-medium rounded border border-line bg-paper text-ink-2 hover:border-ink-5'
+      }
+    >
+      {children}
+    </Link>
   );
 }
 
