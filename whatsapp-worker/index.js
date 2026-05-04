@@ -5,7 +5,7 @@
 
 import express from 'express';
 import waPkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = waPkg;
+const { Client, LocalAuth, MessageMedia } = waPkg;
 import qrcodePkg from 'qrcode';
 const qrcode = qrcodePkg;
 import fs from 'node:fs';
@@ -294,6 +294,56 @@ async function hardResetClient(accountId) {
   clients.delete(accountId);
 }
 
+/**
+ * Скачать media-файл по mediaUrl и собрать MessageMedia для whatsapp-web.js.
+ *
+ * mediaUrl может быть:
+ *   - абсолютным с mediaToken: https://crm.../api/files/uploads/...?mediaToken=...
+ *     (выдаётся из /api/messages/{lead,thread}-send через signMediaUrlForWorker)
+ *   - абсолютным внешним: https://example.com/foo.png (CDN, redirect и т.п.)
+ *
+ * Возвращает MessageMedia или null если скачать не удалось.
+ *
+ * Anna 04.05.2026: «в CRM видно картинку, а на телефоне нет» — корень
+ * был в том что worker НЕ читал поле mediaUrl из запроса вообще,
+ * sendMessage(chatId, body) шёл только текстом (или \u00A0 пробелом).
+ */
+async function fetchMediaForWhatsApp(mediaUrl) {
+  try {
+    const res = await fetch(mediaUrl, {
+      // Таймаут чтобы worker не висел вечно если CRM не отвечает
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      console.error(`[worker] media fetch failed: ${res.status} ${mediaUrl.slice(0, 100)}`);
+      return null;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    const mimetype = res.headers.get('content-type') || 'application/octet-stream';
+
+    // Имя файла берём из Content-Disposition если есть, иначе из URL
+    let filename;
+    const cd = res.headers.get('content-disposition');
+    if (cd) {
+      const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+      if (m) filename = decodeURIComponent(m[1]);
+    }
+    if (!filename) {
+      try {
+        const u = new URL(mediaUrl);
+        filename = path.basename(u.pathname) || `file.${guessExt(mimetype)}`;
+      } catch {
+        filename = `file.${guessExt(mimetype)}`;
+      }
+    }
+
+    return new MessageMedia(mimetype, buf.toString('base64'), filename);
+  } catch (e) {
+    console.error('[worker] fetchMediaForWhatsApp error:', e.message);
+    return null;
+  }
+}
+
 // ============ HTTP API ============
 
 const app = express();
@@ -460,6 +510,27 @@ function autoRestoreSessions() {
   }
 }
 
+/**
+ * POST /accounts/:id/send
+ *
+ * body: { to: string, body?: string, mediaUrl?: string }
+ *   to       — номер получателя (только цифры) или WhatsApp chatId с @
+ *   body     — текст сообщения. Может быть пустым если есть mediaUrl.
+ *              Спец-значение `\u00A0` (неразрывный пробел) трактуется как
+ *              «нет текста» — это workaround из CRM для старой валидации
+ *              `to && body required`, теперь не нужен но сохраняется
+ *              совместимость.
+ *   mediaUrl — абсолютный URL файла для отправки. Worker скачает по нему
+ *              файл и отправит как attachment с body как caption.
+ *
+ *              CRM передаёт URL с подписанным mediaToken вида:
+ *              https://crm.../api/files/uploads/...?mediaToken=<jwt>
+ *              (см. signMediaUrlForWorker в src/lib/storage/media-token.ts).
+ *
+ * Anna 04.05.2026: до этого фикса worker НЕ читал mediaUrl вообще —
+ * `const { to, body } = req.body` игнорировало media поле. В результате
+ * клиент получал только текст (или невидимый \u00A0 пробел) вместо файла.
+ */
 app.post('/accounts/:id/send', async (req, res) => {
   try {
     const id = req.params.id;
@@ -468,9 +539,9 @@ app.post('/accounts/:id/send', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'WhatsApp не подключён' });
     }
 
-    const { to, body } = req.body;
-    if (!to || !body) {
-      return res.status(400).json({ ok: false, error: 'to and body required' });
+    const { to, body, mediaUrl } = req.body;
+    if (!to || (!body && !mediaUrl)) {
+      return res.status(400).json({ ok: false, error: 'to and (body or mediaUrl) required' });
     }
 
     const toStr = String(to);
@@ -503,10 +574,36 @@ app.post('/accounts/:id/send', async (req, res) => {
       }
     }
 
-    console.log(`[${id}] sending to chatId=${chatId}`);
+    // Если есть mediaUrl — скачиваем файл и шлём как attachment.
+    // body становится caption (или пропускается если это \u00A0 workaround).
+    let media = null;
+    if (mediaUrl) {
+      console.log(`[${id}] fetching media: ${mediaUrl.slice(0, 100)}${mediaUrl.length > 100 ? '...' : ''}`);
+      media = await fetchMediaForWhatsApp(mediaUrl);
+      if (!media) {
+        return res.status(500).json({
+          ok: false,
+          error: 'Не удалось скачать файл по mediaUrl. Проверь APP_PUBLIC_URL и доступность /api/files.',
+        });
+      }
+      console.log(`[${id}] media fetched: ${media.filename} (${media.mimetype})`);
+    }
+
+    // \u00A0 (неразрывный пробел) — workaround из CRM для пустого body с media,
+    // в caption его не кладём (получатель увидел бы невидимый символ).
+    const cleanBody = (body && body !== '\u00A0') ? body : '';
+
+    console.log(`[${id}] sending to chatId=${chatId}${media ? ' WITH media' : ''}`);
+
+    const sendOnce = async (cid) => {
+      if (media) {
+        return await entry.client.sendMessage(cid, media, cleanBody ? { caption: cleanBody } : {});
+      }
+      return await entry.client.sendMessage(cid, cleanBody);
+    };
 
     try {
-      const msg = await entry.client.sendMessage(chatId, body);
+      const msg = await sendOnce(chatId);
       return res.json({ ok: true, messageId: msg.id._serialized });
     } catch (sendErr) {
       const errStr = String(sendErr?.message || sendErr);
@@ -515,7 +612,7 @@ app.post('/accounts/:id/send', async (req, res) => {
       if (chatId.endsWith('@c.us') && /no lid for user/i.test(errStr)) {
         const lidChatId = chatId.replace('@c.us', '@lid');
         try {
-          const msg = await entry.client.sendMessage(lidChatId, body);
+          const msg = await sendOnce(lidChatId);
           return res.json({ ok: true, messageId: msg.id._serialized, note: 'sent via @lid fallback' });
         } catch (lidErr) {
           console.error(`[${id}] sendMessage @lid fallback also failed:`, lidErr.message);
