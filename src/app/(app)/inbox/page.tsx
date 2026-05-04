@@ -93,7 +93,16 @@ export default async function InboxPage({ searchParams }: PageProps) {
 
   const channelFilter = params.channel ? resolveChannelFilter(params.channel, waIds, tgIds, viberIds, metaIds) : null;
 
-  const threads = await db.chatThread.findMany({
+  const threadInclude = {
+    client: { select: { id: true, fullName: true, phone: true } },
+    whatsappAccount: { select: { id: true, label: true } },
+    telegramAccount: { select: { id: true, label: true } },
+    viberAccount:    { select: { id: true, label: true } },
+    metaAccount:     { select: { id: true, label: true } },
+    lead: { select: { id: true, funnel: { select: { name: true } } } },
+  } as const;
+
+  const baseThreads = await db.chatThread.findMany({
     where: channelFilter ?? {
       isArchived: false,
       OR: [
@@ -105,15 +114,43 @@ export default async function InboxPage({ searchParams }: PageProps) {
     },
     orderBy: { lastMessageAt: 'desc' },
     take: 100,
-    include: {
-      client: { select: { id: true, fullName: true, phone: true } },
-      whatsappAccount: { select: { id: true, label: true } },
-      telegramAccount: { select: { id: true, label: true } },
-      viberAccount:    { select: { id: true, label: true } },
-      metaAccount:     { select: { id: true, label: true } },
-      lead: { select: { id: true, funnel: { select: { name: true } } } },
-    },
+    include: threadInclude,
   });
+
+  type ThreadWithIncludes = typeof baseThreads[number];
+
+  // ============ ЯВНЫЙ FETCH АКТИВНОГО THREAD'А ============
+  // Anna 03.05.2026: «переход с карточки клиента в WhatsApp не открывает
+  // его чат, открывается общий чат». Корень: thread искался ТОЛЬКО в массиве
+  // baseThreads (top-100, не архивные, в фильтре канала). Если нужный thread:
+  //   - архивный (isArchived: true)
+  //   - дальше top-100 по lastMessageAt
+  //   - в другом канале/permission scope
+  // — он не находился, activeThread = null, показывался просто список других
+  // переписок этого канала. Юзер воспринимал как «выбило в общий».
+  //
+  // Фикс: явно загружаем thread по id если задан params.thread, проверяем
+  // permission по аккаунту канала, и подкладываем его в начало списка.
+  let extraThread: ThreadWithIncludes | null = null;
+  if (params.thread && !baseThreads.some((t) => t.id === params.thread)) {
+    const explicit = await db.chatThread.findUnique({
+      where: { id: params.thread },
+      include: threadInclude,
+    });
+    if (explicit) {
+      const allowed =
+        (explicit.whatsappAccountId && waIds.includes(explicit.whatsappAccountId)) ||
+        (explicit.telegramAccountId && tgIds.includes(explicit.telegramAccountId)) ||
+        (explicit.viberAccountId    && viberIds.includes(explicit.viberAccountId)) ||
+        (explicit.metaAccountId     && metaIds.includes(explicit.metaAccountId));
+      if (allowed) extraThread = explicit;
+    }
+  }
+
+  // Итоговый список для UI: extraThread в начале если был, иначе как раньше.
+  const threads: ThreadWithIncludes[] = extraThread
+    ? [extraThread, ...baseThreads]
+    : baseThreads;
 
   // ============ FALLBACK leadId через клиента ============
   // Бывает thread.leadId = null (worker не привязал, или другой канал создал
@@ -123,7 +160,7 @@ export default async function InboxPage({ searchParams }: PageProps) {
     .filter((t) => !t.leadId && t.clientId)
     .map((t) => t.clientId as string);
 
-  let fallbackLeadByClient = new Map<string, { id: string; funnelName: string }>();
+  const fallbackLeadByClient = new Map<string, { id: string; funnelName: string }>();
   if (clientIdsForFallback.length > 0) {
     const fallbackLeads = await db.lead.findMany({
       where: { clientId: { in: clientIdsForFallback }, isArchived: false },
@@ -137,14 +174,14 @@ export default async function InboxPage({ searchParams }: PageProps) {
     }
   }
 
-  function resolveLead(t: typeof threads[number]) {
+  function resolveLead(t: ThreadWithIncludes) {
     if (t.lead) return { id: t.lead.id, funnelName: t.lead.funnel.name };
     if (t.clientId) return fallbackLeadByClient.get(t.clientId) ?? null;
     return null;
   }
 
   /** Из thread'а определяем kind/accountId/accountLabel для UI. */
-  function resolveThreadChannel(t: typeof threads[number]): {
+  function resolveThreadChannel(t: ThreadWithIncludes): {
     kind: ChannelKindStr; accountId: string; accountLabel: string | null;
   } {
     if (t.whatsappAccountId && t.whatsappAccount) {
@@ -168,7 +205,7 @@ export default async function InboxPage({ searchParams }: PageProps) {
   }
 
   // ============ АКТИВНЫЙ ТРЕД И СООБЩЕНИЯ ============
-  let activeThread = null;
+  let activeThread: ThreadWithIncludes | null = null;
   let activeMessages: Array<{
     id: string; direction: 'IN' | 'OUT' | 'SYSTEM'; type: string;
     body: string | null; mediaUrl: string | null; mediaName: string | null;
@@ -199,6 +236,8 @@ export default async function InboxPage({ searchParams }: PageProps) {
         senderName: m.sender?.name ?? null,
       }));
 
+      // Сбрасываем счётчик непрочитанных. Если thread архивный — обновлять
+      // unreadCount всё равно ОК, только сам thread не разархивируем.
       await db.chatThread.update({
         where: { id: params.thread },
         data: { unreadCount: 0 },

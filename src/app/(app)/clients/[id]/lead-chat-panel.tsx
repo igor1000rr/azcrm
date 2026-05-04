@@ -3,10 +3,11 @@
 // Объединённая переписка по клиенту в карточке лида.
 // Показывает сообщения со всех каналов (WhatsApp/Telegram/Viber/Messenger/Instagram)
 // в одной ленте, с пометкой канала рядом с каждым сообщением.
-// Снизу — селектор канала и поле ввода.
+// Снизу — селектор канала, кнопка прикрепить файл и поле ввода.
 //
 // Отправка идёт через единый POST /api/messages/lead-send который роутит
-// по `kind` канала.
+// по `kind` канала. Файлы загружаются через POST /api/files/upload
+// и затем шлются как mediaUrl/mediaName/mediaType (Anna 04.05.2026).
 //
 // Права (через бэк, мы только отображаем доступные):
 //   ADMIN — все активные каналы
@@ -17,8 +18,9 @@ import { useRouter } from 'next/navigation';
 import {
   Send, FileText, MessageSquare, ChevronDown,
   Smartphone, MessageCircle, Facebook, Instagram,
+  Paperclip, X, Loader2,
 } from 'lucide-react';
-import { cn, formatTime, formatDate } from '@/lib/utils';
+import { cn, formatTime, formatDate, formatFileSize } from '@/lib/utils';
 
 export type ChannelKindStr = 'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM';
 
@@ -33,30 +35,33 @@ export interface LeadChatMessage {
   isRead:      boolean;
   deliveredAt: string | null;
   senderName:  string | null;
-  // Канал откуда пришло/отправлено сообщение
   kind:         ChannelKindStr;
   accountId:    string;
   accountLabel: string;
 }
 
 export interface LeadChatAccount {
-  // Уникальный ключ — для Meta-аккаунта одна запись может развернуться
-  // в два пункта селектора (Messenger + Instagram), у них одинаковый
-  // accountId но разный kind. Поэтому ключ = `${kind}:${accountId}`.
   kind:         ChannelKindStr;
   accountId:    string;
   label:        string;
-  // Подпись под label (телефон / username / paName / pageName)
   subtitle:     string | null;
   isConnected:  boolean;
-  isShared:     boolean;  // ownerId === null
+  isShared:     boolean;
 }
 
 interface Props {
   leadId:           string;
+  clientId:         string;
   clientName:       string;
   messages:         LeadChatMessage[];
   availableAccounts: LeadChatAccount[];
+}
+
+interface AttachedFile {
+  url:       string;
+  name:      string;
+  size:      number;
+  mediaType: 'IMAGE' | 'DOCUMENT';
 }
 
 function accountKey(a: { kind: ChannelKindStr; accountId: string }): string {
@@ -64,20 +69,19 @@ function accountKey(a: { kind: ChannelKindStr; accountId: string }): string {
 }
 
 export function LeadChatPanel({
-  leadId, clientName, messages, availableAccounts,
+  leadId, clientId, clientName, messages, availableAccounts,
 }: Props) {
   const router = useRouter();
   const [body, setBody] = useState('');
   const [sending, setSending] = useState(false);
+  const [attached, setAttached] = useState<AttachedFile | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Выбираем канал по умолчанию: тот откуда пришло последнее входящее.
-  // Если входящих нет — первый доступный подключённый.
   const defaultKey = pickDefaultAccount(messages, availableAccounts);
   const [selectedKey, setSelectedKey] = useState(defaultKey);
 
-  // Если данные обновились (router.refresh) и сменился набор каналов —
-  // переустанавливаем выбор только если текущий стал недоступен.
   useEffect(() => {
     if (selectedKey && availableAccounts.some((a) => accountKey(a) === selectedKey)) {
       return;
@@ -91,9 +95,44 @@ export function LeadChatPanel({
 
   const selectedAccount = availableAccounts.find((a) => accountKey(a) === selectedKey);
 
+  // Прикрепить файл: грузим в /api/files/upload (он же добавит файл
+  // в карточку клиента — это плюс, юзер потом найдёт его в «Файлы клиента»),
+  // получаем url + mimeType, кладём в стейт. Ничего не отправляем пока
+  // юзер не нажмёт «Отправить».
+  async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+      alert('Файл больше 50 МБ');
+      e.target.value = '';
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('clientId', clientId);
+      fd.append('category', 'GENERAL');
+      const res = await fetch('/api/files/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось загрузить файл');
+      const mediaType: 'IMAGE' | 'DOCUMENT' = (data.mimeType as string | null)?.startsWith('image/') ? 'IMAGE' : 'DOCUMENT';
+      setAttached({ url: data.url, name: data.name, size: data.size, mediaType });
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setUploading(false);
+      if (e.target) e.target.value = '';
+    }
+  }
+
+  function clearAttached() { setAttached(null); }
+
   async function send(e: FormEvent) {
     e.preventDefault();
-    if (!body.trim() || sending || !selectedAccount) return;
+    if (sending || !selectedAccount) return;
+    const trimmed = body.trim();
+    if (!trimmed && !attached) return;
     setSending(true);
     try {
       const res = await fetch('/api/messages/lead-send', {
@@ -103,7 +142,12 @@ export function LeadChatPanel({
           leadId,
           kind:      selectedAccount.kind,
           accountId: selectedAccount.accountId,
-          body:      body.trim(),
+          body:      trimmed,
+          ...(attached ? {
+            mediaUrl:  attached.url,
+            mediaName: attached.name,
+            mediaType: attached.mediaType,
+          } : {}),
         }),
       });
       const data = await res.json();
@@ -111,6 +155,7 @@ export function LeadChatPanel({
         alert(data.error || 'Не удалось отправить');
       } else {
         setBody('');
+        setAttached(null);
         router.refresh();
       }
     } catch (e) {
@@ -129,6 +174,9 @@ export function LeadChatPanel({
     if (last && last.date === day) last.items.push(m);
     else grouped.push({ date: day, items: [m] });
   }
+
+  const canSend = !!selectedAccount?.isConnected && !sending && !uploading && (body.trim().length > 0 || !!attached);
+  const onlyWaSupportsFiles = selectedAccount && selectedAccount.kind !== 'WHATSAPP';
 
   return (
     <div className="bg-paper border border-line rounded-lg flex flex-col overflow-hidden" data-testid="chat-panel">
@@ -178,7 +226,7 @@ export function LeadChatPanel({
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
               <span className="text-[11px] text-ink-4 shrink-0">Отправить через:</span>
               <ChannelSelect
                 accounts={availableAccounts}
@@ -189,7 +237,49 @@ export function LeadChatPanel({
                 <span className="text-[10.5px] text-warn" data-testid="not-connected-warn">канал не подключён</span>
               )}
             </div>
+
+            {/* Превью прикреплённого файла */}
+            {attached && (
+              <div className="mb-2 flex items-center gap-2 px-2.5 py-1.5 bg-bg border border-line rounded-md" data-testid="attached-preview">
+                <FileText size={13} className="text-info shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-semibold text-ink truncate">{attached.name}</div>
+                  <div className="text-[10.5px] text-ink-4">
+                    {formatFileSize(attached.size)}
+                    {onlyWaSupportsFiles && <span className="ml-2 text-warn">(в {channelLabel(selectedAccount.kind)} файл уйдёт ссылкой)</span>}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearAttached}
+                  className="text-ink-4 hover:text-danger transition-colors p-1"
+                  title="Удалить вложение"
+                  data-testid="clear-attached"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
+
             <div className="flex items-end gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                onChange={onPickFile}
+                className="hidden"
+                disabled={uploading || sending}
+                data-testid="file-input"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading || sending || !!attached}
+                className="h-9 w-9 rounded-md grid place-items-center text-ink-4 hover:text-navy hover:bg-bg disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+                title={attached ? 'Уже прикреплён файл' : 'Прикрепить файл'}
+                data-testid="attach-btn"
+              >
+                {uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
+              </button>
               <textarea
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
@@ -200,7 +290,7 @@ export function LeadChatPanel({
                   }
                 }}
                 rows={2}
-                placeholder="Напишите сообщение..."
+                placeholder={attached ? 'Подпись к файлу (необязательно)' : 'Напишите сообщение...'}
                 className="flex-1 resize-none px-3 py-2 text-[13px] bg-bg border border-line rounded-md focus:bg-paper focus:border-navy focus:outline-none max-h-[120px]"
                 disabled={!selectedAccount || !selectedAccount.isConnected}
                 data-testid="msg-input"
@@ -208,10 +298,10 @@ export function LeadChatPanel({
               <button
                 type="submit"
                 data-testid="send-btn"
-                disabled={!body.trim() || sending || !selectedAccount || !selectedAccount.isConnected}
+                disabled={!canSend}
                 className={cn(
                   'h-9 px-3 rounded-md flex items-center gap-1.5 text-[12.5px] font-semibold transition-colors',
-                  body.trim() && !sending && selectedAccount?.isConnected
+                  canSend
                     ? 'bg-navy text-white hover:bg-navy-soft'
                     : 'bg-bg text-ink-4 cursor-not-allowed',
                 )}
@@ -225,6 +315,16 @@ export function LeadChatPanel({
       </form>
     </div>
   );
+}
+
+function channelLabel(kind: ChannelKindStr): string {
+  return ({
+    WHATSAPP:  'WhatsApp',
+    TELEGRAM:  'Telegram',
+    VIBER:     'Viber',
+    MESSENGER: 'Messenger',
+    INSTAGRAM: 'Instagram',
+  })[kind];
 }
 
 /** Иконка канала — показывается в селекторе и в bubble. */

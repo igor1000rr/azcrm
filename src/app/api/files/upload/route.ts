@@ -65,6 +65,10 @@ export async function POST(req: NextRequest) {
       url:      record.fileUrl,
       size:     record.fileSize,
       category: record.category,
+      // mimeType добавлен 04.05.2026 — нужен клиенту чат-панели чтобы
+      // решить отправлять файл как IMAGE или DOCUMENT (Anna жаловалась
+      // что нельзя прикреплять документы в переписку).
+      mimeType: record.mimeType,
     });
   } catch (e) {
     const status = (e as Error & { statusCode?: number }).statusCode ?? 500;
