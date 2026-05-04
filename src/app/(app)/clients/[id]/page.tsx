@@ -131,34 +131,45 @@ export default async function LeadPage({ params }: PageProps) {
 
   // ============ ОБЪЕДИНЁННАЯ ПЕРЕПИСКА КЛИЕНТА (все каналы) ============
   // Anna хочет видеть всю историю общения по клиенту независимо от канала.
-  // Собираем сообщения со всех каналов которые пользователю доступны.
   //
-  // Permission policy для всех типов аккаунтов:
-  //   ADMIN — все активные
-  //   SALES/LEGAL — свои (ownerId == user.id) + общие (ownerId == null)
+  // Anna 04.05.2026: «Обратные смс не видны в переписке. Ранее было видно».
+  // Корень — раньше переписка фильтровалась по permission scope аккаунта
+  // (видимые юзеру каналы — свои + общие). Если клиент написал на канал
+  // другого менеджера (например его передали, или ответил на номер компании
+  // не закреплённый за Anna), thread имел whatsappAccountId недоступный для
+  // Anna → не попадал в waIds → весь thread с входящими отфильтрован.
+  //
+  // Фикс: разделяю фильтры
+  //   - sendableAccountFilter — кто может ОТПРАВЛЯТЬ (свои + общие, как было).
+  //   - чтение thread'ов клиента — без permission'а: Anna уже прошла
+  //     canViewLead, значит должна видеть всю историю переписки клиента
+  //     в любом канале. Permission по каналу важен только для отправки.
+  //
+  // Безопасность: если у юзера нет canViewLead, он сюда не попадёт (notFound
+  // выше). Так что показ всех thread'ов клиента не расширяет доступ.
 
-  const accountFilter = user.role === 'ADMIN'
+  const sendableAccountFilter = user.role === 'ADMIN'
     ? { isActive: true }
     : { isActive: true, OR: [{ ownerId: user.id }, { ownerId: null }] };
 
   const [waAccs, tgAccs, viberAccs, metaAccs] = await Promise.all([
     db.whatsappAccount.findMany({
-      where:  accountFilter,
+      where:  sendableAccountFilter,
       select: { id: true, label: true, phoneNumber: true, isConnected: true, ownerId: true },
       orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
     }),
     db.telegramAccount.findMany({
-      where:  accountFilter,
+      where:  sendableAccountFilter,
       select: { id: true, label: true, botUsername: true, isConnected: true, ownerId: true },
       orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
     }),
     db.viberAccount.findMany({
-      where:  accountFilter,
+      where:  sendableAccountFilter,
       select: { id: true, label: true, paName: true, isConnected: true, ownerId: true },
       orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
     }),
     db.metaAccount.findMany({
-      where:  accountFilter,
+      where:  sendableAccountFilter,
       select: {
         id: true, label: true, pageName: true, igUsername: true,
         hasMessenger: true, hasInstagram: true, isConnected: true, ownerId: true,
@@ -167,23 +178,11 @@ export default async function LeadPage({ params }: PageProps) {
     }),
   ]);
 
-  const waIds    = waAccs.map((a) => a.id);
-  const tgIds    = tgAccs.map((a) => a.id);
-  const viberIds = viberAccs.map((a) => a.id);
-  const metaIds  = metaAccs.map((a) => a.id);
-
-  // Threads со всех каналов клиента — orderBy lastMessageAt чтобы первый
-  // был самым свежим (нужно ниже для определения какую переписку открыть).
+  // ВСЕ threads клиента — без фильтра по аккаунту. Через include подтянем
+  // accountLabel для отображения в Bubble — даже если канал юзеру недоступен,
+  // Prisma вернёт его данные (мы лишь не позволим ОТПРАВИТЬ из него).
   const clientThreads = await db.chatThread.findMany({
-    where: {
-      clientId: lead.clientId,
-      OR: [
-        { whatsappAccountId: { in: waIds } },
-        { telegramAccountId: { in: tgIds } },
-        { viberAccountId:    { in: viberIds } },
-        { metaAccountId:     { in: metaIds } },
-      ],
-    },
+    where: { clientId: lead.clientId },
     select: {
       id: true, channel: true, lastMessageAt: true,
       whatsappAccountId: true, telegramAccountId: true,
@@ -212,13 +211,14 @@ export default async function LeadPage({ params }: PageProps) {
   // игнорирует. Сейчас резолвим конкретный WA thread+channel здесь.
   // Для других каналов кнопок пока нет — переписка показывается в LeadChatPanel
   // прямо в карточке.
+  const waIdsForSend = waAccs.map((a) => a.id);
   const latestWaThread     = clientThreads.find((t) => t.whatsappAccountId);
   const leadWaAccountId    = lead.whatsappAccountId;
   const leadSalesManagerId = lead.salesManagerId;
   const leadLegalManagerId = lead.legalManagerId;
 
   let preferredWaAccountId: string | null = null;
-  if (leadWaAccountId) {
+  if (leadWaAccountId && waIdsForSend.includes(leadWaAccountId)) {
     preferredWaAccountId = leadWaAccountId;
   } else if (leadSalesManagerId) {
     const sm = waAccs.find((a) => a.ownerId === leadSalesManagerId);
@@ -231,6 +231,8 @@ export default async function LeadPage({ params }: PageProps) {
 
   let whatsappHref = '/inbox';
   if (latestWaThread && latestWaThread.whatsappAccountId) {
+    // Открываем существующий WA-thread даже если канал в другом permission scope —
+    // /inbox extraThread fallback покажет thread по id (см. /inbox/page.tsx).
     whatsappHref = `/inbox?thread=${latestWaThread.id}&channel=${latestWaThread.whatsappAccountId}`;
   } else if (preferredWaAccountId) {
     whatsappHref = `/inbox?channel=${preferredWaAccountId}`;
@@ -297,8 +299,9 @@ export default async function LeadPage({ params }: PageProps) {
     };
   });
 
-  // Список каналов для селектора отправки. Один MetaAccount разворачивается
-  // в два пункта (Messenger + Instagram) если оба активны на Page.
+  // Список каналов для селектора отправки — только sendable (свои + общие).
+  // Один MetaAccount разворачивается в два пункта (Messenger + Instagram)
+  // если оба активны на Page.
   const availableChatAccounts: Array<{
     kind:        'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM';
     accountId:   string;
