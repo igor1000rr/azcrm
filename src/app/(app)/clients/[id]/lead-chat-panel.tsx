@@ -424,6 +424,41 @@ function ChannelSelect({
   );
 }
 
+/** Bubble изображения с белым фоном и fallback'ом на ссылку при ошибке загрузки.
+ *  Anna 04.05.2026: PNG не отображался в bubble — сливался с фоном bg-navy. */
+function ImageMessage({ src, name, isOut, msgId }: { src: string; name: string | null; isOut: boolean; msgId: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <a
+        href={src}
+        target="_blank"
+        rel="noreferrer"
+        data-testid={`bubble-img-failed-${msgId}`}
+        className={cn(
+          'flex items-center gap-2 text-[12px] underline mb-1',
+          isOut ? 'text-white/90' : 'text-info',
+        )}
+      >
+        <FileText size={12} /> {name || 'Открыть изображение'}
+      </a>
+    );
+  }
+  return (
+    <a href={src} target="_blank" rel="noreferrer" className="block mb-1">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={name || ''}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="rounded max-w-full bg-white"
+        data-testid={`bubble-img-${msgId}`}
+      />
+    </a>
+  );
+}
+
 function Bubble({ m }: { m: LeadChatMessage }) {
   const isOut = m.direction === 'OUT';
   return (
@@ -444,8 +479,7 @@ function Bubble({ m }: { m: LeadChatMessage }) {
         </div>
 
         {m.type === 'IMAGE' && m.mediaUrl && (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={m.mediaUrl} alt="" className="rounded mb-1 max-w-full" data-testid={`bubble-img-${m.id}`} />
+          <ImageMessage src={m.mediaUrl} name={m.mediaName} isOut={isOut} msgId={m.id} />
         )}
         {m.type === 'DOCUMENT' && m.mediaUrl && (
           <a

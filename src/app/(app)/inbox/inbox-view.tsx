@@ -688,6 +688,42 @@ function TemplatesModal({
   );
 }
 
+/** Bubble изображения с белым фоном и fallback'ом на ссылку при ошибке загрузки.
+ *  Anna 04.05.2026: «Картинка не отправляется адекватно» — в bubble показывался
+ *  пустой тёмный квадрат потому что PNG был с прозрачным/тёмным фоном на bg-navy.
+ *  bg-white под картинкой — видно любой PNG. onError — если URL вовсе
+ *  не загрузился (auth/404), показываем явную ссылку вместо невидимого пустого прямоугольника. */
+function ImageMessage({ src, name, isOut }: { src: string; name: string | null; isOut: boolean }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <a
+        href={src}
+        target="_blank"
+        rel="noreferrer"
+        className={cn(
+          'flex items-center gap-2 text-[12px] underline mb-1',
+          isOut ? 'text-white/90' : 'text-info',
+        )}
+      >
+        <FileText size={12} /> {name || 'Открыть изображение'}
+      </a>
+    );
+  }
+  return (
+    <a href={src} target="_blank" rel="noreferrer" className="block mb-1">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={name || ''}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="rounded max-w-full bg-white"
+      />
+    </a>
+  );
+}
+
 function MessageBubble({ m }: { m: MessageLite }) {
   const isOut = m.direction === 'OUT';
 
@@ -700,8 +736,7 @@ function MessageBubble({ m }: { m: MessageLite }) {
           : 'bg-paper border border-line text-ink rounded-bl-sm',
       )}>
         {m.type === 'IMAGE' && m.mediaUrl && (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={m.mediaUrl} alt="" className="rounded mb-1 max-w-full" />
+          <ImageMessage src={m.mediaUrl} name={m.mediaName} isOut={isOut} />
         )}
         {m.type === 'DOCUMENT' && m.mediaUrl && (
           <a
