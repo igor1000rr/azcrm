@@ -13,10 +13,11 @@ import {
   Send, Paperclip, Search, MessageSquare,
   ChevronLeft, FileText, Sparkles, Volume2, VolumeX,
   Smartphone, MessageCircle, Facebook, Instagram, Plus,
+  X, Loader2,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Modal } from '@/components/ui/modal';
-import { cn, formatTime, formatPhone, formatDate } from '@/lib/utils';
+import { cn, formatTime, formatPhone, formatDate, formatFileSize } from '@/lib/utils';
 import { NOTIFY_SOUND_DATA_URL } from './notify-sound';
 
 type ChannelKindStr = 'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM';
@@ -315,6 +316,13 @@ export function InboxView({
   );
 }
 
+interface AttachedFile {
+  url:       string;
+  name:      string;
+  size:      number;
+  mediaType: 'IMAGE' | 'DOCUMENT';
+}
+
 function ChatPane({
   thread, messages,
 }: {
@@ -325,15 +333,63 @@ function ChatPane({
   const [body, setBody] = useState('');
   const [sending, setSending] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  // Anna 04.05.2026: «Не добавляются документы в переписку». Раньше Paperclip
+  // была декоративной (без onClick) — теперь полноценная загрузка через
+  // /api/files/upload (требует clientId) + /api/messages/thread-send с
+  // mediaUrl/mediaName/mediaType. Аналогично lead-chat-panel в карточке.
+  const [attached, setAttached]   = useState<AttachedFile | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [messages.length]);
 
+  // Прикрепить файл. Файл попадает в "Файлы клиента" (через clientId) и
+  // одновременно держим ссылку в стейте чтобы потом отправить как mediaUrl.
+  // Если у thread'а нет clientId (внешний контакт без созданного клиента) —
+  // прикрепление не работает. Это редкий кейс — обычно клиент создаётся
+  // автоматически при первом входящем (см. webhook handlers).
+  async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!thread.clientId) {
+      alert('Клиент ещё не оформлен — нельзя прикрепить файл. Сначала создайте лид через кнопку «Создать лид» в шапке.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      alert('Файл больше 50 МБ');
+      e.target.value = '';
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('clientId', thread.clientId);
+      fd.append('category', 'GENERAL');
+      const res = await fetch('/api/files/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось загрузить файл');
+      const mediaType: 'IMAGE' | 'DOCUMENT' = (data.mimeType as string | null)?.startsWith('image/') ? 'IMAGE' : 'DOCUMENT';
+      setAttached({ url: data.url, name: data.name, size: data.size, mediaType });
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setUploading(false);
+      if (e.target) e.target.value = '';
+    }
+  }
+
+  function clearAttached() { setAttached(null); }
+
   async function send(e: FormEvent) {
     e.preventDefault();
-    if (!body.trim() || sending) return;
+    if (sending) return;
+    const trimmed = body.trim();
+    if (!trimmed && !attached) return;
     setSending(true);
     try {
       // Универсальный endpoint — kind определяется из thread.channel в БД
@@ -342,7 +398,12 @@ function ChatPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           threadId: thread.id,
-          body:     body.trim(),
+          body:     trimmed,
+          ...(attached ? {
+            mediaUrl:  attached.url,
+            mediaName: attached.name,
+            mediaType: attached.mediaType,
+          } : {}),
         }),
       });
       const data = await res.json();
@@ -350,6 +411,7 @@ function ChatPane({
         alert(data.error || 'Не удалось отправить');
       } else {
         setBody('');
+        setAttached(null);
         router.refresh();
       }
     } catch (e) {
@@ -386,6 +448,8 @@ function ChatPane({
 
   // Для не-WhatsApp каналов phone может быть пустой (используется externalId)
   const showPhone = thread.kind === 'WHATSAPP' && thread.clientPhone;
+  const canSend = !sending && !uploading && (body.trim().length > 0 || !!attached);
+  const onlyWaSupportsFiles = thread.kind !== 'WHATSAPP';
 
   return (
     <>
@@ -454,6 +518,29 @@ function ChatPane({
 
       {/* Композер */}
       <form onSubmit={send} className="bg-paper border-t border-line px-3 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] shrink-0 sticky bottom-0 z-10">
+        {/* Превью прикреплённого файла — над инпутом */}
+        {attached && (
+          <div className="mb-2 flex items-center gap-2 px-2.5 py-1.5 bg-bg border border-line rounded-md">
+            <FileText size={13} className="text-info shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] font-semibold text-ink truncate">{attached.name}</div>
+              <div className="text-[10.5px] text-ink-4">
+                {formatFileSize(attached.size)}
+                {onlyWaSupportsFiles && (
+                  <span className="ml-2 text-warn">(в {channelLabel(thread.kind)} файл уйдёт ссылкой)</span>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={clearAttached}
+              className="text-ink-4 hover:text-danger transition-colors p-1"
+              title="Удалить вложение"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <button
             type="button"
@@ -463,12 +550,27 @@ function ChatPane({
           >
             <Sparkles size={15} />
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            onChange={onPickFile}
+            className="hidden"
+            disabled={uploading || sending}
+          />
           <button
             type="button"
-            className="w-9 h-9 rounded-md text-ink-4 hover:text-navy grid place-items-center transition-colors"
-            title="Прикрепить"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || sending || !!attached || !thread.clientId}
+            className="w-9 h-9 rounded-md text-ink-4 hover:text-navy grid place-items-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={
+              !thread.clientId
+                ? 'Сначала создайте лид'
+                : attached
+                ? 'Уже прикреплён файл'
+                : 'Прикрепить файл'
+            }
           >
-            <Paperclip size={15} />
+            {uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
           </button>
           <textarea
             value={body}
@@ -480,15 +582,15 @@ function ChatPane({
               }
             }}
             rows={1}
-            placeholder="Напишите сообщение..."
+            placeholder={attached ? 'Подпись к файлу (необязательно)' : 'Напишите сообщение...'}
             className="flex-1 resize-none px-3 py-2 text-[13px] bg-bg border border-transparent rounded-md focus:bg-paper focus:border-navy focus:outline-none max-h-[120px]"
           />
           <button
             type="submit"
-            disabled={!body.trim() || sending}
+            disabled={!canSend}
             className={cn(
               'w-9 h-9 rounded-md grid place-items-center transition-colors',
-              body.trim() && !sending
+              canSend
                 ? 'bg-navy text-white hover:bg-navy-soft'
                 : 'bg-bg text-ink-4 cursor-not-allowed',
             )}

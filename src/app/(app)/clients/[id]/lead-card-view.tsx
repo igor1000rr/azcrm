@@ -373,8 +373,14 @@ export function LeadCardView(props: LeadCardViewProps) {
           funnels={props.funnels}
         />
         <DealCard {...props} />
+        {/* clientId обязательный prop — нужен для прикрепления файлов
+            (загрузка идёт через /api/files/upload который требует clientId).
+            Без него LeadChatPanel сломает TS билд. Anna 04.05.2026 — фикс
+            пары к c4605fb где этот prop был добавлен в LeadChatPanel но
+            не пробрасывался в lead-card-view. */}
         <LeadChatPanel
           leadId={props.lead.id}
+          clientId={props.client.id}
           clientName={props.client.fullName}
           messages={props.chatMessages}
           availableAccounts={props.availableChatAccounts}
@@ -1176,7 +1182,7 @@ function NotesCard({ lead, notes, team }: LeadCardViewProps) {
                 <span className="text-[11px] text-ink-4 whitespace-nowrap" title={formatDateTime(n.createdAt)}>{formatRelative(n.createdAt)}</span>
               </div>
               <div className="text-[12.5px] text-ink-2 leading-relaxed whitespace-pre-wrap" dangerouslySetInnerHTML={{
-                __html: n.body.replace(/@([a-zA-Z0-9._-]+)/g, '<span class="text-gold font-semibold bg-gold-pale px-1 rounded">@$1</span>'),
+                __html: n.body.replace(/@([a-zA-Z0-9._-]+)/g, '<span class=\"text-gold font-semibold bg-gold-pale px-1 rounded\">@$1</span>'),
               }} />
             </div>
           ))}
