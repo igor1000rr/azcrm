@@ -50,8 +50,11 @@ function key(a: LeadChatAccount): string {
   return `${a.kind}:${a.accountId}`;
 }
 
+// clientId стал обязательным prop'ом (Anna 04.05.2026 — нужен для прикрепления
+// файлов в чат через /api/files/upload, который требует clientId).
 const BASE = {
   leadId:     'lead-1',
+  clientId:   'client-1',
   clientName: 'Иванов Иван',
   messages:   [] as LeadChatMessage[],
   availableAccounts: [makeAcc()] as LeadChatAccount[],
