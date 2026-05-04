@@ -18,7 +18,11 @@ import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { streamFile } from '@/lib/storage';
 import { verifyFileAccessToken } from '@/lib/onlyoffice';
-import { clientVisibilityFilter, leadVisibilityFilter } from '@/lib/permissions';
+import {
+  clientVisibilityFilter,
+  leadVisibilityFilter,
+  whatsappAccountFilter,
+} from '@/lib/permissions';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -148,14 +152,29 @@ export async function GET(
 }
 
 /**
- * Проверяет что файл принадлежит клиенту/треду, который видим текущему юзеру.
+ * Проверяет что файл принадлежит видимому пользователю объекту.
  *
  * - bucket='uploads': в БД ClientFile.fileUrl = '/api/files/uploads/<storedName>'.
  *   Файл видим, если связанный клиент проходит clientVisibilityFilter.
  *
  * - bucket='wa-media': файл видим если есть ChatMessage.mediaUrl ссылающийся
- *   на этот путь, и его ChatThread связан с видимым клиентом, ИЛИ если
- *   thread.lead проходит leadVisibilityFilter.
+ *   на этот путь, и его ChatThread проходит ОДНУ ИЗ проверок:
+ *     1. thread.client проходит clientVisibilityFilter (есть лид у юзера на клиенте)
+ *     2. thread.lead   проходит leadVisibilityFilter   (юзер менеджер на лиде)
+ *     3. thread.whatsappAccount проходит whatsappAccountFilter (юзер видит канал —
+ *        свой личный или общий ownerId=null).
+ *
+ *   Anna 04.05.2026: «у меня документы открываются, а у заказчицы вот что:
+ *   Forbidden». Корень — после отключения автосоздания лидов 01.05 webhook
+ *   стал создавать только Client (без Lead). На общем канале (ownerId=null)
+ *   client.ownerId тоже null. Картинка от такого клиента имеет thread без
+ *   лида и без своего ownerId → checkFileOwnership пускал только ADMIN.
+ *   SALES/LEGAL получали 403 даже хотя в /inbox этот thread видели через
+ *   whatsappAccountFilter (общий канал).
+ *
+ *   Фикс: добавил третью OR-ветку — permission на media равно permission
+ *   на сам канал. Если юзер видит thread в /inbox, должен видеть и media
+ *   из него.
  *
  * Вернёт true если хоть одна связь найдена для этого юзера; false иначе.
  */
@@ -178,11 +197,8 @@ async function checkFileOwnership(
     return !!found;
   }
 
-  // wa-media — медиа из чатов. Видим если:
-  //   1) ChatMessage.mediaUrl == fileUrl
-  //   2) thread.client проходит clientVisibilityFilter
-  //      ИЛИ thread.lead проходит leadVisibilityFilter (для случая когда
-  //      клиент уже отвязан — leadId на треде ещё может быть).
+  // wa-media — медиа из чатов. Видим если ChatMessage.mediaUrl == fileUrl
+  // и thread проходит хотя бы одну проверку доступа.
   const found = await db.chatMessage.findFirst({
     where: {
       mediaUrl: fileUrl,
@@ -190,6 +206,7 @@ async function checkFileOwnership(
         OR: [
           { client: clientVisibilityFilter(user) },
           { lead:   leadVisibilityFilter(user)   },
+          { whatsappAccount: whatsappAccountFilter(user) },
         ],
       },
     },
