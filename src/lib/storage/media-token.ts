@@ -15,10 +15,18 @@
 //
 // Anna 04.05.2026: «картинка не отправляется адекватно» — клиент в WhatsApp
 // получал пустое сообщение потому что worker не мог скачать файл без auth.
+//
+// Базовый URL берётся в порядке приоритета:
+//   1. APP_INTERNAL_URL — если worker в той же docker-сети что web
+//      (например http://web:3000). Быстрее, без TLS-rountrip.
+//   2. APP_PUBLIC_URL   — публичный домен с TLS (https://crm.azgroupcompany.net).
+//      Используется если worker нативный или в другой сети.
 
 import { signFileAccessToken } from '@/lib/onlyoffice';
 
-const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? '';
+function getWorkerBaseUrl(): string {
+  return process.env.APP_INTERNAL_URL || process.env.APP_PUBLIC_URL || '';
+}
 
 /** Превращает относительный `/api/files/.../abc.png` в абсолютный URL с
  *  mediaToken для WhatsApp worker'а.
@@ -27,18 +35,19 @@ const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? '';
  *  Это безопасно: либо это external CDN url, либо это уже наш URL с токеном
  *  из верхнего слоя (двойную подпись делать не нужно).
  *
- *  Бросает Error если APP_PUBLIC_URL не задан — без него worker не сможет
- *  скачать файл, отложенная ошибка приведёт к отправке пустого сообщения
- *  в WhatsApp. Лучше упасть громко на /api/messages/lead-send → юзер увидит
- *  alert и поймёт что не настроено. */
+ *  Бросает Error если ни APP_INTERNAL_URL ни APP_PUBLIC_URL не заданы — без
+ *  одного из них worker не сможет скачать файл, отложенная ошибка приведёт
+ *  к отправке пустого сообщения в WhatsApp. Лучше упасть громко на
+ *  /api/messages/lead-send → юзер увидит alert и поймёт что не настроено. */
 export function signMediaUrlForWorker(relativePath: string, ttlSec = 300): string {
   if (relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
     return relativePath;
   }
-  if (!APP_PUBLIC_URL) {
+  const baseUrl = getWorkerBaseUrl();
+  if (!baseUrl) {
     throw new Error(
-      'APP_PUBLIC_URL не задан в .env — WhatsApp worker не сможет скачать media. ' +
-      'Добавь APP_PUBLIC_URL=https://crm.azgroupcompany.net в окружение.',
+      'APP_PUBLIC_URL (или APP_INTERNAL_URL) не задан в .env — WhatsApp worker не сможет ' +
+      'скачать media. Добавь APP_PUBLIC_URL=https://crm.azgroupcompany.net в окружение.',
     );
   }
   if (!relativePath.startsWith('/')) {
@@ -46,5 +55,5 @@ export function signMediaUrlForWorker(relativePath: string, ttlSec = 300): strin
   }
   const token = signFileAccessToken(relativePath, ttlSec);
   const sep   = relativePath.includes('?') ? '&' : '?';
-  return `${APP_PUBLIC_URL.replace(/\/$/, '')}${relativePath}${sep}mediaToken=${encodeURIComponent(token)}`;
+  return `${baseUrl.replace(/\/$/, '')}${relativePath}${sep}mediaToken=${encodeURIComponent(token)}`;
 }
