@@ -3,6 +3,7 @@
 //   Часы | Ставка/час | Ставка×часы | Премия | ZUS | PIT | Грязными свои | Зп чистая
 //   Зп чистая    = ставка × часы + премии
 //   Грязными свои = зп чистая + ZUS + PIT
+import Link from 'next/link';
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
@@ -36,13 +37,29 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     orderBy: { name: 'asc' },
   });
 
-  // Премии (commission в БД) за период по каждому
+  // Премии (commission в БД) за период по каждому.
+  //
+  // Anna 03.05.2026: «Заходим в общие премии оно считает старые периоды.
+  // Заходим просто в премии по менеджерам там пусто». То есть на /payroll
+  // за май 2026 показывалось 537 zł, а на /commissions за тот же период —
+  // 0. Несогласованность.
+  //
+  // Корень: тут фильтр был по commission.createdAt (когда комиссия записана
+  // в БД), а в /finance/commissions после коммита 2b71071 — по
+  // payment.paidAt (когда деньги получены). Anna ввела платежи задним числом
+  // в мае → createdAt этих комиссий = май 2026, paidAt = 2025. Отсюда
+  // расхождение.
+  //
+  // Привожу к единой логике: всегда фильтруем по payment.paidAt. Семантика
+  // одинаковая везде — премия относится к месяцу когда деньги фактически
+  // получены, а не когда менеджер их занёс в систему.
   const commissions = await db.commission.findMany({
-    where: { createdAt: { gte: from, lte: to } },
+    where: { payment: { paidAt: { gte: from, lte: to } } },
     select: { userId: true, amount: true, paidOut: true },
   });
 
-  // Часы за период (WorkLog)
+  // Часы за период (WorkLog) — фильтр по WorkLog.date, не трогаем.
+  // Часы привязаны к календарной дате работы, не к платежу — это другая ось.
   const workLogs = await db.workLog.findMany({
     where: { date: { gte: from, lte: to } },
     select: { userId: true, hours: true },
@@ -89,18 +106,37 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     pending:     rows.reduce((s, r) => s + r.pending, 0),
   };
 
+  // Быстрые пресеты периода — как на /finance/commissions, для
+  // консистентного UX между двумя финансовыми страницами (Anna 03.05.2026).
+  const prevMonthFrom = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevMonthTo   = new Date(now.getFullYear(), now.getMonth(), 0);
+  const yearStart     = new Date(now.getFullYear(), 0, 1);
+  const yearEnd       = new Date(now.getFullYear(), 11, 31);
+  const presetParams = (f: Date, t: Date) =>
+    `?from=${toDateStr(f)}&to=${toDateStr(t)}`;
+  const isCurrentMonth = toDateStr(from) === toDateStr(defaultFrom) && toDateStr(to) === toDateStr(defaultTo);
+  const isPrevMonth    = toDateStr(from) === toDateStr(prevMonthFrom) && toDateStr(to) === toDateStr(prevMonthTo);
+  const isYear         = toDateStr(from) === toDateStr(yearStart) && toDateStr(to) === toDateStr(yearEnd);
+
   return (
     <>
       <Topbar breadcrumbs={[{ label: 'Финансы' }, { label: 'Сводная по ЗП' }]} />
 
       <div className="p-4 md:p-5 max-w-[1400px] w-full">
+        {/* Быстрые пресеты периода */}
+        <div className="flex gap-1.5 mb-2 flex-wrap">
+          <PresetLink href={presetParams(defaultFrom, defaultTo)} active={isCurrentMonth}>Этот месяц</PresetLink>
+          <PresetLink href={presetParams(prevMonthFrom, prevMonthTo)} active={isPrevMonth}>Прошлый месяц</PresetLink>
+          <PresetLink href={presetParams(yearStart, yearEnd)} active={isYear}>{now.getFullYear()} год</PresetLink>
+        </div>
+
         {/* Фильтры */}
         <form method="GET" className="bg-paper border border-line rounded-lg p-3 mb-3 flex items-end gap-3 flex-wrap">
           <Field label="С">
-            <input type="date" name="from" defaultValue={from.toISOString().slice(0,10)} className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="from" defaultValue={toDateStr(from)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           <Field label="По">
-            <input type="date" name="to" defaultValue={to.toISOString().slice(0,10)} className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="to" defaultValue={toDateStr(to)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           <button type="submit" className="px-3 py-1.5 text-[12px] font-semibold bg-navy text-white rounded">Применить</button>
           <div className="ml-auto text-[11.5px] text-ink-3">
@@ -121,6 +157,10 @@ export default async function PayrollPage({ searchParams }: PageProps) {
         </div>
 
         <PayrollView rows={rows} />
+
+        <div className="mt-3 text-[11px] text-ink-4">
+          Премии считаются по дате платежа (когда деньги получены). Часы — по дате работы.
+        </div>
       </div>
     </>
   );
@@ -135,6 +175,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function PresetLink({ href, active, children }: { href: string; active: boolean; children: React.ReactNode }) {
+  return (
+    <Link
+      href={`/finance/payroll${href}`}
+      className={
+        active
+          ? 'inline-flex items-center px-2.5 py-1 text-[11.5px] font-semibold rounded bg-navy text-white'
+          : 'inline-flex items-center px-2.5 py-1 text-[11.5px] font-medium rounded border border-line bg-paper text-ink-2 hover:border-ink-5'
+      }
+    >
+      {children}
+    </Link>
+  );
+}
+
 function KpiCard({ label, value, subtitle, highlight }: { label: string; value: string; subtitle?: string; highlight?: 'success' | 'warn' | 'danger' | 'default' }) {
   return (
     <div className="bg-paper border border-line rounded-lg p-3.5">
@@ -145,4 +200,8 @@ function KpiCard({ label, value, subtitle, highlight }: { label: string; value: 
       {subtitle && <div className="text-[10.5px] text-ink-4 mt-1">{subtitle}</div>}
     </div>
   );
+}
+
+function toDateStr(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
