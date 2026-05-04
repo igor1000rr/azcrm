@@ -62,16 +62,28 @@ export async function workerStatus(accountId: string): Promise<AccountStatus> {
   return workerCall<AccountStatus>('GET', `/accounts/${accountId}/status`);
 }
 
-/** Отправить сообщение */
+/** Отправить сообщение
+ *
+ *  Anna 04.05.2026: «WhatsApp worker error: 400 to and body required»
+ *  при попытке отправить PNG без подписи.
+ *
+ *  Worker валидирует `to && body` без учёта mediaUrl — баг в worker'е,
+ *  но проще обойти на нашей стороне: если есть медиа и нет подписи,
+ *  подставляем неразрывный пробел `\u00A0`. WhatsApp принимает его как
+ *  caption, визуально получатель видит только медиа без видимого текста.
+ *
+ *  Альтернатива была подставлять имя файла как caption — но Anna
+ *  специально оставляет подпись пустой, иначе бы написала. */
 export async function workerSendMessage(
   accountId: string,
   toPhone:   string,
   body:      string,
   mediaUrl?: string,
 ): Promise<SendResult> {
+  const effectiveBody = body || (mediaUrl ? '\u00A0' : '');
   return workerCall<SendResult>('POST', `/accounts/${accountId}/send`, {
     to:    toPhone,
-    body,
+    body:  effectiveBody,
     mediaUrl,
   });
 }
