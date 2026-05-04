@@ -2,13 +2,16 @@
 // Отдаёт файлы из storage. Доступ:
 //  - 'avatars'                — публично (для аватарок в UI без auth)
 //  - 'docs'                   — авторизация ИЛИ short-lived ooToken (для OnlyOffice)
-//  - 'uploads', 'wa-media'    — авторизация + проверка владения
-//      (PII клиентов: паспорта, фото из WhatsApp). ADMIN видит всё,
+//  - 'uploads', 'wa-media'    — авторизация + проверка владения,
+//      ИЛИ short-lived mediaToken (для WhatsApp worker'а — он без auth
+//      сессии, ему нужен токен чтобы скачать файл при отправке).
+//      PII клиентов: паспорта, фото из WhatsApp. ADMIN видит всё,
 //      SALES/LEGAL — только файлы клиентов в своих лидах.
 //  - 'blueprints', 'expenses' — только ADMIN
 //
 // Для OnlyOffice сервера, который ходит за файлом без сессии, поддерживается
 // query-параметр ?ooToken=<JWT> — short-lived подпись на конкретный путь.
+// Для WhatsApp worker'а — аналогичный ?mediaToken=<JWT>.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
@@ -68,7 +71,22 @@ export async function GET(
     }
   }
 
-  if (!isPublicBucket && !allowedByOoToken) {
+  // WhatsApp worker скачивает media-файлы по подписанному URL без сессии.
+  // mediaToken работает только для bucket=uploads и wa-media (PII-bucket'ы
+  // которые worker'у нужны для отправки в WhatsApp). Подпись та же что
+  // у ooToken — переиспользуем signFileAccessToken/verifyFileAccessToken,
+  // но через отдельный query-параметр чтобы не путать семантику.
+  const mediaToken = req.nextUrl.searchParams.get('mediaToken');
+  let allowedByMediaToken = false;
+  if (mediaToken && (bucket === 'uploads' || bucket === 'wa-media')) {
+    const storedNameTmp = pathSegments.join('/');
+    const expectedPath  = `/api/files/${bucket}/${storedNameTmp}`;
+    if (verifyFileAccessToken(mediaToken, expectedPath)) {
+      allowedByMediaToken = true;
+    }
+  }
+
+  if (!isPublicBucket && !allowedByOoToken && !allowedByMediaToken) {
     const session = await auth();
     if (!session?.user) {
       return new NextResponse('Unauthorized', { status: 401 });

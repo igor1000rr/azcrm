@@ -21,6 +21,7 @@ import { workerSendMessage } from '@/lib/whatsapp';
 import { sendMessage as sendTelegramMessage } from '@/lib/telegram';
 import { sendViberText } from '@/lib/viber';
 import { sendMessengerText, sendInstagramText } from '@/lib/meta';
+import { signMediaUrlForWorker } from '@/lib/storage/media-token';
 import { revalidatePath } from 'next/cache';
 
 const SEND_MAX       = 30;
@@ -134,7 +135,20 @@ async function sendWa(ctx: SendCtx) {
     });
   }
 
-  const result = await workerSendMessage(account.id, lead.client.phone, msgBody, mediaUrl);
+  // Worker — отдельный процесс без auth-сессии, ему нужен абсолютный URL
+  // с подписанным mediaToken чтобы скачать файл из /api/files/uploads.
+  // В БД сохраняем оригинальный относительный mediaUrl (без токена) —
+  // токен через 5 мин истечёт, а relative path останется валиден всегда.
+  let workerMediaUrl: string | undefined;
+  if (mediaUrl) {
+    try {
+      workerMediaUrl = signMediaUrlForWorker(mediaUrl);
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });
+    }
+  }
+
+  const result = await workerSendMessage(account.id, lead.client.phone, msgBody, workerMediaUrl);
   if (result.ok) {
     await db.$transaction([
       db.chatMessage.create({
@@ -182,10 +196,11 @@ async function sendTg(ctx: SendCtx) {
 
   // Если приложен файл — в Telegram пока шлём как ссылку с подписью.
   // Это временное решение пока не реализована полная sendDocument интеграция.
+  // Ссылка кликабельна только для залогиненных в CRM (auth required) —
+  // клиент в Telegram открыть её не сможет. Это known limitation, фиксим
+  // когда будем делать честную sendDocument интеграцию.
   if (mediaUrl) {
-    const origin = new URL(mediaUrl, 'http://placeholder').origin === 'http://placeholder' ? '' : '';
-    void origin;
-    const link = mediaUrl.startsWith('http') ? mediaUrl : mediaUrl;
+    const link = mediaUrl;
     msgBody = msgBody ? `${msgBody}\n${link}` : `📎 ${mediaName ?? 'Файл'}\n${link}`;
   }
 

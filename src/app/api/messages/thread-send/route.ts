@@ -23,6 +23,7 @@ import { workerSendMessage } from '@/lib/whatsapp';
 import { sendMessage as sendTelegramMessage } from '@/lib/telegram';
 import { sendViberText } from '@/lib/viber';
 import { sendMessengerText, sendInstagramText } from '@/lib/meta';
+import { signMediaUrlForWorker } from '@/lib/storage/media-token';
 import { revalidatePath } from 'next/cache';
 
 const SEND_MAX       = 30;
@@ -124,7 +125,18 @@ async function sendWa(ctx: SendCtx) {
   const phone = thread.client?.phone || (thread.externalId ? `+${thread.externalId}` : null);
   if (!phone) return NextResponse.json({ ok: false, error: 'Нет номера получателя' }, { status: 400 });
 
-  const result = await workerSendMessage(account.id, phone, msgBody, mediaUrl);
+  // Worker без auth-сессии — даём абсолютный URL с mediaToken (5 мин TTL).
+  // В БД сохраняем оригинальный относительный mediaUrl без токена.
+  let workerMediaUrl: string | undefined;
+  if (mediaUrl) {
+    try {
+      workerMediaUrl = signMediaUrlForWorker(mediaUrl);
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });
+    }
+  }
+
+  const result = await workerSendMessage(account.id, phone, msgBody, workerMediaUrl);
   if (result.ok) {
     await db.$transaction([
       db.chatMessage.create({
