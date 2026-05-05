@@ -3,6 +3,17 @@ name: Deploy to VPS
 on:
   push:
     branches: [main]
+    # Документационные изменения не триггерят полный деплой —
+    # это страховка от инцидента 05.05.2026 когда push в docs/
+    # запустил workflow и npm run build упал из-за OOM на VPS
+    # (RAM 4 GB загружена на 98% базово). Если нужно срочно
+    # передеплоить только из-за doc-изменений — workflow_dispatch.
+    paths-ignore:
+      - 'docs/**'
+      - 'reports/**'
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
   workflow_dispatch:
 
 jobs:
@@ -61,6 +72,11 @@ jobs:
             # случайно не потерять данные.
             npx prisma db push --skip-generate
             npx prisma generate
-            npm run build
+            # NODE_OPTIONS лимитирует heap node. На VPS 4 GB RAM,
+            # без лимита next build пытался выделить ~2 GB и при
+            # параллельной нагрузке (OnlyOffice/PG/worker) ловил
+            # OOM-killer (инцидент 05.05.2026). 1536 MB достаточно
+            # для проекта такого размера, проверено на проде.
+            NODE_OPTIONS="--max-old-space-size=1536" npm run build
             pm2 reload ecosystem.config.js --update-env || pm2 start ecosystem.config.js
             pm2 save
