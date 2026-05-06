@@ -6,9 +6,11 @@
 // Если stageId не указан — лид встаёт на первый этап новой воронки.
 // Если указан — должен принадлежать новой воронке (иначе ошибка).
 //
-// При смене воронки обнуляем serviceId и удаляем все leadService —
-// прайс-листы у воронок разные (Karta Pobytu vs Praca). Менеджер
-// перевыберет услуги вручную в карточке после смены воронки.
+// При смене воронки сбрасываем всё связанное со старой услугой:
+//   - serviceId, leadServices  (прайс-листы у воронок разные)
+//   - totalAmount → 0          (#65 аудита: иначе остаётся стоимость старой услуги)
+//   - LeadDocument чек-лист    (#66 аудита: документы старой услуги не подходят
+//                                к новой; пересоздаём из шаблонов воронки если есть)
 
 import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/db';
@@ -28,6 +30,7 @@ export async function changeLeadFunnel(
     select: {
       id: true, salesManagerId: true, legalManagerId: true,
       funnelId: true, stageId: true,
+      totalAmount: true,
       funnel: { select: { name: true } },
       stage:  { select: { name: true } },
     },
@@ -69,29 +72,65 @@ export async function changeLeadFunnel(
     newStageName = first.name;
   }
 
+  // Шаблоны документов для НОВОЙ воронки (legacy fallback — без привязки
+  // к услуге; пользователь сам потом привяжет услуги и добавит её документы).
+  // Когда менеджер выберет услугу через UI, новые документы по этой услуге
+  // будут добавлены отдельно (см. addLeadService в actions.ts).
+  const funnelDocTemplates = await db.documentTemplate.findMany({
+    where: { funnelId, serviceId: null },
+    orderBy: { position: 'asc' },
+    select: { name: true, position: true, isRequired: true },
+  });
+
+  const oldTotalAmount = Number(lead.totalAmount);
+
   await db.$transaction([
-    // Прайс-листы у воронок разные. Чтобы не остался «висеть» неподходящий
-    // serviceId/leadServices — обнуляем. Менеджер выберет заново в карточке.
+    // Прайс-листы у воронок разные → удаляем услуги и обнуляем serviceId
     db.leadService.deleteMany({ where: { leadId } }),
+
+    // Чек-лист от старой воронки/услуги → удаляем (#66)
+    db.leadDocument.deleteMany({ where: { leadId } }),
+
+    // Лид: новая воронка/этап + сброс serviceId + обнуление totalAmount (#65)
     db.lead.update({
       where: { id: leadId },
       data:  {
         funnelId,
-        stageId:   newStageId,
-        serviceId: null,
+        stageId:     newStageId,
+        serviceId:   null,
+        totalAmount: 0,
       },
     }),
+
+    // Новый чек-лист — из шаблонов новой воронки (если они заданы).
+    // Если у воронки шаблонов нет — список останется пустым, менеджер
+    // добавит услугу и оттуда подтянутся её документы.
+    ...(funnelDocTemplates.length > 0 ? [
+      db.leadDocument.createMany({
+        data: funnelDocTemplates.map((t) => ({
+          leadId,
+          name:     t.name,
+          position: t.position,
+          isPresent: false,
+        })),
+      }),
+    ] : []),
+
     db.leadEvent.create({
       data: {
         leadId,
         authorId: user.id,
         kind:     'STAGE_CHANGED',
-        message:  `Воронка: ${lead.funnel.name} → ${newFunnel.name} (${newStageName})`,
+        message:
+          `Воронка: ${lead.funnel.name} → ${newFunnel.name} (${newStageName}). ` +
+          `Сброшены услуги, чек-лист и стоимость${oldTotalAmount > 0 ? ` (была ${oldTotalAmount} zł)` : ''}.`,
         payload: {
-          fromFunnelId: lead.funnelId,
-          toFunnelId:   funnelId,
-          fromStageId:  lead.stageId,
-          toStageId:    newStageId,
+          fromFunnelId:    lead.funnelId,
+          toFunnelId:      funnelId,
+          fromStageId:     lead.stageId,
+          toStageId:       newStageId,
+          oldTotalAmount,
+          newDocsCount:    funnelDocTemplates.length,
         },
       },
     }),
@@ -102,8 +141,17 @@ export async function changeLeadFunnel(
     action:     'lead.change_funnel',
     entityType: 'Lead',
     entityId:   leadId,
-    before:     { funnelId: lead.funnelId, stageId: lead.stageId },
-    after:      { funnelId, stageId: newStageId },
+    before:     {
+      funnelId: lead.funnelId,
+      stageId:  lead.stageId,
+      totalAmount: oldTotalAmount,
+    },
+    after:      {
+      funnelId,
+      stageId:     newStageId,
+      totalAmount: 0,
+      docsReset:   true,
+    },
   });
 
   revalidatePath('/funnel');
