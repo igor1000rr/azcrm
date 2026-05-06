@@ -233,7 +233,13 @@ describe('POST /api/files/upload', () => {
   it('validateMagicBytes вернул ok=false → 415 (#37 аудита)', async () => {
     // Атакующий обманул isAllowedFile (расширение .pdf, MIME application/pdf),
     // но содержимое файла — не PDF magic bytes. Должны вернуть 415.
+    //
+    // ВАЖНО: validateMagicBytes вызывается ПОСЛЕ permission-check
+    // (db.client.findFirst). Без мока findFirst тест падал на 403
+    // вместо ожидаемого 415, потому что null от findFirst отрезает
+    // поток до magic-bytes. Мокаем клиента как видимого.
     mockIsAllowedFile.mockReturnValue({ ok: true });
+    mockDb.client.findFirst.mockResolvedValue({ id: 'cl-1' });
     mockValidateMagicBytes.mockReturnValue({
       ok: false, reason: 'Содержимое не соответствует расширению .pdf',
     });
