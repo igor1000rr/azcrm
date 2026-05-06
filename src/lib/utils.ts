@@ -104,6 +104,134 @@ export function daysUntil(d: Date | string | null | undefined): number | null {
   return days === 0 ? 0 : days; // нормализация -0 → +0
 }
 
+// ====================== ЧАСОВЫЕ ПОЯСА ======================
+//
+// Все юзеры CRM в Польше (Europe/Warsaw, CET/CEST). ВСЕ даты
+// в БД хранятся в UTC, но Anna в фильтрах вводит "с 01.05 по 31.05"
+// в варшавском времени. Без явного перевода:
+//   new Date("2026-05-01")           = 2026-05-01 00:00 UTC = 02:00 Warsaw
+//   new Date("2026-05-31T23:59:59")  = 2026-05-31 23:59 UTC = 01:59 Warsaw 1 июня
+// В итоге выборка "май" теряет первые 2 часа 1 мая и захватывает
+// первые 2 часа 1 июня — финансы расходятся между /commissions и /payroll.
+//
+// 06.05.2026 — пункт #3 аудита. Раньше этих функций не было —
+// все finance/* страницы использовали new Date(params.from) напрямую.
+//
+// Используем Intl.DateTimeFormat вместо хардкода +1/+2 чтобы правильно
+// работало переключение CET↔CEST (последнее воскресенье марта/октября).
+
+const WARSAW_TZ = 'Europe/Warsaw';
+
+/**
+ * Получить смещение Warsaw относительно UTC в минутах для конкретного
+ * момента времени (учитывает летнее/зимнее время).
+ */
+function warsawOffsetMinutesAt(utcMs: number): number {
+  // Форматируем время в варшавском TZ и обратно парсим как UTC —
+  // разница = смещение TZ.
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: WARSAW_TZ, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = fmt.formatToParts(new Date(utcMs));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const asUtc = Date.UTC(
+    get('year'), get('month') - 1, get('day'),
+    get('hour') === 24 ? 0 : get('hour'), get('minute'), get('second'),
+  );
+  return Math.round((asUtc - utcMs) / 60_000);
+}
+
+/**
+ * Парсит строку вида "YYYY-MM-DD" как НАЧАЛО дня в Warsaw, возвращает UTC Date.
+ * Пример: parseWarsawDateStart('2026-05-01') → 2026-04-30 22:00 UTC (= 00:00 летом CEST).
+ */
+export function parseWarsawDateStart(yyyyMmDd: string): Date {
+  const [y, m, d] = yyyyMmDd.split('-').map(Number);
+  if (!y || !m || !d) return new Date(NaN);
+  // Наивная версия: предположим что "в варшаве 00:00" = UTC 00:00,
+  // узнаём реальное смещение в этот момент и скорректируем.
+  const naiveUtc = Date.UTC(y, m - 1, d, 0, 0, 0);
+  const offsetMin = warsawOffsetMinutesAt(naiveUtc);
+  return new Date(naiveUtc - offsetMin * 60_000);
+}
+
+/**
+ * Парсит строку "YYYY-MM-DD" как КОНЕЦ дня (23:59:59.999) в Warsaw → UTC.
+ */
+export function parseWarsawDateEnd(yyyyMmDd: string): Date {
+  const [y, m, d] = yyyyMmDd.split('-').map(Number);
+  if (!y || !m || !d) return new Date(NaN);
+  const naiveUtc = Date.UTC(y, m - 1, d, 23, 59, 59, 999);
+  const offsetMin = warsawOffsetMinutesAt(naiveUtc);
+  return new Date(naiveUtc - offsetMin * 60_000);
+}
+
+/**
+ * Границы текущего месяца в Warsaw → UTC. Для дефолтных фильтров.
+ */
+export function warsawCurrentMonthBounds(): { from: Date; to: Date } {
+  const now = new Date();
+  // Берём год/месяц в варшавском TZ (в полночь UTC это может быть уже следующий день).
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: WARSAW_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const parts = fmt.formatToParts(now);
+  const y = Number(parts.find((p) => p.type === 'year')!.value);
+  const m = Number(parts.find((p) => p.type === 'month')!.value);
+  // Последний день месяца — день 0 следующего месяца
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const fromStr = `${y}-${String(m).padStart(2, '0')}-01`;
+  const toStr   = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  return {
+    from: parseWarsawDateStart(fromStr),
+    to:   parseWarsawDateEnd(toStr),
+  };
+}
+
+/**
+ * Границы прошлого месяца в Warsaw → UTC.
+ */
+export function warsawPrevMonthBounds(): { from: Date; to: Date } {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: WARSAW_TZ, year: 'numeric', month: '2-digit' });
+  const parts = fmt.formatToParts(now);
+  let y = Number(parts.find((p) => p.type === 'year')!.value);
+  let m = Number(parts.find((p) => p.type === 'month')!.value) - 1;
+  if (m === 0) { m = 12; y -= 1; }
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const fromStr = `${y}-${String(m).padStart(2, '0')}-01`;
+  const toStr   = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  return {
+    from: parseWarsawDateStart(fromStr),
+    to:   parseWarsawDateEnd(toStr),
+  };
+}
+
+/**
+ * Границы текущего года в Warsaw → UTC.
+ */
+export function warsawCurrentYearBounds(): { from: Date; to: Date } {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: WARSAW_TZ, year: 'numeric' });
+  const y = Number(fmt.formatToParts(now).find((p) => p.type === 'year')!.value);
+  return {
+    from: parseWarsawDateStart(`${y}-01-01`),
+    to:   parseWarsawDateEnd(`${y}-12-31`),
+  };
+}
+
+/**
+ * UTC Date → "YYYY-MM-DD" в варшавском TZ.
+ * Для input[type=date] в формах фильтров.
+ */
+export function toWarsawDateStr(d: Date): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: WARSAW_TZ,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  return fmt.format(d); // en-CA даёт ровно "YYYY-MM-DD"
+}
+
 // ====================== ИМЕНА ======================
 
 /** Инициалы: "Иван Петров" → "ИП", максимум 2 буквы */

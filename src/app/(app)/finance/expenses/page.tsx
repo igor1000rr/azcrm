@@ -2,6 +2,10 @@
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
+import {
+  parseWarsawDateStart, parseWarsawDateEnd,
+  warsawCurrentMonthBounds, toWarsawDateStr,
+} from '@/lib/utils';
 import { ExpensesView } from './expenses-view';
 
 export const dynamic = 'force-dynamic';
@@ -14,11 +18,10 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
   await requireAdmin();
   const params = await searchParams;
 
-  const now = new Date();
-  const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
-  const defaultTo = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-  const from = params.from ? new Date(params.from) : defaultFrom;
-  const to = params.to ? new Date(params.to + 'T23:59:59') : defaultTo;
+  // 06.05.2026 — пункт #3 аудита: все даты в Warsaw TZ
+  const { from: defaultFrom, to: defaultTo } = warsawCurrentMonthBounds();
+  const from = params.from ? parseWarsawDateStart(params.from) : defaultFrom;
+  const to   = params.to   ? parseWarsawDateEnd(params.to)     : defaultTo;
 
   const where = {
     spentAt: { gte: from, lte: to },
@@ -42,7 +45,6 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
     }),
   ]);
 
-  // Суммы по городам
   const byCity = new Map<string, { id: string; name: string; total: number; count: number }>();
   for (const e of expenses) {
     const k = e.city?.id ?? '__none__';
@@ -54,7 +56,6 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
   }
   const byCityArr = [...byCity.values()].sort((a, b) => b.total - a.total);
 
-  // Суммы по категориям
   const byCategory = new Map<string, number>();
   for (const e of expenses) {
     byCategory.set(e.category, (byCategory.get(e.category) ?? 0) + Number(e.amount));
@@ -86,8 +87,8 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
         byCategory={byCategoryArr}
         totalAmount={totalAmount}
         currentFilters={{
-          from: from.toISOString().slice(0, 10),
-          to: to.toISOString().slice(0, 10),
+          from: toWarsawDateStr(from),
+          to:   toWarsawDateStr(to),
           city: params.city ?? 'all',
         }}
       />

@@ -7,7 +7,12 @@ import { Badge } from '@/components/ui/badge';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { canViewFinance, canMarkCommissionPaid } from '@/lib/permissions';
-import { formatDate, formatMoney } from '@/lib/utils';
+import {
+  formatDate, formatMoney,
+  parseWarsawDateStart, parseWarsawDateEnd,
+  warsawCurrentMonthBounds, warsawPrevMonthBounds, warsawCurrentYearBounds,
+  toWarsawDateStr,
+} from '@/lib/utils';
 import { CommissionsActions, RecalcUserCommissions } from './actions-view';
 
 export const dynamic = 'force-dynamic';
@@ -23,24 +28,21 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const isAdmin = canViewFinance(user);
 
-  // Период: по дефолту текущий месяц
-  const now = new Date();
-  const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
-  const defaultTo = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-  const from = params.from ? new Date(params.from) : defaultFrom;
-  const to = params.to ? new Date(params.to + 'T23:59:59') : defaultTo;
+  // Период: по дефолту текущий месяц в варшавском TZ.
+  // 06.05.2026 — пункт #3 аудита: раньше new Date(year, month, ...) интерпретировался
+  // в времени сервера (на VPS = UTC), и new Date("2026-05-01") = 02:00 Warsaw — теряли
+  // первые 2 часа 1 мая и захватывали 2 часа 1 июня в выборку. Сейчас всё в Warsaw.
+  const { from: defaultFrom, to: defaultTo } = warsawCurrentMonthBounds();
+  const from = params.from ? parseWarsawDateStart(params.from) : defaultFrom;
+  const to   = params.to   ? parseWarsawDateEnd(params.to)     : defaultTo;
   const paidFilter = params.paid ?? 'all';
 
   // Менеджер видит только свои; админ может фильтровать по конкретному
   const userIdFilter = isAdmin ? (params.user || undefined) : user.id;
 
-  // Anna 02.05.2026: «Оно зачем-то вычитывает старые даты — в новые периоды.
-  // Оно же должно по месяцам считать». Раньше фильтровали по
-  // commission.createdAt (когда комиссия создана в системе) — но Anna вводит
-  // платежи задним числом (paidAt 30.04.2025 в мае 2026), и такие комиссии
-  // попадали в текущий месяц по createdAt хотя в таблице показывался paidAt.
-  // Семантически премия относится к месяцу когда платёж фактически получен,
-  // поэтому фильтруем по payment.paidAt — что и видит Anna в столбце «Дата».
+  // Anna 02.05.2026: фильтр по payment.paidAt (когда деньги фактически получены),
+  // а не по commission.createdAt — чтобы платежи задним числом попадали в свой
+  // месяц по дате платежа.
   const where = {
     payment: { paidAt: { gte: from, lte: to } },
     ...(userIdFilter ? { userId: userIdFilter } : {}),
@@ -50,9 +52,6 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   const [commissions, allUsers] = await Promise.all([
     db.commission.findMany({
       where,
-      // Сортировка тоже по paidAt — чтобы порядок в таблице совпадал
-      // с тем по чему мы фильтруем. Внутри одного дня дополнительно
-      // сортируем по createdAt чтобы порядок был стабилен.
       orderBy: [{ payment: { paidAt: 'desc' } }, { createdAt: 'desc' }],
       take: 500,
       include: {
@@ -84,7 +83,7 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   // Свод: группировка по менеджеру
   const byUser = new Map<string, {
     id: string; name: string; role: string;
-    currentPct: number | null;     // актуальный User.commissionPercent — для подсказки в сводке
+    currentPct: number | null;
     totalAmount: number; totalCommission: number; count: number;
     paidOut: number; pending: number;
   }>();
@@ -105,23 +104,20 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
   }
   const aggregated = [...byUser.values()].sort((a, b) => b.totalCommission - a.totalCommission);
 
-  // Быстрые пресеты периода (Anna 02.05.2026 — чтобы быстро переключаться
-  // «этот месяц / прошлый / всё»). Передаём через URL search params.
-  const prevMonthFrom = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const prevMonthTo   = new Date(now.getFullYear(), now.getMonth(), 0);
-  const yearStart     = new Date(now.getFullYear(), 0, 1);
-  const yearEnd       = new Date(now.getFullYear(), 11, 31);
+  // Быстрые пресеты периода — тоже в варшавском TZ
+  const prev = warsawPrevMonthBounds();
+  const year = warsawCurrentYearBounds();
   const presetParams = (f: Date, t: Date) => {
     const sp = new URLSearchParams();
-    sp.set('from', toDateStr(f));
-    sp.set('to', toDateStr(t));
+    sp.set('from', toWarsawDateStr(f));
+    sp.set('to', toWarsawDateStr(t));
     if (params.user) sp.set('user', params.user);
     if (params.paid) sp.set('paid', params.paid);
     return `?${sp.toString()}`;
   };
-  const isCurrentMonth = toDateStr(from) === toDateStr(defaultFrom) && toDateStr(to) === toDateStr(defaultTo);
-  const isPrevMonth    = toDateStr(from) === toDateStr(prevMonthFrom) && toDateStr(to) === toDateStr(prevMonthTo);
-  const isYear         = toDateStr(from) === toDateStr(yearStart) && toDateStr(to) === toDateStr(yearEnd);
+  const isCurrentMonth = toWarsawDateStr(from) === toWarsawDateStr(defaultFrom) && toWarsawDateStr(to) === toWarsawDateStr(defaultTo);
+  const isPrevMonth    = toWarsawDateStr(from) === toWarsawDateStr(prev.from)   && toWarsawDateStr(to) === toWarsawDateStr(prev.to);
+  const isYear         = toWarsawDateStr(from) === toWarsawDateStr(year.from)   && toWarsawDateStr(to) === toWarsawDateStr(year.to);
 
   return (
     <>
@@ -131,17 +127,17 @@ export default async function CommissionsPage({ searchParams }: PageProps) {
         {/* Быстрые пресеты периода */}
         <div className="flex gap-1.5 mb-2 flex-wrap">
           <PresetLink href={presetParams(defaultFrom, defaultTo)} active={isCurrentMonth}>Этот месяц</PresetLink>
-          <PresetLink href={presetParams(prevMonthFrom, prevMonthTo)} active={isPrevMonth}>Прошлый месяц</PresetLink>
-          <PresetLink href={presetParams(yearStart, yearEnd)} active={isYear}>{now.getFullYear()} год</PresetLink>
+          <PresetLink href={presetParams(prev.from, prev.to)}    active={isPrevMonth}>Прошлый месяц</PresetLink>
+          <PresetLink href={presetParams(year.from, year.to)}    active={isYear}>{new Date().getFullYear()} год</PresetLink>
         </div>
 
         {/* Фильтры */}
         <form method="GET" className="bg-paper border border-line rounded-lg p-3 mb-3 flex items-end gap-3 flex-wrap">
           <Field label="С">
-            <input type="date" name="from" defaultValue={toDateStr(from)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="from" defaultValue={toWarsawDateStr(from)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           <Field label="По">
-            <input type="date" name="to" defaultValue={toDateStr(to)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="to" defaultValue={toWarsawDateStr(to)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           {isAdmin && (
             <Field label="Менеджер">
@@ -343,8 +339,4 @@ function PresetLink({ href, active, children }: { href: string; active: boolean;
       {children}
     </Link>
   );
-}
-
-function toDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
 }

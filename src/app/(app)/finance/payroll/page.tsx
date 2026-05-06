@@ -7,7 +7,12 @@ import Link from 'next/link';
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
-import { formatMoney } from '@/lib/utils';
+import {
+  formatMoney,
+  parseWarsawDateStart, parseWarsawDateEnd,
+  warsawCurrentMonthBounds, warsawPrevMonthBounds, warsawCurrentYearBounds,
+  toWarsawDateStr,
+} from '@/lib/utils';
 import { PayrollView } from './payroll-view';
 
 export const dynamic = 'force-dynamic';
@@ -20,12 +25,10 @@ export default async function PayrollPage({ searchParams }: PageProps) {
   await requireAdmin();
   const params = await searchParams;
 
-  // Период по дефолту — текущий месяц
-  const now = new Date();
-  const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
-  const defaultTo = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-  const from = params.from ? new Date(params.from) : defaultFrom;
-  const to = params.to ? new Date(params.to + 'T23:59:59') : defaultTo;
+  // Период по дефолту — текущий месяц в Warsaw TZ (пункт #3 аудита)
+  const { from: defaultFrom, to: defaultTo } = warsawCurrentMonthBounds();
+  const from = params.from ? parseWarsawDateStart(params.from) : defaultFrom;
+  const to   = params.to   ? parseWarsawDateEnd(params.to)     : defaultTo;
 
   // Все активные сотрудники + их конфиг ЗП
   const users = await db.user.findMany({
@@ -37,29 +40,16 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     orderBy: { name: 'asc' },
   });
 
-  // Премии (commission в БД) за период по каждому.
-  //
-  // Anna 03.05.2026: «Заходим в общие премии оно считает старые периоды.
-  // Заходим просто в премии по менеджерам там пусто». То есть на /payroll
-  // за май 2026 показывалось 537 zł, а на /commissions за тот же период —
-  // 0. Несогласованность.
-  //
-  // Корень: тут фильтр был по commission.createdAt (когда комиссия записана
-  // в БД), а в /finance/commissions после коммита 2b71071 — по
-  // payment.paidAt (когда деньги получены). Anna ввела платежи задним числом
-  // в мае → createdAt этих комиссий = май 2026, paidAt = 2025. Отсюда
-  // расхождение.
-  //
-  // Привожу к единой логике: всегда фильтруем по payment.paidAt. Семантика
-  // одинаковая везде — премия относится к месяцу когда деньги фактически
-  // получены, а не когда менеджер их занёс в систему.
+  // Премии (commission в БД) за период. Фильтр по payment.paidAt — синхронно с /commissions.
   const commissions = await db.commission.findMany({
     where: { payment: { paidAt: { gte: from, lte: to } } },
     select: { userId: true, amount: true, paidOut: true },
   });
 
-  // Часы за период (WorkLog) — фильтр по WorkLog.date, не трогаем.
-  // Часы привязаны к календарной дате работы, не к платежу — это другая ось.
+  // Часы за период (WorkLog) — фильтр по WorkLog.date.
+  // WorkLog.date это @db.Date (без времени), поэтому сравнение gte/lte
+  // работает по календарным дням независимо от TZ. Более точные границы
+  // в UTC тоже подойдут — Postgres сравнивает только датную часть.
   const workLogs = await db.workLog.findMany({
     where: { date: { gte: from, lte: to } },
     select: { userId: true, hours: true },
@@ -79,9 +69,7 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     const pit = Number(u.payrollConfig?.pit ?? 0);
 
     const ratePart = hourlyRate * totalHours;
-    // Зп чистая = что менеджер получает на руки
     const netTotal = ratePart + totalCommission;
-    // Грязными свои = полная стоимость для компании (с налогами)
     const grossTotal = netTotal + zus + pit;
 
     return {
@@ -94,7 +82,6 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     };
   });
 
-  // Итоги
   const totals = {
     commissions: rows.reduce((s, r) => s + r.totalCommission, 0),
     rate:        rows.reduce((s, r) => s + r.ratePart, 0),
@@ -106,45 +93,38 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     pending:     rows.reduce((s, r) => s + r.pending, 0),
   };
 
-  // Быстрые пресеты периода — как на /finance/commissions, для
-  // консистентного UX между двумя финансовыми страницами (Anna 03.05.2026).
-  const prevMonthFrom = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const prevMonthTo   = new Date(now.getFullYear(), now.getMonth(), 0);
-  const yearStart     = new Date(now.getFullYear(), 0, 1);
-  const yearEnd       = new Date(now.getFullYear(), 11, 31);
+  const prev = warsawPrevMonthBounds();
+  const year = warsawCurrentYearBounds();
   const presetParams = (f: Date, t: Date) =>
-    `?from=${toDateStr(f)}&to=${toDateStr(t)}`;
-  const isCurrentMonth = toDateStr(from) === toDateStr(defaultFrom) && toDateStr(to) === toDateStr(defaultTo);
-  const isPrevMonth    = toDateStr(from) === toDateStr(prevMonthFrom) && toDateStr(to) === toDateStr(prevMonthTo);
-  const isYear         = toDateStr(from) === toDateStr(yearStart) && toDateStr(to) === toDateStr(yearEnd);
+    `?from=${toWarsawDateStr(f)}&to=${toWarsawDateStr(t)}`;
+  const isCurrentMonth = toWarsawDateStr(from) === toWarsawDateStr(defaultFrom) && toWarsawDateStr(to) === toWarsawDateStr(defaultTo);
+  const isPrevMonth    = toWarsawDateStr(from) === toWarsawDateStr(prev.from)   && toWarsawDateStr(to) === toWarsawDateStr(prev.to);
+  const isYear         = toWarsawDateStr(from) === toWarsawDateStr(year.from)   && toWarsawDateStr(to) === toWarsawDateStr(year.to);
 
   return (
     <>
       <Topbar breadcrumbs={[{ label: 'Финансы' }, { label: 'Сводная по ЗП' }]} />
 
       <div className="p-4 md:p-5 max-w-[1400px] w-full">
-        {/* Быстрые пресеты периода */}
         <div className="flex gap-1.5 mb-2 flex-wrap">
           <PresetLink href={presetParams(defaultFrom, defaultTo)} active={isCurrentMonth}>Этот месяц</PresetLink>
-          <PresetLink href={presetParams(prevMonthFrom, prevMonthTo)} active={isPrevMonth}>Прошлый месяц</PresetLink>
-          <PresetLink href={presetParams(yearStart, yearEnd)} active={isYear}>{now.getFullYear()} год</PresetLink>
+          <PresetLink href={presetParams(prev.from, prev.to)}    active={isPrevMonth}>Прошлый месяц</PresetLink>
+          <PresetLink href={presetParams(year.from, year.to)}    active={isYear}>{new Date().getFullYear()} год</PresetLink>
         </div>
 
-        {/* Фильтры */}
         <form method="GET" className="bg-paper border border-line rounded-lg p-3 mb-3 flex items-end gap-3 flex-wrap">
           <Field label="С">
-            <input type="date" name="from" defaultValue={toDateStr(from)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="from" defaultValue={toWarsawDateStr(from)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           <Field label="По">
-            <input type="date" name="to" defaultValue={toDateStr(to)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
+            <input type="date" name="to" defaultValue={toWarsawDateStr(to)} min="2000-01-01" max="2100-12-31" className="text-[12px] border border-line rounded px-2 py-1 bg-paper" />
           </Field>
           <button type="submit" className="px-3 py-1.5 text-[12px] font-semibold bg-navy text-white rounded">Применить</button>
           <div className="ml-auto text-[11.5px] text-ink-3">
-            Период: <strong className="text-ink">{from.toLocaleDateString('ru-RU')}</strong> — <strong className="text-ink">{to.toLocaleDateString('ru-RU')}</strong>
+            Период: <strong className="text-ink">{from.toLocaleDateString('ru-RU', { timeZone: 'Europe/Warsaw' })}</strong> — <strong className="text-ink">{to.toLocaleDateString('ru-RU', { timeZone: 'Europe/Warsaw' })}</strong>
           </div>
         </form>
 
-        {/* Сводные KPI */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <KpiCard label="Часов отработано" value={`${totals.hours.toFixed(1)} ч`} />
           <KpiCard label="Премий начислено" value={`${formatMoney(totals.commissions)} zł`} highlight="success" />
@@ -159,7 +139,7 @@ export default async function PayrollPage({ searchParams }: PageProps) {
         <PayrollView rows={rows} />
 
         <div className="mt-3 text-[11px] text-ink-4">
-          Премии считаются по дате платежа (когда деньги получены). Часы — по дате работы.
+          Премии считаются по дате платежа (когда деньги получены). Часы — по дате работы. Даты — время Варшавы.
         </div>
       </div>
     </>
@@ -200,8 +180,4 @@ function KpiCard({ label, value, subtitle, highlight }: { label: string; value: 
       {subtitle && <div className="text-[10.5px] text-ink-4 mt-1">{subtitle}</div>}
     </div>
   );
-}
-
-function toDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
 }
