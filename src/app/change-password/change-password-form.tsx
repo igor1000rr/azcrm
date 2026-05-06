@@ -4,6 +4,9 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { changeMyPassword } from './actions';
 
+// 06.05.2026 — пункт #33 аудита: фронт-валидация тоже на 12 символов.
+const PASSWORD_MIN_LENGTH = 12;
+
 export function ChangePasswordForm() {
   const router = useRouter();
   const [currentPassword, setCurrentPassword] = useState('');
@@ -54,11 +57,11 @@ export function ChangePasswordForm() {
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           required
-          minLength={8}
+          minLength={PASSWORD_MIN_LENGTH}
           autoComplete="new-password"
           className="px-3 py-2 text-[13px] bg-bg border border-line rounded-md focus:border-navy focus:outline-none"
         />
-        <span className="text-[11px] text-ink-4">Минимум 8 символов</span>
+        <span className="text-[11px] text-ink-4">Минимум {PASSWORD_MIN_LENGTH} символов</span>
       </label>
       <label className="flex flex-col gap-1">
         <span className="text-[12px] font-semibold text-ink-2">Подтвердите новый пароль</span>

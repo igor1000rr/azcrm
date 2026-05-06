@@ -1,12 +1,20 @@
 'use server';
 
 // Управление пользователями (только ADMIN)
+//
+// 06.05.2026 — пункт #33 аудита: унифицирован минимум пароля всех файлах.
+// До: в team/actions.ts было min(6), в change-password — min(8), seed генерировал 12.
+// Сейчас всюду 12 — это минимум для современного пароля без 2FA, рекомендовано NIST.
+
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { audit } from '@/lib/audit';
+
+// Минимум длины пароля — источник истины. Изменение одного числа распространяется на все места.
+export const PASSWORD_MIN_LENGTH = 12;
 
 const userSchema = z.object({
   id:       z.string().optional(),
@@ -34,11 +42,12 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
       isActive: data.isActive,
       commissionPercent: data.commissionPercent ?? null,
     };
-    if (data.password && data.password.length >= 6) {
+    if (data.password) {
+      if (data.password.length < PASSWORD_MIN_LENGTH) {
+        throw new Error(`Пароль должен быть минимум ${PASSWORD_MIN_LENGTH} символов`);
+      }
       updateData.passwordHash = await bcrypt.hash(data.password, 10);
-      // 06.05.2026 — пункт #32 аудита: при изменении пароля
-      // админом выставляем mustChangePassword=true. Сотрудник при
-      // следующем входе будет обязан сменить.
+      // При изменении пароля админом выставляем mustChangePassword=true (#32 аудита).
       updateData.mustChangePassword = true;
     }
     await db.user.update({ where: { id: data.id }, data: updateData as never });
@@ -52,8 +61,8 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
     });
   } else {
     // Создание
-    if (!data.password || data.password.length < 6) {
-      throw new Error('Пароль должен быть минимум 6 символов');
+    if (!data.password || data.password.length < PASSWORD_MIN_LENGTH) {
+      throw new Error(`Пароль должен быть минимум ${PASSWORD_MIN_LENGTH} символов`);
     }
     const created = await db.user.create({
       data: {
@@ -109,12 +118,11 @@ export async function toggleUserActive(id: string, isActive: boolean) {
 
 export async function resetUserPassword(id: string, newPassword: string) {
   const admin = await requireAdmin();
-  if (newPassword.length < 6) throw new Error('Пароль должен быть минимум 6 символов');
+  if (newPassword.length < PASSWORD_MIN_LENGTH) {
+    throw new Error(`Пароль должен быть минимум ${PASSWORD_MIN_LENGTH} символов`);
+  }
 
   // 06.05.2026 — пункт #32 аудита: mustChangePassword=true при ресете.
-  // Раньше флаг не выставлялся — сотрудник получал сброшенный пароль
-  // от admin'а и мог им пользоваться хоть вечно — плохо с точки зрения
-  // безопасности (админ знает пароль сотрудника).
   await db.user.update({
     where: { id },
     data:  {
