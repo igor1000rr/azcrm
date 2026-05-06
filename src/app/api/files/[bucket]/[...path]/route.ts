@@ -12,11 +12,22 @@
 // Для OnlyOffice сервера, который ходит за файлом без сессии, поддерживается
 // query-параметр ?ooToken=<JWT> — short-lived подпись на конкретный путь.
 // Для WhatsApp worker'а — аналогичный ?mediaToken=<JWT>.
+//
+// 06.05.2026 — фикс скачивания на ChromeOS Files API (баг Anna):
+//   Раньше отдавали файл без Content-Disposition. Браузер брал имя из
+//   URL (hash-имя вида '6f75c5bea08c...docx'). ChromeOS Files API при
+//   сохранении такого имени бросал ошибку validatePathNameLength.
+//   Теперь достаём оригинальное имя из БД и ставим RFC 5987 заголовок:
+//     Content-Disposition: attachment; filename="ascii"; filename*=UTF-8''<encoded>
+//   Для image/audio/video используем 'inline' (чтобы <img>/<audio>/<video>
+//   продолжали работать), но с filename — при «Save as» имя будет правильное.
+//   Также добавлен X-Content-Type-Options: nosniff (пункт #93 аудита) —
+//   страховка от MIME-sniffing атак через подмену расширения у SVG/HTML.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { streamFile } from '@/lib/storage';
+import { streamFile, sanitizeDownloadName, type StorageBucket } from '@/lib/storage';
 import { verifyFileAccessToken } from '@/lib/onlyoffice';
 import {
   clientVisibilityFilter,
@@ -40,12 +51,108 @@ const MIME_TYPES: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif':  'image/gif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
   '.mp4':  'video/mp4',
   '.mp3':  'audio/mpeg',
   '.ogg':  'audio/ogg',
   '.opus': 'audio/opus',
   '.txt':  'text/plain; charset=utf-8',
 };
+
+/**
+ * Достаёт оригинальное имя файла из БД для красивого Content-Disposition.
+ *
+ * Файлы в storage лежат под hash-именами (см. saveBuffer в lib/storage),
+ * а оригинальное имя ('Договор Иван Петров.pdf', 'Passport Yulia.jpg' и т.д.)
+ * хранится в соответствующей записи БД. Без этого имени ChromeOS Files API
+ * валит сохранение, и в любом случае Anna получала бы файл с неинформативным
+ * именем-хешем.
+ *
+ * Возвращает null если запись не найдена — handler в этом случае
+ * fallback'ится на последний сегмент пути (hash + расширение).
+ */
+async function getOriginalFileName(
+  bucket: string,
+  storedName: string,
+): Promise<string | null> {
+  const fileUrl = `/api/files/${bucket}/${storedName}`;
+
+  if (bucket === 'uploads') {
+    const f = await db.clientFile.findFirst({
+      where: { fileUrl },
+      select: { name: true },
+    });
+    return f?.name ?? null;
+  }
+  if (bucket === 'wa-media') {
+    const m = await db.chatMessage.findFirst({
+      where: { mediaUrl: fileUrl },
+      select: { mediaName: true },
+    });
+    return m?.mediaName ?? null;
+  }
+  if (bucket === 'docs') {
+    const d = await db.internalDocument.findFirst({
+      where: { fileUrl },
+      select: { name: true, format: true },
+    });
+    if (!d) return null;
+    // name юзер мог сохранить и с расширением, и без — добавляем по format
+    // только если его ещё нет
+    const ext = d.format.toLowerCase();
+    return d.name.toLowerCase().endsWith(`.${ext}`) ? d.name : `${d.name}.${ext}`;
+  }
+  if (bucket === 'blueprints') {
+    const b = await db.documentBlueprint.findFirst({
+      where: { fileUrl },
+      select: { name: true, format: true },
+    });
+    if (!b) return null;
+    const ext = b.format.toLowerCase();
+    return b.name.toLowerCase().endsWith(`.${ext}`) ? b.name : `${b.name}.${ext}`;
+  }
+  if (bucket === 'expenses') {
+    const e = await db.expense.findFirst({
+      where: { fileUrl },
+      select: { fileName: true },
+    });
+    return e?.fileName ?? null;
+  }
+  // 'avatars' — отдаём как есть (отображаются в <img>, имя не важно)
+  return null;
+}
+
+/**
+ * Формирует значение Content-Disposition по RFC 5987.
+ *
+ * Поддержка кириллицы и других не-ASCII символов в имени файла:
+ *   - filename="..."         — ASCII fallback (для legacy браузеров)
+ *   - filename*=UTF-8''...   — percent-encoded UTF-8 (RFC 5987, понимают все
+ *                              современные браузеры включая ChromeOS Files API)
+ *
+ * mode='inline' — для image/audio/video чтобы <img>/<audio>/<video> работали;
+ * mode='attachment' — для документов, чтобы скачивались а не открывались
+ * в браузере встроенным просмотрщиком.
+ */
+function buildContentDisposition(
+  originalName: string | null,
+  fallbackName: string,
+  mode: 'inline' | 'attachment',
+): string {
+  // Если из БД ничего не достали — используем последний сегмент storedName
+  // (hash + расширение). Хуже чем оригинальное, но всё равно валидное имя.
+  const raw = originalName ?? fallbackName;
+  // Чистим от path-сепараторов и контрольных символов, ограничиваем длину.
+  // sanitizeDownloadName из lib/storage уже умеет правильно обращаться
+  // с кириллицей (regex [^\w\u0400-\u04FF\s.-]) и обрезать до 200 символов.
+  const safe = sanitizeDownloadName(raw);
+  // ASCII fallback — все не-printable-ASCII заменяем на '_'
+  const ascii = safe.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+  // RFC 5987 — UTF-8 + percent-encoded
+  const utf8 = encodeURIComponent(safe);
+  return `${mode}; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
 
 export async function GET(
   req: NextRequest,
@@ -137,16 +244,43 @@ export async function GET(
   const ext = path.extname(storedName).toLowerCase();
   const contentType = MIME_TYPES[ext] ?? 'application/octet-stream';
 
+  // Достаём оригинальное имя из БД и формируем Content-Disposition.
+  // Для аватарок имя в БД не нужно — отдаются inline в <img>, имя файла
+  // в этом контексте никому не интересно (но всё равно ставим inline+filename
+  // на случай «Save image as»).
+  const originalName = await getOriginalFileName(bucket, storedName);
+
+  // image/audio/video → 'inline' (чтобы <img>/<audio>/<video> в UI работали),
+  // всё остальное (pdf, docx, xlsx, ...) → 'attachment' (принудительно
+  // скачивается, не открывается во встроенном просмотрщике браузера).
+  const isInlineable =
+    contentType.startsWith('image/') ||
+    contentType.startsWith('audio/') ||
+    contentType.startsWith('video/');
+
+  const fallbackName = path.basename(storedName) || 'file';
+  const contentDisposition = buildContentDisposition(
+    originalName,
+    fallbackName,
+    isInlineable ? 'inline' : 'attachment',
+  );
+
   // Стримим — без полного буфера в память
-  const nodeStream = streamFile(bucket as 'docs', storedName);
+  const nodeStream = streamFile(bucket as StorageBucket, storedName);
   // Конвертация Node.js stream → Web ReadableStream
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
 
   return new NextResponse(webStream, {
     headers: {
-      'Content-Type':   contentType,
-      'Content-Length': String(stat.size),
-      'Cache-Control':  isPublicBucket ? 'public, max-age=3600' : 'private, no-store',
+      'Content-Type':            contentType,
+      'Content-Length':          String(stat.size),
+      'Content-Disposition':     contentDisposition,
+      // X-Content-Type-Options: nosniff — пункт #93 аудита.
+      // Запрещает браузеру MIME-sniffing'ом «угадывать» тип файла.
+      // Защита от загрузки SVG/HTML под видом картинки и последующего
+      // выполнения JS в контексте нашего домена.
+      'X-Content-Type-Options':  'nosniff',
+      'Cache-Control':           isPublicBucket ? 'public, max-age=3600' : 'private, no-store',
     },
   });
 }
