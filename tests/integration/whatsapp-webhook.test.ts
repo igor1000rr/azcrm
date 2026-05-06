@@ -7,9 +7,13 @@
 //     лид создаётся вручную из карточки клиента, Anna 01.05.2026)
 //   - Существующий клиент → client.create НЕ вызывается
 //   - thread.unreadCount инкрементится
-//   - notify вызывается владельцу канала
+//   - notifyChannelMessage вызывается с ownerId или null (общий канал)
 //   - message.status обновляет deliveredAt/readAt
 //   - connection обновляет isConnected
+//
+// 06.05.2026 — пункт #2.5 аудита: route теперь использует notifyChannelMessage
+// вместо notify. Для общих каналов (ownerId=null) она внутри сама находит
+// всех админов и рассылает. Тесты обновлены под новую сигнатуру.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type AnyFn = ReturnType<typeof vi.fn>;
@@ -38,12 +42,19 @@ const mockDb = {
   }) as AnyFn,
 };
 
+// notify — старая функция, оставляем мок чтобы случайный её вызов не падал.
 const mockNotify = vi.fn();
+// notifyChannelMessage — новая (#2.5 аудита). Принимает (ownerId, payload).
+// Когда ownerId=null — внутри рассылает всем активным админам.
+const mockNotifyChannelMessage = vi.fn();
 const mockVerify = vi.fn();
 
 vi.mock('@/lib/db',       () => ({ db: mockDb }));
 vi.mock('@/lib/whatsapp', () => ({ verifyWebhookToken: mockVerify }));
-vi.mock('@/lib/notify',   () => ({ notify: mockNotify }));
+vi.mock('@/lib/notify',   () => ({
+  notify:               mockNotify,
+  notifyChannelMessage: mockNotifyChannelMessage,
+}));
 vi.mock('@/lib/utils',    () => ({
   // Простой normalizePhone — убираем всё кроме цифр и ведущего +
   normalizePhone: (s: string) => '+' + (s || '').replace(/\D/g, ''),
@@ -64,6 +75,7 @@ beforeEach(() => {
     if (Array.isArray(arg)) return Promise.all(arg);
   });
   mockNotify.mockReset();
+  mockNotifyChannelMessage.mockReset();
   mockVerify.mockReset();
   mockVerify.mockReturnValue(true); // по умолчанию токен валиден
 });
@@ -281,23 +293,31 @@ describe('handleIncomingMessage: media + unreadCount + notify', () => {
     expect(updateCall.data.unreadCount).toEqual({ increment: 1 });
   });
 
-  it('notify вызывается владельцу канала', async () => {
+  it('notifyChannelMessage вызывается с ownerId владельца канала', async () => {
+    // 06.05.2026 #2.5: route использует notifyChannelMessage(ownerId, payload).
+    // Для канала с ownerId='u-anna' первый аргумент должен быть 'u-anna' —
+    // внутри она вызовет notify({ userId: 'u-anna', ... }).
     await POST(makeReq({
       kind: 'message.in', accountId: 'acc-1', externalId: 'm-1',
       fromPhone: '+48', fromName: 'Boris',
       type: 'text', body: 'hello', timestamp: Date.now(),
     }, { token: 't' }) as never);
 
-    expect(mockNotify).toHaveBeenCalledWith(
+    expect(mockNotifyChannelMessage).toHaveBeenCalledWith(
+      'u-anna',
       expect.objectContaining({
-        userId: 'u-anna',
         kind:   'NEW_MESSAGE',
         link:   '/inbox?thread=t-1',
       }),
     );
   });
 
-  it('без ownerId канала — notify НЕ вызывается', async () => {
+  it('общий канал (ownerId=null) — notifyChannelMessage вызывается с null', async () => {
+    // 06.05.2026 #2.5: до фикса при ownerId=null никто не получал push.
+    // Теперь route ВСЕГДА вызывает notifyChannelMessage — она внутри сама
+    // решает: если ownerId=null → рассылка всем админам, если ownerId есть
+    // → одному владельцу. Поэтому здесь проверяем что route ПЕРЕДАЁТ null,
+    // а не пропускает вызов как раньше.
     mockDb.whatsappAccount.findUnique.mockResolvedValue({
       id: 'acc-1', ownerId: null, label: 'A', phoneNumber: '+48',
     });
@@ -305,7 +325,11 @@ describe('handleIncomingMessage: media + unreadCount + notify', () => {
       kind: 'message.in', accountId: 'acc-1', externalId: 'm-1',
       fromPhone: '+48', type: 'text', body: 'x', timestamp: Date.now(),
     }, { token: 't' }) as never);
-    expect(mockNotify).not.toHaveBeenCalled();
+
+    expect(mockNotifyChannelMessage).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ kind: 'NEW_MESSAGE' }),
+    );
   });
 });
 
