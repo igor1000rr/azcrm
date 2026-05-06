@@ -10,6 +10,14 @@
 // ВАЖНО: OnlyOffice сервер должен иметь доступ к нашему /api/files/...
 // и наоборот — мы должны иметь доступ к OnlyOffice по OO_PUBLIC_URL.
 // В docker-compose они в одной сети.
+//
+// 06.05.2026 — пункт #119 аудита: editor config JWT теперь имеет exp.
+// До этого signJwt() не добавлял exp — токен жил вечно. Если URL с
+// конфигом утечёт (история браузера, log-файлы, screen share) — у злоумышленника
+// валидный editor JWT навсегда. Сейчас exp = iat + 8 часов (стандартная
+// рабочая смена; OnlyOffice сам не проверяет exp, но наш callback верификатор
+// теперь автоматически отклоняет истёкшие). Anna откроет документ заново —
+// получит свежий токен.
 
 import crypto from 'node:crypto';
 
@@ -21,6 +29,12 @@ export const OO_CALLBACK_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? 'http://loca
 // Секрет JWT — обязателен. Без него любой может подделать callback OnlyOffice
 // и записать произвольный файл по url. Падаем громко при отсутствии в проде.
 const OO_JWT_SECRET = process.env.ONLYOFFICE_JWT_SECRET ?? '';
+
+// Время жизни editor config JWT — 8 часов (рабочая смена).
+// Если документ открыт дольше 8 часов и autosave переподключается —
+// фронт получит ошибку и пользователь обновит страницу. Это редкий
+// случай; норма — открыть, поправить, закрыть в течение часов.
+const EDITOR_CONFIG_TTL_SEC = 8 * 60 * 60;
 
 function requireSecret(): string {
   if (!OO_JWT_SECRET) {
@@ -124,7 +138,12 @@ export function buildEditorConfig(opts: {
     type:   'desktop',
   };
 
-  config.token = signJwt(config as unknown as Record<string, unknown>);
+  // Подписываем config с TTL — добавляем iat/exp в payload.
+  // OnlyOffice игнорирует эти поля, но наш verifyJwt их теперь проверяет.
+  config.token = signJwtWithExp(
+    config as unknown as Record<string, unknown>,
+    EDITOR_CONFIG_TTL_SEC,
+  );
   return config;
 }
 
@@ -139,6 +158,7 @@ export function verifyFileAccessToken(token: string, expectedPath: string): bool
   const payload = verifyJwt<{ p: string; exp: number }>(token);
   if (!payload) return false;
   if (payload.p !== expectedPath) return false;
+  // verifyJwt уже проверил exp если он есть, но дублируем для самодокументации.
   if (payload.exp < Math.floor(Date.now() / 1000)) return false;
   return true;
 }
@@ -173,6 +193,19 @@ export function isAllowedDownloadUrl(url: string): boolean {
   }
 }
 
+/**
+ * Подписать JWT с автоматическим добавлением iat/exp полей.
+ * Используется для editor config (TTL 8 часов).
+ */
+export function signJwtWithExp(payload: Record<string, unknown>, ttlSeconds: number): string {
+  const now = Math.floor(Date.now() / 1000);
+  return signJwt({
+    ...payload,
+    iat: now,
+    exp: now + ttlSeconds,
+  });
+}
+
 export function signJwt(payload: Record<string, unknown>): string {
   const secret = requireSecret();
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -186,6 +219,20 @@ export function signJwt(payload: Record<string, unknown>): string {
   return `${data}.${sig}`;
 }
 
+/**
+ * Верификация JWT.
+ *
+ * 06.05.2026 — пункт #119 аудита: теперь автоматически проверяется поле exp
+ * если оно присутствует в payload. Это закрывает историю с editor config JWT
+ * который раньше жил вечно.
+ *
+ * Поведение:
+ *   - Подпись невалидна → null
+ *   - Payload не парсится → null
+ *   - exp в payload и < now() → null (истёк)
+ *   - exp нет → токен валиден (для legacy совместимости — callback'и
+ *     OnlyOffice внутри docker сети могут не передавать exp)
+ */
 export function verifyJwt<T = Record<string, unknown>>(token: string): T | null {
   try {
     const secret = requireSecret();
@@ -202,7 +249,18 @@ export function verifyJwt<T = Record<string, unknown>>(token: string): T | null 
     if (sigBuf.length !== expBuf.length) return null;
     if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null;
 
-    return JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf-8')) as T;
+    const payload = JSON.parse(
+      Buffer.from(b64Payload, 'base64url').toString('utf-8'),
+    ) as Record<string, unknown>;
+
+    // Автоматическая проверка exp если оно есть.
+    // Используем typeof === 'number' чтобы строки '0'/'null' не проходили.
+    if (typeof payload.exp === 'number') {
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (payload.exp < nowSec) return null;
+    }
+
+    return payload as T;
   } catch {
     return null;
   }
