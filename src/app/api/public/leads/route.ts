@@ -2,7 +2,8 @@
 //
 // БЕЗОПАСНОСТЬ:
 //  1. CORS allowlist — разрешены только наши домены (см. ALLOWED_ORIGINS).
-//  2. Rate-limit 5 заявок/час с одного IP.
+//  2. Rate-limit 5 заявок/час с одного IP. IP получаем безопасно через
+//     getClientIp() — берёт N-й IP справа из X-Forwarded-For (#2.14).
 //  3. Honeypot-поле `_hp` — должно быть пустым; боты обычно его заполняют.
 //  4. Zod-валидация всех полей с разумными max.
 //  5. Дедупликация по нормализованному phone — повторная заявка с того же
@@ -22,6 +23,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { normalizePhone } from '@/lib/utils';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { getClientIp } from '@/lib/client-ip';
 import { notify } from '@/lib/notify';
 import { logger } from '@/lib/logger';
 
@@ -63,12 +65,6 @@ function corsHeaders(origin: string | null): HeadersInit {
   };
 }
 
-function getClientIp(req: NextRequest): string {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0].trim();
-  return req.headers.get('x-real-ip') ?? 'unknown';
-}
-
 // ============ OPTIONS — CORS preflight ============
 
 export async function OPTIONS(req: NextRequest) {
@@ -91,7 +87,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'origin not allowed' }, { status: 403, headers });
   }
 
-  // Rate-limit по IP
+  // Rate-limit по IP. IP получаем через getClientIp() — резистентный
+  // к spoofingу через X-Forwarded-For (#2.14 аудита).
   const ip = getClientIp(req);
   if (!checkRateLimit(`public-leads:${ip}`, RL_MAX, RL_WINDOW_MS)) {
     return NextResponse.json(
