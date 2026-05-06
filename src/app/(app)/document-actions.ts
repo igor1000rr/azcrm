@@ -1,6 +1,11 @@
 'use server';
 
 // Server Actions для внутренних документов (OnlyOffice) и шаблонов
+//
+// 06.05.2026 — пункт #37 аудита расширен на server actions:
+// uploadInternalDocument и uploadBlueprint теперь проверяют magic-bytes
+// буфера до сохранения в storage. До этого юзер мог переименовать .exe в
+// .docx, server action проверял только extension — файл сохранялся.
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
@@ -9,6 +14,7 @@ import { requireUser, requireAdmin } from '@/lib/auth';
 import { canEditLead, assert } from '@/lib/permissions';
 import { saveBuffer, removeFile } from '@/lib/storage';
 import { renderBlueprint } from '@/lib/docx-templates';
+import { validateMagicBytes } from '@/lib/file-validation';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 
@@ -143,6 +149,14 @@ export async function createDocumentFromBlueprint(
 // ЗАГРУЗКА СУЩЕСТВУЮЩЕГО (uploaded buffer)
 // ============================================================
 
+/**
+ * Загрузка внутреннего документа в карточку лида. Поддерживает DOCX/XLSX/PPTX/PDF.
+ *
+ * 06.05.2026 — пункт #37 аудита: добавлена magic-bytes проверка.
+ * До: проверялось только расширение в файле — юзер мог назвать
+ * malware.docx и это проходило. OnlyOffice при попытке открыть получить ошибку
+ * парсера, но файл уже будет лежать в нашем storage и быть скачиваемым.
+ */
 export async function uploadInternalDocument(
   leadId:   string,
   buffer:   Buffer,
@@ -162,6 +176,13 @@ export async function uploadInternalDocument(
   };
   const format = formatMap[ext];
   if (!format) throw new Error('Поддерживаются только DOCX, XLSX, PPTX, PDF');
+
+  // Magic-bytes проверка (#37 аудита): сигнатура в начале файла
+  // должна совпадать с расширением. .docx/.xlsx/.pptx — ZIP (PK), .pdf — %PDF.
+  const magicCheck = validateMagicBytes(buffer, `.${ext}`);
+  if (!magicCheck.ok) {
+    throw new Error(magicCheck.reason);
+  }
 
   const saved = await saveBuffer('docs', buffer, origName);
 
@@ -214,6 +235,12 @@ export async function deleteInternalDocument(id: string) {
 // УПРАВЛЕНИЕ ШАБЛОНАМИ (admin)
 // ============================================================
 
+/**
+ * Загрузка шаблона для рендера. Только .docx (extractPlaceholders ожидает docx).
+ *
+ * 06.05.2026 — пункт #37 аудита: magic-bytes проверка docx-сигнатуры (PK).
+ * Админы доверены, но лучше иметь защиту от случайных ошибок (выбрал PDF по ошибке).
+ */
 export async function uploadBlueprint(
   buffer: Buffer,
   name: string,
@@ -224,6 +251,13 @@ export async function uploadBlueprint(
 
   const ext = path.extname(origFileName).toLowerCase();
   if (ext !== '.docx') throw new Error('Поддерживается только DOCX');
+
+  // Magic-bytes: docx должен начинаться с PK (50 4B 03 04 — ZIP).
+  // Если админ случайно выбрал .pdf и переименовал в .docx — отловим.
+  const magicCheck = validateMagicBytes(buffer, ext);
+  if (!magicCheck.ok) {
+    throw new Error(magicCheck.reason);
+  }
 
   const saved = await saveBuffer('blueprints', buffer, origFileName);
 
