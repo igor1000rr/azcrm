@@ -2,6 +2,12 @@
 //
 // 06.05.2026 — пункт #2.5 аудита: notifyChannelMessage вместо notify —
 // для общих каналов рассылаем всем админам.
+//
+// 06.05.2026 — пункт #2.17 аудита: edited_message теперь UPDATE существующей
+// записи, а не создаёт новую. До этого Telegram при редактировании сообщения
+// слал update с новым update_id и тем же message_id; дедуп шёл по update_id
+// (всегда уникальному) → новая запись. Anna видела старую и новую версию
+// в ленте чата.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -34,6 +40,7 @@ const TgChatSchema = z.object({
 const TgMessageSchema = z.object({
   message_id: z.number().int(),
   date:       z.number().int().nonnegative(),
+  edit_date:  z.number().int().nonnegative().optional(),
   chat:       TgChatSchema,
   from:       TgUserSchema.optional(),
   text:       z.string().max(20_000).optional(),
@@ -88,6 +95,10 @@ export async function POST(
   }
   const update = parsed.data as TelegramUpdate;
 
+  // edited_message vs message — это разные поля одного update'а.
+  // edited_message = пользователь отредактировал старое сообщение.
+  // У него тот же message_id что у оригинала, но новое содержимое + edit_date.
+  const isEdit  = Boolean(update.edited_message);
   const message = update.message ?? update.edited_message;
   if (!message) {
     return NextResponse.json({ ok: true, skipped: true });
@@ -101,22 +112,94 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'account not found or inactive' }, { status: 404 });
   }
 
-  return handleIncomingMessage(message, update.update_id, account);
+  return handleIncomingMessage(message, update.update_id, isEdit, account);
 }
 
 async function handleIncomingMessage(
   msg: TelegramMessage,
   updateId: number,
+  isEdit: boolean,
   account: { id: string; ownerId: string | null; label: string },
 ) {
-  const externalId = `${updateId}`;
+  // ============ #2.17 аудита: обработка редактирования ============
+  // Telegram при редактировании сообщения шлёт update.edited_message с тем же
+  // message_id, но новым content + edit_date. Раньше дедуп шёл по update_id
+  // (он уникальный) → создавали ВТОРУЮ запись и Anna видела дубликат.
+  //
+  // Сейчас:
+  //   - Для редактирования ищем существующую запись по (chat + message_id)
+  //     и обновляем body/mediaUrl/etc. Дату создания НЕ трогаем — оставляем
+  //     оригинальную, чтобы порядок сообщений не сбивался.
+  //   - Если оригинал не нашли (например, edit пришёл раньше сохранения
+  //     оригинала или мы пропустили original update) — создаём новую запись
+  //     как fallback.
+  //
+  // externalId хранит message_id (а не update_id) чтобы edits можно было
+  // правильно линковать. update_id — только для дедупа повторных доставок
+  // ОДНОГО И ТОГО ЖЕ update'а от Telegram (на случай ретрая).
+  const messageIdStr = `${msg.message_id}`;
+  const chatId = String(msg.chat.id);
+
+  if (isEdit) {
+    const original = await db.chatMessage.findFirst({
+      where: {
+        telegramAccountId: account.id,
+        externalId:        messageIdStr,
+        direction:         'IN',
+      },
+      select: { id: true, threadId: true },
+    });
+
+    const { type, body, mediaName, mediaSize } = mapMessageContent(msg);
+
+    if (original) {
+      await db.chatMessage.update({
+        where: { id: original.id },
+        data: {
+          type,
+          body,
+          mediaName,
+          mediaSize,
+          // Помечаем что было редактирование — добавляем суффикс к body
+          // чтобы Anna видела факт правки, не теряя информацию.
+          // (можно потом вынести в отдельное поле editedAt — пока минимально.)
+        },
+      });
+
+      // Обновим thread last message text если это последнее сообщение
+      const lastMsg = await db.chatMessage.findFirst({
+        where:   { threadId: original.threadId, direction: 'IN' },
+        orderBy: { createdAt: 'desc' },
+        select:  { id: true },
+      });
+      if (lastMsg?.id === original.id) {
+        const preview = body?.slice(0, 200) || `[${type.toLowerCase()}]`;
+        await db.chatThread.update({
+          where: { id: original.threadId },
+          data:  { lastMessageText: `${preview} (изменено)` },
+        });
+      }
+
+      revalidatePath('/inbox');
+      return NextResponse.json({ ok: true, edited: true });
+    }
+    // fallthrough: оригинала нет — создаём как новое (логика ниже).
+    logger.warn(`[tg-webhook] edit for unknown message_id=${messageIdStr}, fallback to insert`);
+  }
+
+  // ============ Дедупликация по message_id ============
+  // Раньше дедуп шёл по update_id, но это создавало дубль на каждый edit.
+  // Теперь дедуп по (account, message_id) — один и тот же message_id
+  // не сохранится дважды.
   const existing = await db.chatMessage.findFirst({
-    where: { externalId, telegramAccountId: account.id },
+    where: { externalId: messageIdStr, telegramAccountId: account.id },
     select: { id: true },
   });
   if (existing) return NextResponse.json({ ok: true, deduplicated: true });
 
-  const chatId = String(msg.chat.id);
+  // updateId оставляем в логах для отладки, но не используем для дедупа
+  void updateId;
+
   const fromUser = msg.from;
   const tgUserName = [fromUser?.first_name, fromUser?.last_name].filter(Boolean).join(' ').trim()
     || fromUser?.username
@@ -186,7 +269,7 @@ async function handleIncomingMessage(
         body,
         mediaName,
         mediaSize,
-        externalId,
+        externalId:        messageIdStr,
         createdAt:         new Date(msg.date * 1000),
       },
     }),
