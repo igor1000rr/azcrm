@@ -63,6 +63,10 @@ describe('upsertUser — создание', () => {
     const call = mockDb.user.create.mock.calls[0][0];
     expect(call.data.email).toBe('new@user.com');
     expect(call.data.passwordHash).toBe('HASHED:secret123');
+    // 06.05.2026: при создании нового юзера mustChangePassword=true (#91 аудита) —
+    // чтобы admin не знал пароль навсегда, сотрудник обязан сменить при первом
+    // входе.
+    expect(call.data.mustChangePassword).toBe(true);
     expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'user.create' }));
   });
 });
@@ -74,14 +78,19 @@ describe('upsertUser — обновление', () => {
     } as never);
     const call = mockDb.user.update.mock.calls[0][0];
     expect(call.data.passwordHash).toBeUndefined();
+    // Без смены пароля флаг mustChangePassword не трогаем
+    expect(call.data.mustChangePassword).toBeUndefined();
   });
-  it('с паролем >=6 → хеширует и обновляет hash', async () => {
+  it('с паролем >=6 → хеширует и обновляет hash + ставит mustChangePassword', async () => {
     await upsertUser({
       id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES', password: 'newpass',
     } as never);
     expect(mockBcryptHash).toHaveBeenCalledWith('newpass', 10);
     const call = mockDb.user.update.mock.calls[0][0];
     expect(call.data.passwordHash).toBe('HASHED:newpass');
+    // 06.05.2026 — пункт #32 аудита: при смене пароля admin'ом сотрудник
+    // обязан сменить при следующем входе (admin не должен знать пароль).
+    expect(call.data.mustChangePassword).toBe(true);
   });
   it('с коротким паролем (<6) → игнорируется при обновлении', async () => {
     await upsertUser({
@@ -90,6 +99,8 @@ describe('upsertUser — обновление', () => {
     expect(mockBcryptHash).not.toHaveBeenCalled();
     const call = mockDb.user.update.mock.calls[0][0];
     expect(call.data.passwordHash).toBeUndefined();
+    // Пароль не менялся — флаг тоже не трогаем
+    expect(call.data.mustChangePassword).toBeUndefined();
   });
 });
 
@@ -124,11 +135,17 @@ describe('resetUserPassword', () => {
     await expect(resetUserPassword('u-1', '123')).rejects.toThrow('Пароль должен');
     expect(mockBcryptHash).not.toHaveBeenCalled();
   });
-  it('валидный пароль → hash + update + audit reset_password', async () => {
+  it('валидный пароль → hash + update + audit reset_password + mustChangePassword', async () => {
     await resetUserPassword('u-1', 'newSecret');
     expect(mockBcryptHash).toHaveBeenCalledWith('newSecret', 10);
+    // 06.05.2026 — пункт #32 аудита: после reset'а пароля админом флаг
+    // mustChangePassword=true. Сотрудник при следующем входе обязан
+    // сменить — admin не должен знать пароль сотрудника.
     expect(mockDb.user.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'u-1' }, data: { passwordHash: 'HASHED:newSecret' } }),
+      expect.objectContaining({
+        where: { id: 'u-1' },
+        data: { passwordHash: 'HASHED:newSecret', mustChangePassword: true },
+      }),
     );
     expect(mockAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'user.reset_password', entityId: 'u-1' }),
