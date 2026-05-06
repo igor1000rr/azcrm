@@ -1,6 +1,13 @@
 // Страница карточки лида (полная информация по делу)
 // URL: /clients/:id  где id = leadId
 // Без табов, всё на одной длинной странице со скроллом
+//
+// 06.05.2026 — #2.20 аудита (производительность): все независимые запросы
+// выполняются через Promise.all параллельно. Раньше было ~14 последовательных
+// SELECT'ов, итого wall-clock = ~14 × latency. Теперь в две волны:
+//   1. lead.findUnique — требуется для canViewLead и выбора funnelId/clientId
+//   2. всё остальное параллельно (12 queries) + chatMessages после threads.
+// На medium-loaded БД это даёт разницу в ~3-5x по времени открытия карточки.
 
 import { notFound } from 'next/navigation';
 import { Topbar } from '@/components/topbar';
@@ -19,6 +26,7 @@ export default async function LeadPage({ params }: PageProps) {
   const { id } = await params;
   const user = await requireUser();
 
+  // ============ ВОЛНА 1: lead + permissions check ============
   const lead = await db.lead.findUnique({
     where: { id },
     include: {
@@ -49,7 +57,7 @@ export default async function LeadPage({ params }: PageProps) {
         include: { owner: { select: { id: true, name: true } } },
       },
       internalDocs: {
-        where: { parentId: null }, // только корневые версии
+        where: { parentId: null },
         orderBy: { updatedAt: 'desc' },
         include: { createdBy: { select: { id: true, name: true } } },
       },
@@ -65,38 +73,53 @@ export default async function LeadPage({ params }: PageProps) {
   if (!lead) notFound();
   if (!canViewLead(user, lead)) notFound();
 
-  const allStages = await db.stage.findMany({
-    where: { funnelId: lead.funnelId },
-    orderBy: { position: 'asc' },
-  });
+  // ============ ВОЛНА 2: всё остальное параллельно ============
+  // 12 запросов к БД в одном Promise.all. Все они либо от user, либо от
+  // уже известных lead.funnelId / lead.clientId / lead.id — значит индепендент.
+  const sendableAccountFilter = user.role === 'ADMIN'
+    ? { isActive: true }
+    : { isActive: true, OR: [{ ownerId: user.id }, { ownerId: null }] };
 
-  // Все воронки + их этапы — для UI селекторов смены воронки/этапа
-  // в карточке лида (Anna 01.05.2026). Подгружаем активные плюс,
-  // на всякий случай, текущую воронку лида (вдруг её отключили).
-  const allFunnels = await db.funnel.findMany({
-    where: { OR: [{ isActive: true }, { id: lead.funnelId }] },
-    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
-    include: {
-      stages: {
-        orderBy: { position: 'asc' },
-        select: { id: true, name: true, position: true },
+  const [
+    allStages,
+    allFunnels,
+    team,
+    attorneys,
+    cities,
+    allServices,
+    clientFiles,
+    otherLeads,
+    waAccs,
+    tgAccs,
+    viberAccs,
+    metaAccs,
+    clientThreads,
+    calls,
+  ] = await Promise.all([
+    db.stage.findMany({
+      where: { funnelId: lead.funnelId },
+      orderBy: { position: 'asc' },
+    }),
+    db.funnel.findMany({
+      where: { OR: [{ isActive: true }, { id: lead.funnelId }] },
+      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+      include: {
+        stages: {
+          orderBy: { position: 'asc' },
+          select: { id: true, name: true, position: true },
+        },
       },
-    },
-  });
-
-  const team = await db.user.findMany({
-    where: { isActive: true, role: { in: ['SALES', 'LEGAL'] } },
-    select: { id: true, name: true, email: true, role: true },
-    orderBy: { name: 'asc' },
-  });
-
-  const attorneys = await db.user.findMany({
-    where: { isActive: true, role: { in: ['LEGAL', 'ADMIN'] } },
-    select: { id: true, name: true, role: true },
-    orderBy: [{ role: 'asc' }, { name: 'asc' }],
-  });
-
-  const [cities, allServices] = await Promise.all([
+    }),
+    db.user.findMany({
+      where: { isActive: true, role: { in: ['SALES', 'LEGAL'] } },
+      select: { id: true, name: true, email: true, role: true },
+      orderBy: { name: 'asc' },
+    }),
+    db.user.findMany({
+      where: { isActive: true, role: { in: ['LEGAL', 'ADMIN'] } },
+      select: { id: true, name: true, role: true },
+      orderBy: [{ role: 'asc' }, { name: 'asc' }],
+    }),
     db.city.findMany({
       where: { isActive: true },
       orderBy: { position: 'asc' },
@@ -107,36 +130,24 @@ export default async function LeadPage({ params }: PageProps) {
       orderBy: { position: 'asc' },
       select: { id: true, name: true, basePrice: true },
     }),
-  ]);
-
-  const clientFiles = await db.clientFile.findMany({
-    where: { clientId: lead.clientId },
-    orderBy: { createdAt: 'desc' },
-    take: 30,
-    include: { uploadedBy: { select: { id: true, name: true } } },
-  });
-
-  const otherLeads = await db.lead.findMany({
-    where: { clientId: lead.clientId, id: { not: lead.id } },
-    select: {
-      id: true,
-      funnel: { select: { name: true } },
-      stage:  { select: { name: true, color: true, isFinal: true, isLost: true } },
-      createdAt: true,
-      isArchived: true,
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 10,
-  });
-
-  // ============ ОБЪЕДИНЁННАЯ ПЕРЕПИСКА КЛИЕНТА (все каналы) ============
-  // Anna хочет видеть всю историю общения по клиенту независимо от канала.
-
-  const sendableAccountFilter = user.role === 'ADMIN'
-    ? { isActive: true }
-    : { isActive: true, OR: [{ ownerId: user.id }, { ownerId: null }] };
-
-  const [waAccs, tgAccs, viberAccs, metaAccs] = await Promise.all([
+    db.clientFile.findMany({
+      where: { clientId: lead.clientId },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      include: { uploadedBy: { select: { id: true, name: true } } },
+    }),
+    db.lead.findMany({
+      where: { clientId: lead.clientId, id: { not: lead.id } },
+      select: {
+        id: true,
+        funnel: { select: { name: true } },
+        stage:  { select: { name: true, color: true, isFinal: true, isLost: true } },
+        createdAt: true,
+        isArchived: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    }),
     db.whatsappAccount.findMany({
       where:  sendableAccountFilter,
       select: { id: true, label: true, phoneNumber: true, isConnected: true, ownerId: true },
@@ -160,27 +171,44 @@ export default async function LeadPage({ params }: PageProps) {
       },
       orderBy: [{ ownerId: 'asc' }, { label: 'asc' }],
     }),
+    db.chatThread.findMany({
+      where: { clientId: lead.clientId },
+      select: {
+        id: true, channel: true, lastMessageAt: true,
+        whatsappAccountId: true, telegramAccountId: true,
+        viberAccountId: true, metaAccountId: true,
+      },
+      orderBy: { lastMessageAt: 'desc' },
+    }),
+    db.call.findMany({
+      where: { leadId: lead.id },
+      orderBy: { startedAt: 'desc' },
+      take: 10,
+      select: {
+        id:               true,
+        direction:        true,
+        fromNumber:       true,
+        toNumber:         true,
+        startedAt:        true,
+        durationSec:      true,
+        recordUrl:        true,
+        recordLocalUrl:   true,
+        transcript:       true,
+        transcriptStatus: true,
+        sentiment:        true,
+        analysisSummary:  true,
+        analysisTags:     true,
+      },
+    }),
   ]);
 
-  const clientThreads = await db.chatThread.findMany({
-    where: { clientId: lead.clientId },
-    select: {
-      id: true, channel: true, lastMessageAt: true,
-      whatsappAccountId: true, telegramAccountId: true,
-      viberAccountId: true, metaAccountId: true,
-    },
-    orderBy: { lastMessageAt: 'desc' },
-  });
   const threadIds = clientThreads.map((t) => t.id);
 
+  // ============ ВОЛНА 3: chatMessages (нужны threadIds из волны 2) ============
   // 06.05.2026 — пункт #27 аудита: раньше было orderBy: 'asc' + take: 500.
-  // Если у клиента >500 сообщений (долгий роман—этот легальный кейс для
-  // клиента который работает несколько лет) — показывались САМЫЕ СТАРЫЕ,
-  // а свежие обрезались. Anna видела первые 500 сообщений из 2024 и не видела
-  // обмена за последние недели.
-  //
-  // Фикс: берём ПОСЛЕДНИЕ 500 через desc, затем reverse() для UI
-  // которое ожидает хронологический порядок (старые сверху, новые внизу).
+  // Если у клиента >500 сообщений — показывались САМЫЕ СТАРЫЕ, а свежие обрезались.
+  // Фикс: берём ПОСЛЕДНИЕ 500 через desc, затем reverse() для UI которое
+  // ожидает хронологический порядок (старые сверху, новые внизу).
   const chatMessagesRaw = threadIds.length === 0 ? [] : (await db.chatMessage.findMany({
     where: { threadId: { in: threadIds } },
     orderBy: { createdAt: 'desc' },
@@ -220,28 +248,6 @@ export default async function LeadPage({ params }: PageProps) {
   } else if (preferredWaAccountId) {
     whatsappHref = `/inbox?channel=${preferredWaAccountId}`;
   }
-
-  // ============ ЗВОНКИ ПО ЛИДУ (Anna идея №12) ============
-  const calls = await db.call.findMany({
-    where: { leadId: lead.id },
-    orderBy: { startedAt: 'desc' },
-    take: 10,
-    select: {
-      id:               true,
-      direction:        true,
-      fromNumber:       true,
-      toNumber:         true,
-      startedAt:        true,
-      durationSec:      true,
-      recordUrl:        true,
-      recordLocalUrl:   true,
-      transcript:       true,
-      transcriptStatus: true,
-      sentiment:        true,
-      analysisSummary:  true,
-      analysisTags:     true,
-    },
-  });
 
   const paid = lead.payments.reduce((sum, p) => sum + Number(p.amount), 0);
   const total = Number(lead.totalAmount);

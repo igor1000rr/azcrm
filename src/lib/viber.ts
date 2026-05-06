@@ -7,9 +7,16 @@
 //   3. Viber шлёт события на /api/viber/webhook с подписью X-Viber-Content-Signature.
 //   4. handleViberEvent создаёт ChatThread/ChatMessage, при первом контакте — Client+Lead.
 //   5. Отправка ответа: sendViberText(account, receiverId, text).
+//
+// 06.05.2026 — #2.5 аудита расширен на Viber: handleViberEvent теперь
+// вызывает notifyChannelMessage. Раньше Viber вообще не уведомлял о входящих
+// — ни владельцу канала, ни админам. Клиент писал в Viber, сообщение падало в
+// inbox, но Anna узнавала об этом только при ручном заходе.
 
 import crypto from 'crypto';
 import { db } from './db';
+import { notifyChannelMessage } from './notify';
+import { logger } from './logger';
 import type { ViberAccount } from '@prisma/client';
 
 const VIBER_API = 'https://chatapi.viber.com/pa';
@@ -218,6 +225,17 @@ export async function handleViberEvent(
     where: { id: account.id },
     data:  { lastSeenAt: new Date() },
   });
+
+  // 06.05.2026 — #2.5 аудита: уведомляем владельца или всех админов.
+  // До этого Viber вообще не уведомлял. Ошибки push/email ловим в catch —
+  // они не должны ломать основной flow входящего сообщения.
+  const preview = body?.slice(0, 200) || `[${event.message.type}]`;
+  notifyChannelMessage(account.ownerId, {
+    kind:   'NEW_MESSAGE',
+    title:  `Viber: ${senderName}`,
+    body:   preview,
+    link:   `/inbox?thread=${thread.id}`,
+  }).catch((e) => logger.error('[viber] notify failed:', e));
 
   return { ok: true };
 }

@@ -44,20 +44,37 @@ const nextConfig = {
   },
 
   // Базовые security headers + CSP с явным разрешением OnlyOffice-домена.
+  //
+  // 06.05.2026 — #2.20 аудита (security headers): добавлен Strict-Transport-Security
+  // и Cross-Origin-* заголовки. HSTS выставляется только в production — в dev
+  // браузер будет отказываться от http://localhost после первого визита.
   async headers() {
-    return [
-      {
-        source: '/:path*',
-        headers: [
-          { key: 'Content-Security-Policy',   value: CSP },
-          { key: 'X-Frame-Options',           value: 'SAMEORIGIN' },
-          { key: 'X-Content-Type-Options',    value: 'nosniff' },
-          { key: 'Referrer-Policy',           value: 'strict-origin-when-cross-origin' },
-          { key: 'Permissions-Policy',        value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()' },
-          { key: 'X-DNS-Prefetch-Control',    value: 'off' },
-        ],
-      },
+    const isProd = process.env.NODE_ENV === 'production';
+    const baseHeaders = [
+      { key: 'Content-Security-Policy',   value: CSP },
+      { key: 'X-Frame-Options',           value: 'SAMEORIGIN' },
+      { key: 'X-Content-Type-Options',    value: 'nosniff' },
+      { key: 'Referrer-Policy',           value: 'strict-origin-when-cross-origin' },
+      { key: 'Permissions-Policy',        value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()' },
+      { key: 'X-DNS-Prefetch-Control',    value: 'off' },
+      // Cross-Origin-Opener-Policy: same-origin — изоляция окна от popup'ов
+      // других origin'ов (защита от Spectre + блокирует window.opener атаки).
+      { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+      // Cross-Origin-Resource-Policy: same-site — ресурсы CRM не могут быть
+      // встроены на чужом сайте (img/script/etc с кросс-оригин).
+      { key: 'Cross-Origin-Resource-Policy', value: 'same-site' },
     ];
+    if (isProd) {
+      // HSTS: браузер будет ходить только по HTTPS на этот домен и все его
+      // субдомены. Два года. preload — разрешаем включение в встроенный
+      // список Chrome (https://hstspreload.org/) — Anna может зарегистрировать
+      // crm.azgroupcompany.net там позже.
+      baseHeaders.push({
+        key:   'Strict-Transport-Security',
+        value: 'max-age=63072000; includeSubDomains; preload',
+      });
+    }
+    return [{ source: '/:path*', headers: baseHeaders }];
   },
 };
 
