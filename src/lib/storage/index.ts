@@ -115,7 +115,16 @@ function resolveSafe(bucket: StorageBucket, storedName: string): string | null {
   return full;
 }
 
-/** Утилита: безопасное имя для скачивания (для Content-Disposition) */
+/**
+ * Утилита: безопасное имя для скачивания (для Content-Disposition).
+ *
+ * 06.05.2026 — пункт #1.10 аудита: до этого был
+ * /[^\w\u0400-\u04FF\s.-]/g — только латиница и кириллица. Польские
+ * диакритики (ąęłńóśźż), арабские, греческие и т.д. превращались в _.
+ *
+ * Сейчас Unicode property escapes \p{L} (любые буквы) + \p{N} (цифры),
+ * флаг u обязателен. Поддерживает все алфавиты мира.
+ */
 export function sanitizeDownloadName(name: string): string {
-  return name.replace(/[^\w\u0400-\u04FF\s.-]/g, '_').slice(0, 200);
+  return name.replace(/[^\p{L}\p{N}\s.\-_()№]/gu, '_').slice(0, 200);
 }
