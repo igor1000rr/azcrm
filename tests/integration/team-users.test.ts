@@ -1,4 +1,8 @@
 // Integration: settings/team — upsertUser + toggleActive + resetPassword
+//
+// 06.05.2026 — пункт #33 аудита: минимум пароля унифицирован на 12 символов.
+// До этого было min(6) в team/actions и min(8) в change-password.
+// Тесты использовали 6-символьные пароли — обновлены на 12+.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type AnyFn = ReturnType<typeof vi.fn>;
@@ -24,6 +28,14 @@ vi.mock('bcryptjs', () => ({ default: { hash: mockBcryptHash }, hash: mockBcrypt
 const { upsertUser, toggleUserActive, resetUserPassword } =
   await import('@/app/(app)/settings/team/actions');
 
+// Пароли для тестов:
+//   VALID_PASSWORD     — длины 12+, должен проходить валидацию
+//   SHORT_PASSWORD     — любой < 12, должен быть отклонёным
+const VALID_PASSWORD     = 'SecretPass123';   // 13 символов
+const ANOTHER_VALID      = 'NewSecretPass1';  // 14 символов
+const SHORT_PASSWORD_5   = '12345';
+const SHORT_PASSWORD_2   = '12';
+
 beforeEach(() => {
   Object.values(mockDb.user).forEach((fn) => (fn as AnyFn).mockReset());
   mockAudit.mockReset();
@@ -35,37 +47,35 @@ beforeEach(() => {
 
 describe('upsertUser — создание', () => {
   it('zod: invalid email → throw', async () => {
-    await expect(upsertUser({ email: 'not-email', name: 'Test', role: 'SALES', password: '123456' } as never))
+    await expect(upsertUser({ email: 'not-email', name: 'Test', role: 'SALES', password: VALID_PASSWORD } as never))
       .rejects.toThrow();
   });
   it('zod: name <2 символов → throw', async () => {
-    await expect(upsertUser({ email: 'test@example.com', name: 'A', role: 'SALES', password: '123456' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'A', role: 'SALES', password: VALID_PASSWORD } as never))
       .rejects.toThrow();
   });
   it('zod: invalid role → throw', async () => {
-    await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'GUEST', password: '123456' } as never))
+    await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'GUEST', password: VALID_PASSWORD } as never))
       .rejects.toThrow();
   });
   it('создание без пароля → throw', async () => {
     await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'SALES' } as never))
       .rejects.toThrow('Пароль должен');
   });
-  it('создание с паролем <6 символов → throw', async () => {
-    await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'SALES', password: '12345' } as never))
+  it('создание с коротким паролем (<12) → throw', async () => {
+    await expect(upsertUser({ email: 'test@example.com', name: 'Test', role: 'SALES', password: SHORT_PASSWORD_5 } as never))
       .rejects.toThrow('Пароль должен');
   });
-  it('создание → bcrypt.hash + user.create + audit user.create', async () => {
+  it('создание → bcrypt.hash + user.create + audit user.create + mustChangePassword', async () => {
     mockDb.user.create.mockResolvedValue({ id: 'u-new' });
     await upsertUser({
-      email: 'NEW@User.com', name: 'New User', role: 'LEGAL', password: 'secret123',
+      email: 'NEW@User.com', name: 'New User', role: 'LEGAL', password: VALID_PASSWORD,
     } as never);
-    expect(mockBcryptHash).toHaveBeenCalledWith('secret123', 10);
+    expect(mockBcryptHash).toHaveBeenCalledWith(VALID_PASSWORD, 10);
     const call = mockDb.user.create.mock.calls[0][0];
     expect(call.data.email).toBe('new@user.com');
-    expect(call.data.passwordHash).toBe('HASHED:secret123');
-    // 06.05.2026: при создании нового юзера mustChangePassword=true (#91 аудита) —
-    // чтобы admin не знал пароль навсегда, сотрудник обязан сменить при первом
-    // входе.
+    expect(call.data.passwordHash).toBe(`HASHED:${VALID_PASSWORD}`);
+    // 06.05.2026: при создании нового юзера mustChangePassword=true (#91 аудита).
     expect(call.data.mustChangePassword).toBe(true);
     expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'user.create' }));
   });
@@ -78,29 +88,27 @@ describe('upsertUser — обновление', () => {
     } as never);
     const call = mockDb.user.update.mock.calls[0][0];
     expect(call.data.passwordHash).toBeUndefined();
-    // Без смены пароля флаг mustChangePassword не трогаем
     expect(call.data.mustChangePassword).toBeUndefined();
   });
-  it('с паролем >=6 → хеширует и обновляет hash + ставит mustChangePassword', async () => {
+  it('с паролем >=12 → хеширует и обновляет hash + ставит mustChangePassword', async () => {
     await upsertUser({
-      id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES', password: 'newpass',
+      id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES', password: ANOTHER_VALID,
     } as never);
-    expect(mockBcryptHash).toHaveBeenCalledWith('newpass', 10);
+    expect(mockBcryptHash).toHaveBeenCalledWith(ANOTHER_VALID, 10);
     const call = mockDb.user.update.mock.calls[0][0];
-    expect(call.data.passwordHash).toBe('HASHED:newpass');
-    // 06.05.2026 — пункт #32 аудита: при смене пароля admin'ом сотрудник
-    // обязан сменить при следующем входе (admin не должен знать пароль).
+    expect(call.data.passwordHash).toBe(`HASHED:${ANOTHER_VALID}`);
+    // 06.05.2026 — пункт #32 аудита: при смене пароля admin'ом
+    // сотрудник обязан сменить при следующем входе.
     expect(call.data.mustChangePassword).toBe(true);
   });
-  it('с коротким паролем (<6) → игнорируется при обновлении', async () => {
-    await upsertUser({
-      id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES', password: '12',
-    } as never);
+  it('с коротким паролем (<12) → игнорируется при обновлении', async () => {
+    // 06.05.2026 — #33 аудита: короткий пароль сейчас бросает
+    // ошибку — нельзя тихо «игнорировать» (раньше игнорировалось).
+    await expect(upsertUser({
+      id: 'u-1', email: 'test@example.com', name: 'Test User', role: 'SALES', password: SHORT_PASSWORD_2,
+    } as never)).rejects.toThrow('Пароль должен');
     expect(mockBcryptHash).not.toHaveBeenCalled();
-    const call = mockDb.user.update.mock.calls[0][0];
-    expect(call.data.passwordHash).toBeUndefined();
-    // Пароль не менялся — флаг тоже не трогаем
-    expect(call.data.mustChangePassword).toBeUndefined();
+    expect(mockDb.user.update).not.toHaveBeenCalled();
   });
 });
 
@@ -131,20 +139,17 @@ describe('toggleUserActive', () => {
 });
 
 describe('resetUserPassword', () => {
-  it('пароль <6 символов → throw', async () => {
-    await expect(resetUserPassword('u-1', '123')).rejects.toThrow('Пароль должен');
+  it('пароль <12 символов → throw', async () => {
+    await expect(resetUserPassword('u-1', 'short')).rejects.toThrow('Пароль должен');
     expect(mockBcryptHash).not.toHaveBeenCalled();
   });
   it('валидный пароль → hash + update + audit reset_password + mustChangePassword', async () => {
-    await resetUserPassword('u-1', 'newSecret');
-    expect(mockBcryptHash).toHaveBeenCalledWith('newSecret', 10);
-    // 06.05.2026 — пункт #32 аудита: после reset'а пароля админом флаг
-    // mustChangePassword=true. Сотрудник при следующем входе обязан
-    // сменить — admin не должен знать пароль сотрудника.
+    await resetUserPassword('u-1', VALID_PASSWORD);
+    expect(mockBcryptHash).toHaveBeenCalledWith(VALID_PASSWORD, 10);
     expect(mockDb.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'u-1' },
-        data: { passwordHash: 'HASHED:newSecret', mustChangePassword: true },
+        data: { passwordHash: `HASHED:${VALID_PASSWORD}`, mustChangePassword: true },
       }),
     );
     expect(mockAudit).toHaveBeenCalledWith(
@@ -153,7 +158,7 @@ describe('resetUserPassword', () => {
   });
   it('не-админ → throw', async () => {
     mockRequireAdmin.mockImplementation(async () => { throw new Error('Forbidden'); });
-    await expect(resetUserPassword('u-1', 'newSecret')).rejects.toThrow();
+    await expect(resetUserPassword('u-1', VALID_PASSWORD)).rejects.toThrow();
     expect(mockDb.user.update).not.toHaveBeenCalled();
   });
 });
