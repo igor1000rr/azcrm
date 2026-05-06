@@ -1,19 +1,18 @@
 // Unit + Integration: lib/call-analysis
 // Anna идея №12 — транскрипция + sentiment-анализ звонков.
+//
+// 06.05.2026 — пункты #19/#97/#87 аудита:
+//   - processPendingCalls теперь сначала делает recovery застрявших
+//     PROCESSING (>30 мин) через updateMany. Тесты обновлены чтобы
+//     мокать db.call.updateMany и предвидеть лишний findMany для
+//     поиска stale-звонков.
+//   - BatchResult получил поле recovered: number — обновлены ожидания.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // КРИТИЧНО: env устанавливаем через vi.hoisted, иначе ESM-импорты ниже
 // сработают РАНЬШЕ присваивания process.env.* (статические import statement
-// хойстятся в самый верх модуля). При первом импорте call-analysis.ts
-// читает константы const WHISPER_API_KEY = process.env.WHISPER_API_KEY,
-// и если env пустой → isCallAnalysisEnabled()=false → все processCall
-// возвращают SKIPPED вместо ожидаемого DONE.
-//
-// После рефакторинга на конфиг через БД (call-analysis-config.ts):
-// getCallAnalysisConfig() сначала смотрит в Setting (БД), и если там
-// пусто — fallback на ENV. В тестах мокаем db.setting.findUnique → null,
-// тогда конфиг тянется из ENV ровно как раньше.
+// хойстятся в самый верх модуля).
 vi.hoisted(() => {
   process.env.WHISPER_API_KEY  = 'test-whisper-key';
   process.env.LLM_API_KEY      = 'test-llm-key';
@@ -113,12 +112,6 @@ describe('parseAnalysisResponse', () => {
 // ============================================================
 // Integration: processCall (с моками БД, fetch, notify)
 // ============================================================
-//
-// vi.mock хойстится в самый верх файла, поэтому обычные const'ы выше
-// факториек ещё не существуют. Используем vi.hoisted.
-//
-// Мокаем db.setting.findUnique → null чтобы getCallAnalysisConfig упал
-// на ENV-fallback (там test-ключи через hoisted process.env выше).
 
 const mocks = vi.hoisted(() => ({
   db: {
@@ -126,6 +119,8 @@ const mocks = vi.hoisted(() => ({
       findUnique: vi.fn(),
       update:     vi.fn(),
       findMany:   vi.fn(),
+      // 06.05.2026 — пункт #19/#97 аудита: добавлено для recovery PROCESSING звонков.
+      updateMany: vi.fn(),
     },
     setting: {
       findUnique: vi.fn(),
@@ -139,20 +134,18 @@ vi.mock('@/lib/notify', () => ({ notify: mocks.notify }));
 
 const { processCall, processPendingCalls } = await import('@/lib/call-analysis');
 
-// Сохраняем оригинальный fetch чтобы корректно восстанавливать после каждого теста.
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
-  // ВАЖНО: НЕ вызываем vi.restoreAllMocks() — это сбросит mockResolvedValue
-  // на db.update обратно к undefined (т.к. сами hoisted-моки тоже vi.fn).
   mocks.db.call.findUnique.mockReset();
   mocks.db.call.update.mockReset();
   mocks.db.call.findMany.mockReset();
+  mocks.db.call.updateMany.mockReset();
   mocks.db.setting.findUnique.mockReset();
   mocks.notify.mockReset();
   mocks.db.call.update.mockResolvedValue({});
-  // По умолчанию в Setting нет конфига — тогда getCallAnalysisConfig
-  // вернёт значения из process.env (test-keys выше).
+  // 06.05.2026 — recovery возвращает count=0 по дефолту (нет stale).
+  mocks.db.call.updateMany.mockResolvedValue({ count: 0 });
   mocks.db.setting.findUnique.mockResolvedValue(null);
   mocks.notify.mockResolvedValue(undefined);
 });
@@ -175,10 +168,6 @@ const fullCall = {
   },
 };
 
-/** Подменяет globalThis.fetch на функцию которая по очереди возвращает:
- *  1) ответ с аудио-байтами (download recordLocalUrl)
- *  2) ответ с текстом транскрипции (Whisper)
- *  3) ответ с JSON в OpenAI-формате choices[0].message.content (LLM) */
 function mockFetchOk(transcriptText: string, llmJson: Record<string, unknown>) {
   let call = 0;
   globalThis.fetch = vi.fn(async () => {
@@ -328,11 +317,11 @@ describe('processCall', () => {
     globalThis.fetch = vi.fn(async () => {
       fetchCount++;
       if (fetchCount === 1) return new Response(new ArrayBuffer(100), { status: 200 });
-      return new Response('', { status: 200 });   // whisper вернул пусто
+      return new Response('', { status: 200 });
     }) as typeof fetch;
 
     expect(await processCall('call-1')).toBe('SKIPPED');
-    expect(fetchCount).toBe(2);                    // LLM (3-й) не вызван
+    expect(fetchCount).toBe(2);
     expect(mocks.db.call.update).toHaveBeenLastCalledWith({
       where: { id: 'call-1' },
       data:  expect.objectContaining({
@@ -397,8 +386,6 @@ describe('processCall', () => {
   });
 
   it('конфиг из БД перебивает ENV — другой LLM endpoint', async () => {
-    // Пользователь сохранил свой ключ через UI → лежит в Setting.
-    // Проверяем что endpoint берётся из БД, а не из process.env.
     mocks.db.setting.findUnique.mockResolvedValue({
       key: 'call-analysis',
       value: {
@@ -426,26 +413,38 @@ describe('processCall', () => {
     }) as typeof fetch;
 
     expect(await processCall('call-1')).toBe('DONE');
-    // LLM endpoint должен быть из БД (api.x.ai), а не из ENV (api.test)
     expect(calledUrls.some((u) => u.startsWith('https://api.x.ai/v1/chat/completions'))).toBe(true);
   });
 });
 
 describe('processPendingCalls', () => {
-  it('пусто → 0/0/0/0', async () => {
+  it('пусто → 0/0/0/0/0', async () => {
+    // 06.05.2026 — пункт #19/#97: BatchResult теперь имеет поле recovered.
+    // findMany вызывается ДВАЖДЫ внутри функции:
+    //   1. для recovery PROCESSING (фильтр по transcriptStatus='PROCESSING')
+    //   2. для основной обработки PENDING
+    // Дефолтный mockResolvedValue([]) покрывает оба вызова.
     mocks.db.call.findMany.mockResolvedValue([]);
     const r = await processPendingCalls();
-    expect(r).toEqual({ processed: 0, done: 0, skipped: 0, failed: 0 });
+    expect(r).toEqual({ processed: 0, done: 0, skipped: 0, failed: 0, recovered: 0 });
   });
 
-  it('limit передаётся в findMany', async () => {
+  it('limit передаётся в findMany PENDING-выборки', async () => {
     mocks.db.call.findMany.mockResolvedValue([]);
     await processPendingCalls(7);
-    expect(mocks.db.call.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 7 }));
+    // Внутри 2 вызова findMany. Проверяем что хотя бы один из них был
+    // с take: 7 (это PENDING-выборка). Recovery findMany использует take: 50
+    // без зависимости от limit.
+    const calls = mocks.db.call.findMany.mock.calls;
+    expect(calls.some((c) => c[0]?.take === 7)).toBe(true);
   });
 
   it('пачка из 3 разных результатов → счётчики верны', async () => {
-    mocks.db.call.findMany.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
+    // 06.05.2026 — recovery findMany возвращает [], затем PENDING findMany
+    // возвращает 3 звонка. mockResolvedValueOnce работает по очереди.
+    mocks.db.call.findMany
+      .mockResolvedValueOnce([])  // recovery PROCESSING — нет stale
+      .mockResolvedValueOnce([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);  // PENDING
 
     // a → SKIPPED (нет recordLocalUrl)
     // b → DONE (всё ок, NEUTRAL)
@@ -486,5 +485,33 @@ describe('processPendingCalls', () => {
     expect(r.skipped).toBe(1);
     expect(r.done).toBe(1);
     expect(r.failed).toBe(1);
+    expect(r.recovered).toBe(0);
+  });
+
+  it('recovery: stale PROCESSING сбрасываются в PENDING', async () => {
+    // 06.05.2026 — пункт #19/#97 аудита: новый кейс.
+    // Если есть звонки в PROCESSING > 30 мин (createdAt < now - 30min),
+    // они должны быть сброшены в PENDING через updateMany.
+    mocks.db.call.findMany
+      .mockResolvedValueOnce([
+        { id: 'stale-1' },
+        { id: 'stale-2' },
+      ])  // recovery findMany — нашёл 2 stale
+      .mockResolvedValueOnce([]);  // PENDING — пусто после recovery
+
+    mocks.db.call.updateMany.mockResolvedValue({ count: 2 });
+
+    const r = await processPendingCalls();
+
+    expect(r.recovered).toBe(2);
+    expect(r.processed).toBe(0);
+    expect(mocks.db.call.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        transcriptStatus: 'PROCESSING',
+      }),
+      data: expect.objectContaining({
+        transcriptStatus: 'PENDING',
+      }),
+    }));
   });
 });
