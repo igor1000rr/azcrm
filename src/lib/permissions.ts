@@ -168,20 +168,54 @@ export function canViewAllWorkLogs(user: SessionUser): boolean {
   return user.role === 'ADMIN';
 }
 
-// ====================== ВИДИМОСТЬ ЧАТОВ ======================
+// ====================== ВИДИМОСТЬ КАНАЛОВ ======================
+//
+// Для всех 4 каналов (WhatsApp, Telegram, Viber, Meta) логика одинаковая:
+//   - ADMIN видит/использует все каналы
+//   - Общий канал (ownerId === null) — доступен всем менеджерам
+//   - Личный канал (ownerId === user.id) — доступен только владельцу
+//
+// 06.05.2026 — пункт #4 аудита: до этого фильтр был только для WhatsApp.
+// Telegram/Viber/Meta в thread-send/lead-send/settings не проверяли
+// owner — SALES мог отправить через Anna's личный бот выдав себя за неё.
+// Теперь по всем каналам единая модель.
 
-/**
- * Видимость WhatsApp-каналов:
- *  - ADMIN видит все
- *  - Общий канал (ownerId === null) — видят все
- *  - Личный канал — видит только владелец
- */
 export function whatsappAccountFilter(user: SessionUser) {
   if (user.role === 'ADMIN') return {};
   return {
     OR: [
       { ownerId: null },        // общие
       { ownerId: user.id },     // его личный
+    ],
+  };
+}
+
+export function telegramAccountFilter(user: SessionUser) {
+  if (user.role === 'ADMIN') return {};
+  return {
+    OR: [
+      { ownerId: null },
+      { ownerId: user.id },
+    ],
+  };
+}
+
+export function viberAccountFilter(user: SessionUser) {
+  if (user.role === 'ADMIN') return {};
+  return {
+    OR: [
+      { ownerId: null },
+      { ownerId: user.id },
+    ],
+  };
+}
+
+export function metaAccountFilter(user: SessionUser) {
+  if (user.role === 'ADMIN') return {};
+  return {
+    OR: [
+      { ownerId: null },
+      { ownerId: user.id },
     ],
   };
 }

@@ -11,11 +11,21 @@
 //
 // Anna 04.05.2026: добавлена возможность отправлять файлы (mediaUrl/mediaName/
 // mediaType). Тело сообщения теперь не обязательно если есть файл.
+//
+// 06.05.2026 — пункт #4 аудита: для всех 4 каналов добавлены permission
+// filters. До этого SALES мог отправить через личный бот Anna зная её
+// accountId — теперь fail с 403 «Канал недоступен».
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { whatsappAccountFilter, canViewLead } from '@/lib/permissions';
+import {
+  whatsappAccountFilter,
+  telegramAccountFilter,
+  viberAccountFilter,
+  metaAccountFilter,
+  canViewLead,
+} from '@/lib/permissions';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { workerSendMessage } from '@/lib/whatsapp';
 import { sendMessage as sendTelegramMessage } from '@/lib/telegram';
@@ -83,7 +93,7 @@ export async function POST(req: NextRequest) {
 }
 
 type SendCtx = {
-  user: { id: string; role: string };
+  user: { id: string; email: string; name: string; role: 'ADMIN' | 'SALES' | 'LEGAL' };
   lead: { id: string; clientId: string; salesManagerId: string | null; legalManagerId: string | null; client: { phone: string | null } };
   accountId: string;
   msgBody: string;
@@ -116,7 +126,7 @@ async function sendWa(ctx: SendCtx) {
     return NextResponse.json({ ok: false, error: 'У клиента нет номера телефона' }, { status: 400 });
   }
   const account = await db.whatsappAccount.findFirst({
-    where: { id: accountId, isActive: true, ...whatsappAccountFilter(user as Parameters<typeof whatsappAccountFilter>[0]) },
+    where: { id: accountId, isActive: true, ...whatsappAccountFilter(user) },
   });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
   if (!account.isConnected) return NextResponse.json({ ok: false, error: `Канал «${account.label}» не подключён` }, { status: 400 });
@@ -179,8 +189,9 @@ async function sendWa(ctx: SendCtx) {
 async function sendTg(ctx: SendCtx) {
   const { user, lead, accountId, mediaUrl, mediaName } = ctx;
   let { msgBody } = ctx;
+  // 06.05.2026 — пункт #4 аудита: добавлен telegramAccountFilter.
   const account = await db.telegramAccount.findFirst({
-    where: { id: accountId, isActive: true },
+    where: { id: accountId, isActive: true, ...telegramAccountFilter(user) },
     select: { id: true, botToken: true, isConnected: true, label: true },
   });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
@@ -234,7 +245,10 @@ async function sendTg(ctx: SendCtx) {
 async function sendViber(ctx: SendCtx) {
   const { user, lead, accountId, mediaUrl, mediaName } = ctx;
   let { msgBody } = ctx;
-  const account = await db.viberAccount.findFirst({ where: { id: accountId, isActive: true } });
+  // 06.05.2026 — пункт #4 аудита: добавлен viberAccountFilter.
+  const account = await db.viberAccount.findFirst({
+    where: { id: accountId, isActive: true, ...viberAccountFilter(user) },
+  });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
   if (!account.isConnected) return NextResponse.json({ ok: false, error: `Канал «${account.label}» не подключён` }, { status: 400 });
 
@@ -283,7 +297,10 @@ async function sendViber(ctx: SendCtx) {
 async function sendMeta(ctx: SendCtx & { channel: 'MESSENGER' | 'INSTAGRAM' }) {
   const { user, lead, accountId, mediaUrl, mediaName, channel } = ctx;
   let { msgBody } = ctx;
-  const account = await db.metaAccount.findFirst({ where: { id: accountId, isActive: true } });
+  // 06.05.2026 — пункт #4 аудита: добавлен metaAccountFilter.
+  const account = await db.metaAccount.findFirst({
+    where: { id: accountId, isActive: true, ...metaAccountFilter(user) },
+  });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
   if (!account.isConnected) return NextResponse.json({ ok: false, error: `Канал «${account.label}» не подключён` }, { status: 400 });
 

@@ -13,11 +13,20 @@
 // Anna 04.05.2026: добавлена возможность прикреплять файлы — mediaUrl уже
 // был, но валидация требовала обязательное body. Теперь можно отправить
 // только файл.
+//
+// 06.05.2026 — пункт #4 аудита: добавлены permission filters для всех
+// 4 каналов. До этого SALES/LEGAL мог отправить через любой Telegram/
+// Viber/Meta канал зная threadId — включая личные каналы Anna.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { whatsappAccountFilter } from '@/lib/permissions';
+import {
+  whatsappAccountFilter,
+  telegramAccountFilter,
+  viberAccountFilter,
+  metaAccountFilter,
+} from '@/lib/permissions';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { workerSendMessage } from '@/lib/whatsapp';
 import { sendMessage as sendTelegramMessage } from '@/lib/telegram';
@@ -92,7 +101,7 @@ type ThreadCtx = {
 };
 
 type SendCtx = {
-  user: { id: string; role: string };
+  user: { id: string; email: string; name: string; role: 'ADMIN' | 'SALES' | 'LEGAL' };
   thread: ThreadCtx;
   msgBody: string;
   mediaUrl?: string;
@@ -117,7 +126,7 @@ async function sendWa(ctx: SendCtx) {
     return NextResponse.json({ ok: false, error: 'У треда нет WhatsApp канала' }, { status: 400 });
   }
   const account = await db.whatsappAccount.findFirst({
-    where: { id: thread.whatsappAccountId, isActive: true, ...whatsappAccountFilter(user as Parameters<typeof whatsappAccountFilter>[0]) },
+    where: { id: thread.whatsappAccountId, isActive: true, ...whatsappAccountFilter(user) },
   });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
   if (!account.isConnected) return NextResponse.json({ ok: false, error: `Канал «${account.label}» не подключён` }, { status: 400 });
@@ -166,8 +175,10 @@ async function sendTg(ctx: SendCtx) {
   if (!thread.telegramAccountId || !thread.externalId) {
     return NextResponse.json({ ok: false, error: 'Нет Telegram канала или chat_id' }, { status: 400 });
   }
+  // 06.05.2026 — пункт #4 аудита: добавлен telegramAccountFilter.
+  // SALES/LEGAL не сможет писать через личный бот Anna.
   const account = await db.telegramAccount.findFirst({
-    where: { id: thread.telegramAccountId, isActive: true },
+    where: { id: thread.telegramAccountId, isActive: true, ...telegramAccountFilter(user) },
     select: { id: true, botToken: true, isConnected: true, label: true },
   });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
@@ -206,7 +217,10 @@ async function sendViber(ctx: SendCtx) {
   if (!thread.viberAccountId || !thread.externalId) {
     return NextResponse.json({ ok: false, error: 'Нет Viber канала или receiver_id' }, { status: 400 });
   }
-  const account = await db.viberAccount.findFirst({ where: { id: thread.viberAccountId, isActive: true } });
+  // 06.05.2026 — пункт #4 аудита: добавлен viberAccountFilter.
+  const account = await db.viberAccount.findFirst({
+    where: { id: thread.viberAccountId, isActive: true, ...viberAccountFilter(user) },
+  });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
   if (!account.isConnected) return NextResponse.json({ ok: false, error: `Канал «${account.label}» не подключён` }, { status: 400 });
 
@@ -246,7 +260,10 @@ async function sendMeta(ctx: SendCtx) {
   if (!thread.metaAccountId || !thread.externalId) {
     return NextResponse.json({ ok: false, error: 'Нет Meta канала или recipient_id' }, { status: 400 });
   }
-  const account = await db.metaAccount.findFirst({ where: { id: thread.metaAccountId, isActive: true } });
+  // 06.05.2026 — пункт #4 аудита: добавлен metaAccountFilter.
+  const account = await db.metaAccount.findFirst({
+    where: { id: thread.metaAccountId, isActive: true, ...metaAccountFilter(user) },
+  });
   if (!account)             return NextResponse.json({ ok: false, error: 'Канал недоступен' }, { status: 403 });
   if (!account.isConnected) return NextResponse.json({ ok: false, error: `Канал «${account.label}» не подключён` }, { status: 400 });
 
