@@ -3,7 +3,8 @@
 // Идемпотентный: можно запускать повторно, не дублирует данные
 //
 // ENV-переключатели:
-//   SEED_ADMIN_PASSWORD  — явный пароль для всех seed-юзеров (иначе рандом)
+//   SEED_ADMIN_PASSWORD  — явный пароль для всех seed-юзеров (иначе у каждого
+//                          случайный, печатается в конце вывода)
 //   E2E_TEST_MODE=1      — НЕ форсировать смену пароля при первом входе
 //                          (mustChangePassword=false). Нужно для Playwright,
 //                          иначе fixture виснет на редиректе /change-password.
@@ -19,10 +20,19 @@ async function hashPassword(password: string) {
 }
 
 /**
- * Генерирует случайный пароль для первого входа. Админ обязан сменить при первом входе.
- * Переопределяется через ENV SEED_ADMIN_PASSWORD если нужно фиксированное.
+ * Генерирует случайный пароль для первого входа.
+ * Каждый сотрудник получает СВОЙ пароль (печатается в конце вывода seed).
+ * После первого входа все обязаны сменить через mustChangePassword=true.
+ *
+ * Переопределяется через ENV SEED_ADMIN_PASSWORD если нужен один общий
+ * (для CI/локальной разработки).
+ *
+ * 06.05.2026 — пункт #91 аудита: до этого все 8 юзеров получали один
+ * общий пароль из generateInitialPassword() — admin'у приходилось его
+ * раздавать всем голосом/в Telegram. Если Anna случайно копировала пароль
+ * в чат с подрядчиком — уязвимость для всех восьми. Сейчас у каждого свой.
  */
-function generateInitialPassword(): string {
+function generatePassword(): string {
   if (process.env.SEED_ADMIN_PASSWORD) return process.env.SEED_ADMIN_PASSWORD;
   // 12 символов без неоднозначных: легко продиктовать, но непредсказуемо
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
@@ -36,11 +46,8 @@ async function main() {
 
   // ==================== ПОЛЬЗОВАТЕЛИ ====================
   // По данным от Anna: 1 админ + 4 продаж + 3 легализации = 8 человек
-  const initialPassword = generateInitialPassword();
-  const passwordHash = await hashPassword(initialPassword);
+  // Каждому генерируем СВОЙ пароль для первого входа.
 
-  // E2E_TEST_MODE — в CI под Playwright. Не форсируем смену пароля, иначе
-  // login редиректит на /change-password и fixture висит на waitForURL.
   const isE2E = process.env.E2E_TEST_MODE === '1';
 
   const team = [
@@ -55,11 +62,24 @@ async function main() {
   ];
 
   const users: Record<string, string> = {}; // email → id
+  const initialPasswords: Array<{ email: string; password: string; created: boolean }> = [];
+
   for (const member of team) {
-    const u = await prisma.user.upsert({
-      where: { email: member.email },
-      update: {},
-      create: {
+    // upsert делает update без полей если юзер уже есть — пароль не меняем,
+    // только при первом создании
+    const existing = await prisma.user.findUnique({ where: { email: member.email } });
+    if (existing) {
+      users[member.email] = existing.id;
+      initialPasswords.push({ email: member.email, password: '(уже создан, пароль не менялся)', created: false });
+      console.log(`  ↻ Пользователь существует: ${existing.name} (${existing.role})`);
+      continue;
+    }
+
+    const password = generatePassword();
+    const passwordHash = await hashPassword(password);
+
+    const u = await prisma.user.create({
+      data: {
         email: member.email,
         passwordHash,
         name: member.name,
@@ -70,8 +90,34 @@ async function main() {
       },
     });
     users[member.email] = u.id;
+    initialPasswords.push({ email: member.email, password, created: true });
     console.log(`  ✓ Пользователь: ${u.name} (${u.role})`);
   }
+
+  // ==================== КОНФИГ ЗАРПЛАТЫ ====================
+  // 06.05.2026 — пункт #107 аудита: при создании юзера через seed нет
+  // дефолтного PayrollConfig. Из-за этого при открытии /finance/payroll
+  // сотрудник без записи попадает в раздел «без настройки», и Anna
+  // вынуждена кликать «создать конфиг» для каждого вручную.
+  //
+  // Сейчас создаём PayrollConfig с нулями для каждого сотрудника
+  // (если его ещё нет). Anna потом отредактирует ставки/ZUS/PIT
+  // через UI на /finance/payroll-config.
+  for (const userId of Object.values(users)) {
+    const cfg = await prisma.payrollConfig.findUnique({ where: { userId } });
+    if (!cfg) {
+      await prisma.payrollConfig.create({
+        data: {
+          userId,
+          hourlyRate: 0,
+          zus:        0,
+          pit:        0,
+          notes:      'Создано автоматически через seed. Заполнить через /finance/payroll-config.',
+        },
+      });
+    }
+  }
+  console.log(`\n  ✓ PayrollConfig: создан для всех ${Object.keys(users).length} сотрудников (нулевые значения по умолчанию)`);
 
   // ==================== ГОРОДА ====================
   const cities = [
@@ -297,7 +343,6 @@ async function main() {
   }
 
   // ==================== УСЛУГИ (прайс-лист) ====================
-  // Связь с воронкой по имени. Шаблоны документов привяжем ниже к каждой услуге.
   const services = [
     { name: 'Karta pobytu (praca)', basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 1, funnelName: 'Karta pobytu (praca)' },
     { name: 'Karta pobytu (inne)',  basePrice: 1500, salesPct: 5,  legalPct: 5, pos: 2, funnelName: 'Karta pobytu (inne)' },
@@ -329,7 +374,6 @@ async function main() {
   }
 
   // ==================== ШАБЛОНЫ ЧЕК-ЛИСТА ПО УСЛУГАМ ====================
-  // Анна: «Шаблоны чек-листов по услугам». Для каждой услуги свой список.
   const docTemplatesByService: Record<string, string[]> = {
     'Karta pobytu (praca)': [
       'Загранпаспорт',
@@ -487,15 +531,24 @@ async function main() {
 
   console.log('\n✅ Готово!');
   console.log('\n=========================================================');
-  console.log('  Первый вход:');
-  console.log('  Email:    anna@azgroup.pl');
-  console.log(`  Пароль:   ${initialPassword}`);
-  if (isE2E) {
-    console.log('  E2E_TEST_MODE=1 → mustChangePassword=false (для Playwright)');
-  } else {
-    console.log('  При первом входе — ОБЯЗАТЕЛЬНО сменить пароль.');
-    console.log('  (этот пароль больше нигде не показывается — сохрани или выдай Anna).');
+  console.log('  ПАРОЛИ ДЛЯ ПЕРВОГО ВХОДА (#91 аудита):');
+  console.log('  Каждому сотруднику — свой случайный пароль.');
+  console.log('  При первом входе — ОБЯЗАТЕЛЬНАЯ смена через mustChangePassword.');
+  console.log('---------------------------------------------------------');
+  for (const p of initialPasswords) {
+    if (p.created) {
+      console.log(`  ${p.email.padEnd(28)} ${p.password}`);
+    } else {
+      console.log(`  ${p.email.padEnd(28)} ${p.password}`);
+    }
   }
+  if (isE2E) {
+    console.log('---------------------------------------------------------');
+    console.log('  E2E_TEST_MODE=1 → mustChangePassword=false (для Playwright)');
+  }
+  console.log('=========================================================');
+  console.log('  ВАЖНО: эти пароли больше нигде не сохраняются.');
+  console.log('  Скопируйте их СЕЙЧАС и раздайте сотрудникам ЛИЧНО.');
   console.log('=========================================================\n');
 }
 
