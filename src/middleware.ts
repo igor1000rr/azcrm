@@ -6,6 +6,9 @@ import { auth } from '@/lib/auth';
 //   /api/onlyoffice/callback       — JWT-токен в теле/заголовке (см. route)
 //   /api/whatsapp/webhook          — Bearer WHATSAPP_WORKER_TOKEN
 //   /api/telegram/webhook/[id]     — HMAC X-Telegram-Bot-Api-Secret-Token
+//   /api/viber/webhook             — HMAC X-Viber-Content-Signature
+//   /api/messenger/webhook         — HMAC X-Hub-Signature-256 (FB/IG)
+//                                    + GET для hub.challenge верификации Meta
 //   /api/cron/*                    — Bearer CRON_SECRET
 //   /api/files/*                   — JWT ooToken в query (для OnlyOffice)
 //                                    или cookie-сессия (для UI-загрузок)
@@ -14,12 +17,19 @@ import { auth } from '@/lib/auth';
 //                                    honeypot, CORS-allowlist, валидация zod.
 //
 // Если эти пути закрыть auth-middleware — webhook'и получают 302 на /login,
-// внешние сервисы (OnlyOffice, Telegram, worker) их парсят как fail.
+// внешние сервисы (OnlyOffice, Telegram, Viber, Meta, worker) парсят это
+// как fail. Для Meta дополнительно: невозможно даже зарегистрировать
+// webhook на FB Dashboard — верификация GET с hub.challenge тоже отдаст 302.
+//
+// 06.05.2026 — пункты #57+#92 аудита: Viber и Meta каналы физически не
+// работали из-за отсутствия их в этом списке. Зафиксил.
 const PUBLIC_API_PREFIXES = [
   '/api/auth',
   '/api/onlyoffice/callback',
   '/api/whatsapp/webhook',
   '/api/telegram/webhook',
+  '/api/viber/webhook',
+  '/api/messenger/webhook',
   '/api/cron',
   '/api/files',
   '/api/push/vapid',
