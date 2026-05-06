@@ -1,6 +1,10 @@
 'use client';
 
 // Sidebar — основная навигация
+//
+// 07.05.2026 — добавлена ссылка «Дубликаты клиентов» (#2.3 аудита). До этого
+// страница /settings/duplicates была создана, но ссылки на неё не было в меню —
+// Anna не знала что фича существует.
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
@@ -8,7 +12,7 @@ import {
   Inbox, LayoutGrid, Users, Calendar, CreditCard,
   CheckSquare, Zap, BarChart3, Phone, MessageSquare,
   Settings, X, Menu, Activity, Wallet, Receipt, ListChecks, Clock,
-  Cake, MapPin, Mic,
+  Cake, MapPin, Mic, GitMerge,
 } from 'lucide-react';
 import { Logo } from './logo';
 import { Avatar } from './ui/avatar';
@@ -81,6 +85,7 @@ export function Sidebar({ user, counters = {}, whatsappAccounts = [] }: SidebarP
     { href: '/settings/funnels',        label: 'Воронки',          icon: BarChart3,     roles: ['ADMIN'] },
     { href: '/settings/cities',         label: 'Города',           icon: MapPin,        roles: ['ADMIN'] },
     { href: '/settings/channels',       label: 'Каналы связи',     icon: MessageSquare, roles: ['ADMIN'] },
+    { href: '/settings/duplicates',     label: 'Дубликаты клиентов', icon: GitMerge,    roles: ['ADMIN'] },
     { href: '/settings/call-analysis',  label: 'Анализ звонков',   icon: Mic,           roles: ['ADMIN'] },
     { href: '/settings/blueprints',     label: 'Шаблоны Word',     icon: Settings,      roles: ['ADMIN'] },
     { href: '/settings/chat-templates', label: 'Шаблоны сообщений', icon: Settings,     roles: ['ADMIN'] },

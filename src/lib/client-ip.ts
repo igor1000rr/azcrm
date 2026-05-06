@@ -34,26 +34,27 @@ const TRUSTED_PROXY_HOPS = Math.max(
 );
 
 /**
- * Безопасно получить IP клиента.
- *
- * Берёт N-й IP справа из X-Forwarded-For (где N = TRUSTED_PROXY_HOPS),
- * или X-Real-IP, или 'unknown'. Из всех возможных вариантов выбираем
- * тот который наименее подвержен spoofingу.
- *
- * X-Real-IP как fallback: nginx выставляет его (или должен быть настроен так),
- * и он всегда переписывается nginx'ом — поэтому не spoofable.
+ * Безопасно получить IP клиента из NextRequest.
  */
 export function getClientIp(req: NextRequest): string {
-  const xff = req.headers.get('x-forwarded-for');
+  return getClientIpFromHeaders(req.headers);
+}
+
+/**
+ * То же самое но из Headers объекта (например из next/headers в server actions).
+ *
+ * 07.05.2026: вынесено в отдельный helper чтобы audit.ts мог использовать
+ * ту же логику без NextRequest объекта (у него только await headers()).
+ * Раньше audit.ts брал первый IP из X-Forwarded-For — уязвимо к spoofing'у.
+ */
+export function getClientIpFromHeaders(headers: Headers): string {
+  const xff = headers.get('x-forwarded-for');
   if (xff) {
     const parts = xff.split(',').map((s) => s.trim()).filter(Boolean);
     if (parts.length > 0) {
-      // Берём IP отстоящий от конца на TRUSTED_PROXY_HOPS позиций (нулевая = последняя).
-      // Для hops=1 это parts[parts.length - 1] = последний IP (наш nginx).
-      // Если hops > parts.length — берём самый левый (fallback).
       const idx = Math.max(0, parts.length - TRUSTED_PROXY_HOPS);
       return parts[idx];
     }
   }
-  return req.headers.get('x-real-ip') ?? 'unknown';
+  return headers.get('x-real-ip') ?? 'unknown';
 }

@@ -1,7 +1,14 @@
 // Аудит-лог: запись действий пользователей для админа
+//
+// 07.05.2026 — расширение #2.14 аудита: Используем getClientIpFromHeaders вместо
+// прямого разбора X-Forwarded-For — раньше брали .[0] (спуфится юзером). Теперь
+// берём N-й с конца (наш trusted proxy дописывает реальный IP в конец).
+// Без этого уволенный сотрудник мог бы фальсифицировать IP в audit log перед
+// выполнением действия.
 import { db } from '@/lib/db';
 import { headers } from 'next/headers';
 import { logger } from '@/lib/logger';
+import { getClientIpFromHeaders } from '@/lib/client-ip';
 
 interface AuditInput {
   userId?:    string | null;
@@ -22,7 +29,10 @@ export async function audit(input: AuditInput): Promise<void> {
     let userAgent: string | null = null;
     try {
       const h = await headers();
-      ipAddress = h.get('x-forwarded-for')?.split(',')[0].trim() ?? h.get('x-real-ip') ?? null;
+      // Берём IP через общий helper с защитой от spoofingа.
+      // 'unknown' преобразуем в null — в БД лучше NULL чем строка "unknown".
+      const ip = getClientIpFromHeaders(h);
+      ipAddress = ip === 'unknown' ? null : ip;
       userAgent = h.get('user-agent') ?? null;
     } catch {}
 
