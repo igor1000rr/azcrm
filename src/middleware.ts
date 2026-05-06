@@ -15,14 +15,6 @@ import { auth } from '@/lib/auth';
 //   /api/push/vapid                — публичный VAPID-ключ для браузера
 //   /api/public/*                  — формы лендинга. Защита: rate-limit по IP,
 //                                    honeypot, CORS-allowlist, валидация zod.
-//
-// Если эти пути закрыть auth-middleware — webhook'и получают 302 на /login,
-// внешние сервисы (OnlyOffice, Telegram, Viber, Meta, worker) парсят это
-// как fail. Для Meta дополнительно: невозможно даже зарегистрировать
-// webhook на FB Dashboard — верификация GET с hub.challenge тоже отдаст 302.
-//
-// 06.05.2026 — пункты #57+#92 аудита: Viber и Meta каналы физически не
-// работали из-за отсутствия их в этом списке. Зафиксил.
 const PUBLIC_API_PREFIXES = [
   '/api/auth',
   '/api/onlyoffice/callback',
@@ -34,6 +26,14 @@ const PUBLIC_API_PREFIXES = [
   '/api/files',
   '/api/push/vapid',
   '/api/public',
+];
+
+// Страницы куда можно ходить даже с mustChangePassword=true. Сама
+// страница смены пароля, и logout. Всё остальное — redirect на /change-password.
+// Не используем PUBLIC_API_PREFIXES — там иная семантика (no auth at all).
+const CHANGE_PASSWORD_ALLOW = [
+  '/change-password',
+  '/api/auth',  // чтобы NextAuth signOut работал
 ];
 
 export default auth((req) => {
@@ -52,6 +52,20 @@ export default auth((req) => {
   }
   if (req.auth && isLogin) {
     return Response.redirect(new URL('/', req.url));
+  }
+
+  // 06.05.2026 — пункты #32 + #64 аудита:
+  // Если юзер залогинен и mustChangePassword=true — redirect на
+  // /change-password из любого другого места. До этого флаг в JWT
+  // был, но никто его не читал — сотрудник мог продолжать работать
+  // со сброшенным паролем.
+  if (req.auth?.user?.mustChangePassword) {
+    const allowed = CHANGE_PASSWORD_ALLOW.some(
+      (p) => path === p || path.startsWith(p + '/'),
+    );
+    if (!allowed) {
+      return Response.redirect(new URL('/change-password', req.url));
+    }
   }
 });
 

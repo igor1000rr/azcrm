@@ -36,6 +36,10 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
     };
     if (data.password && data.password.length >= 6) {
       updateData.passwordHash = await bcrypt.hash(data.password, 10);
+      // 06.05.2026 — пункт #32 аудита: при изменении пароля
+      // админом выставляем mustChangePassword=true. Сотрудник при
+      // следующем входе будет обязан сменить.
+      updateData.mustChangePassword = true;
     }
     await db.user.update({ where: { id: data.id }, data: updateData as never });
 
@@ -59,6 +63,9 @@ export async function upsertUser(input: z.infer<typeof userSchema>) {
         phone:        data.phone || null,
         isActive:     data.isActive,
         passwordHash: await bcrypt.hash(data.password, 10),
+        // При создании нового юзера всегда требуем смену пароля при
+        // первом входе (пункт #91 аудита).
+        mustChangePassword: true,
         commissionPercent: data.commissionPercent ?? null,
       },
     });
@@ -104,9 +111,16 @@ export async function resetUserPassword(id: string, newPassword: string) {
   const admin = await requireAdmin();
   if (newPassword.length < 6) throw new Error('Пароль должен быть минимум 6 символов');
 
+  // 06.05.2026 — пункт #32 аудита: mustChangePassword=true при ресете.
+  // Раньше флаг не выставлялся — сотрудник получал сброшенный пароль
+  // от admin'а и мог им пользоваться хоть вечно — плохо с точки зрения
+  // безопасности (админ знает пароль сотрудника).
   await db.user.update({
     where: { id },
-    data:  { passwordHash: await bcrypt.hash(newPassword, 10) },
+    data:  {
+      passwordHash: await bcrypt.hash(newPassword, 10),
+      mustChangePassword: true,
+    },
   });
 
   await audit({
