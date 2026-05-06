@@ -1,8 +1,15 @@
 // GET /api/leads/export — экспорт лидов в CSV
 // Только ADMIN. С учётом текущих фильтров (funnel, city, sourceKind, дата).
+//
+// 06.05.2026 — пункт #59 аудита (досмотр):
+// раньше использовался inline escape который НЕ защищал от CSV-injection
+// (ячейки начинающиеся с =/+/-/@/\t/\r). Теперь используем buildCsv из
+// lib/finance/csv — там уже встроена защита через escapeCsvField.
+
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
+import { buildCsv } from '@/lib/finance/csv';
 
 const SOURCE_LABELS: Record<string, string> = {
   WHATSAPP: 'WhatsApp', PHONE: 'Телефон', TELEGRAM: 'Telegram', EMAIL: 'Email',
@@ -74,16 +81,8 @@ export async function GET(req: NextRequest) {
     ];
   });
 
-  const escape = (s: string | number) => {
-    const v = String(s ?? '');
-    if (v.includes(';') || v.includes('"') || v.includes('\n')) {
-      return `"${v.replace(/"/g, '""')}"`;
-    }
-    return v;
-  };
-
-  // BOM для Excel + ; разделитель (русская локаль Excel)
-  const csv = '\uFEFF' + [headers, ...rows].map((r) => r.map(escape).join(';')).join('\r\n');
+  // buildCsv включает BOM для Excel + escapeCsvField (защита от CSV-injection).
+  const csv = buildCsv(headers, rows);
 
   const filename = `leads-${new Date().toISOString().slice(0, 10)}.csv`;
   return new NextResponse(csv, {

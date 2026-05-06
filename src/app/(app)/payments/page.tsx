@@ -8,6 +8,7 @@ import { requireUser } from '@/lib/auth';
 import { leadVisibilityFilter } from '@/lib/permissions';
 import { formatDate, formatMoney } from '@/lib/utils';
 import { Download } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,14 +54,9 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
     }),
   ]);
 
-  // Экспорт в Excel/CSV — только для ADMIN и LEGAL.
+  // Экспорт в CSV — только для ADMIN и LEGAL.
   // SALES (менеджер продаж) не должен иметь возможность массово выгружать
   // финансовую информацию.
-  //
-  // 06.05.2026 — пункт #62 аудита: раньше кнопка была мёртвой (<Button>
-  // без onClick/href). Сейчас это <Link> на /api/payments/export с текущим
-  // фильтром period. CSV открывается в Excel/Numbers/LibreOffice прямым
-  // двойным кликом.
   const canExport = user.role === 'ADMIN' || user.role === 'LEGAL';
 
   return (
@@ -91,17 +87,14 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
             </div>
             <div>
               <span className="text-ink-3">Сумма:</span>{' '}
-              <strong className="text-success font-mono">{formatMoney(agg._sum.amount ?? 0)} zł</strong>
+              <strong className="text-success font-mono">{formatMoney(agg._sum.amount ?? 0)} zl</strong>
             </div>
             {canExport && (
-              <a
-                href={`/api/payments/export?period=${period}`}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold bg-navy text-white rounded hover:bg-navy-soft transition-colors"
-                title="Скачать CSV (откроется в Excel)"
-                data-testid="payments-export"
-              >
-                <Download size={12} /> Excel
-              </a>
+              <Link href={`/api/payments/export?period=${period}`}>
+                <Button>
+                  <Download size={12} /> CSV
+                </Button>
+              </Link>
             )}
           </div>
         </div>
@@ -140,7 +133,7 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
                     </td>
                     <td className="px-4 py-2.5 text-ink-3">{p.createdBy?.name ?? '—'}</td>
                     <td className="px-4 py-2.5 text-right font-mono font-bold text-success whitespace-nowrap">
-                      +{formatMoney(p.amount)} zł
+                      +{formatMoney(p.amount)} zl
                     </td>
                   </tr>
                 ))}

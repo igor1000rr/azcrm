@@ -1,12 +1,13 @@
-// GET /api/payments/export?period=7d|30d|90d|all
+// GET /api/payments/export — экспорт платежей в CSV.
 //
-// CSV-выгрузка платежей для Excel. Доступна только ADMIN и LEGAL.
-// SALES не должен иметь возможности массово выгружать финансы
-// (ограничение такое же как в UI на /payments).
+// Доступ: ADMIN или LEGAL (как в UI страницы /payments).
+// SALES не должен массово выгружать финансы.
 //
-// 06.05.2026 — пункт #62 аудита: кнопка «Excel» на /payments была
-// мёртвой (<Button> без onClick/href). Реализую endpoint, кнопка
-// превращается в рабочую <Link> в параллельном коммите.
+// Принимает ?period=7d|30d|90d|all (дефолт 30d) — тот же фильтр что в UI.
+// Применяет leadVisibilityFilter (LEGAL видит только свои лиды).
+//
+// 06.05.2026 — пункт #62 аудита: раньше кнопка «Excel» на /payments была
+// mock'ом без реализации. Теперь она ведёт сюда.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
@@ -14,17 +15,21 @@ import { requireUser } from '@/lib/auth';
 import { leadVisibilityFilter } from '@/lib/permissions';
 import { buildCsv } from '@/lib/finance/csv';
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
+const METHOD_LABELS: Record<string, string> = {
+  CARD: 'Карта', CASH: 'Наличные', TRANSFER: 'Перевод', OTHER: 'Другое',
+};
 
 export async function GET(req: NextRequest) {
   const user = await requireUser();
 
+  // Разрешаем только ADMIN и LEGAL (как в UI). SALES — 403.
   if (user.role !== 'ADMIN' && user.role !== 'LEGAL') {
-    return NextResponse.json({ error: 'Недостаточно прав' }, { status: 403 });
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const period = (req.nextUrl.searchParams.get('period') ?? '30d') as '7d' | '30d' | '90d' | 'all';
+  const { searchParams } = new URL(req.url);
+  const period = (searchParams.get('period') ?? '30d') as '7d' | '30d' | '90d' | 'all';
+
   const since = period === 'all'
     ? null
     : new Date(Date.now() - ({ '7d': 7, '30d': 30, '90d': 90 } as const)[period] * 86400_000);
@@ -37,62 +42,44 @@ export async function GET(req: NextRequest) {
   const payments = await db.payment.findMany({
     where,
     orderBy: { paidAt: 'desc' },
-    take: 5000,
+    take: 10000,
     include: {
       lead: {
-        select: {
-          id: true,
-          totalAmount: true,
-          client:  { select: { fullName: true, phone: true } },
-          funnel:  { select: { name: true } },
+        include: {
+          client: { select: { fullName: true, phone: true } },
+          funnel: { select: { name: true } },
           service: { select: { name: true } },
-          salesManager: { select: { name: true } },
-          legalManager: { select: { name: true } },
         },
       },
       createdBy: { select: { name: true } },
     },
   });
 
-  const methodLabel = (m: string) => (
-    { CARD: 'Карта', CASH: 'Наличные', TRANSFER: 'Перевод', OTHER: 'Другое' }[m] ?? m
-  );
-
   const headers = [
     'Дата', 'Клиент', 'Телефон', 'Воронка', 'Услуга',
-    'Сумма', 'Способ', 'Продажи', 'Легализация', 'Создал',
-    'Общая сумма лида', 'Страница лида',
+    'Способ', 'Сумма', 'Номер платежа', 'Менеджер', 'Комментарий',
   ];
 
   const rows = payments.map((p) => [
-    p.paidAt.toLocaleDateString('ru-RU', { timeZone: 'Europe/Warsaw' }),
+    p.paidAt.toISOString().slice(0, 19).replace('T', ' '),
     p.lead.client.fullName,
-    p.lead.client.phone ?? '',
+    p.lead.client.phone,
     p.lead.funnel.name,
     p.lead.service?.name ?? '',
+    METHOD_LABELS[p.method] ?? p.method,
     Number(p.amount).toFixed(2),
-    methodLabel(p.method),
-    p.lead.salesManager?.name ?? '',
-    p.lead.legalManager?.name ?? '',
+    String(p.sequence),
     p.createdBy?.name ?? '',
-    Number(p.lead.totalAmount).toFixed(2),
-    `/clients/${p.lead.id}`,
+    p.notes ?? '',
   ]);
 
   const csv = buildCsv(headers, rows);
 
-  // Имя файла с текущей датой в ISO формате (Anna просила чтобы по имени
-  // было понятно когда выгружено — в русском формате будет путаница с временем).
-  const today = new Date().toISOString().slice(0, 10);
-  const filename = `payments_${period}_${today}.csv`;
-
+  const filename = `payments-${period}-${new Date().toISOString().slice(0, 10)}.csv`;
   return new NextResponse(csv, {
-    status: 200,
     headers: {
-      'Content-Type':         'text/csv; charset=utf-8',
-      'Content-Disposition':  `attachment; filename="${filename}"`,
-      'Cache-Control':        'no-store',
-      'X-Content-Type-Options': 'nosniff',
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
     },
   });
 }
