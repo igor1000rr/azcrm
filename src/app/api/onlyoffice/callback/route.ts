@@ -8,6 +8,13 @@
 //  2. body.url проверяется по hostname против белого списка (ONLYOFFICE_PUBLIC_URL
 //     и APP_INTERNAL_URL) — иначе SSRF: можно было заставить скачать любой URL.
 //  3. body валидируется через zod — битый JSON/левый формат не доходит до логики.
+//
+// 06.05.2026 — пункт #1.10 аудита: имена файлов искажались при сохранении.
+// Было: doc.name.replace(/[^\\\\w\\\\s.-]/g, '_') — двойная экранировка backslash'ей
+// в исходнике. На самом деле regex означал «не `\`, не `w`, не `\`, не `s`, не `.`,
+// не `-`» — то есть всю кириллицу превращал в `_`. «Договор № 5.docx» → «_______».
+// Плюс: doc.name уже содержит расширение, а к нему добавлялся ещё `${ext}` →
+// «Договор.docx.docx» в лучшем случае.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -20,11 +27,6 @@ import { parseBody } from '@/lib/api-validation';
 import { logger } from '@/lib/logger';
 import path from 'node:path';
 
-// Схема callback OnlyOffice — официальная документация:
-// https://api.onlyoffice.com/editors/callback
-// status — int 0..7 (обязательно), key/url/users/actions/token — опциональны.
-// `key` присутствует не во всех типах callback'ов (например, при NO_CHANGES
-// или в простейших ping'ах его может не быть), поэтому НЕ требуем его.
 const OOCallbackSchema = z.object({
   key:    z.string().min(1).max(128).optional(),
   status: z.number().int().min(0).max(7),
@@ -37,10 +39,6 @@ const OOCallbackSchema = z.object({
   token:  z.string().max(8192).optional(),
 });
 
-/**
- * Разрешённые источники файла OnlyOffice. Помимо публичного URL — внутренний
- * адрес app в docker-сети, потому что callback ходит изнутри.
- */
 function isAllowedDownloadUrl(rawUrl: string): boolean {
   let u: URL;
   try {
@@ -62,12 +60,33 @@ function isAllowedDownloadUrl(rawUrl: string): boolean {
       allowedHosts.add(new URL(env).hostname);
     } catch {}
   }
-  // В docker-compose сервис называется 'onlyoffice' — допускаем по умолчанию
   allowedHosts.add('onlyoffice');
   allowedHosts.add('localhost');
   allowedHosts.add('127.0.0.1');
 
   return allowedHosts.has(u.hostname);
+}
+
+/**
+ * Безопасное имя файла для сохранения в storage.
+ *
+ * Разрешаем: любые Unicode-буквы (\p{L}), цифры (\p{N}), пробел, точка,
+ * дефис, подчёркивание, скобки и №.
+ * Запрещаем: path-сепараторы (/, \), null-byte, control chars, < > : * ? " |
+ * (опасные для файловой системы Windows/Linux/path traversal).
+ *
+ * #1.10 аудита: до фикса было /[^\\\\w\\\\s.-]/g (двойное экранирование) —
+ * regex буквально интерпретировался как «не `\`, не `w`, не `\`, не `s`,
+ * не `.`, не `-`», и вся кириллица заменялась на `_`.
+ */
+function sanitizeFileName(name: string): string {
+  // \p{L} — буквы любого алфавита (кириллица, латиница, китайские иероглифы…)
+  // \p{N} — цифры
+  // Флаг `u` обязателен для Unicode property escapes.
+  const safe = name.replace(/[^\p{L}\p{N}\s.\-_()№]/gu, '_');
+  // Сжимаем подряд идущие подчёркивания (несколько запрещённых символов
+  // подряд → один `_` вместо «___»).
+  return safe.replace(/_+/g, '_').trim() || 'document';
 }
 
 export async function POST(req: NextRequest) {
@@ -79,12 +98,10 @@ export async function POST(req: NextRequest) {
 
     const parsed = await parseBody(req, OOCallbackSchema);
     if (!parsed.ok) {
-      // OnlyOffice ждёт { error: <int> } — конвертим формат, но статус 400 сохраняем
       return NextResponse.json({ error: 1, message: 'invalid body' }, { status: 400 });
     }
     const body = parsed.data as OOCallbackBody & { token?: string };
 
-    // Токен либо в Authorization, либо в body.token. ОБЯЗАТЕЛЕН.
     const authHeader = req.headers.get('authorization') ?? '';
     const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
     const token = headerToken || body.token;
@@ -114,14 +131,21 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 1, message: 'no url' }, { status: 400 });
         }
 
-        // Защита от SSRF — URL должен быть с разрешённого OO-сервера
         if (!isAllowedDownloadUrl(body.url)) {
           logger.error('[onlyoffice/callback] rejected url:', body.url);
           return NextResponse.json({ error: 1, message: 'untrusted url' }, { status: 400 });
         }
 
+        // #1.10 аудита: правильная конкатенация имени и расширения.
+        // doc.name может быть как с расширением ("Договор.docx") так и без
+        // ("Договор"). Берём базу через path.parse — она правильно отрезает
+        // существующий .ext, а ext получаем из fileUrl (источник истины
+        // о реальном формате файла).
         const ext = path.extname(doc.fileUrl);
-        const newFileName = `${doc.name.replace(/[^\\w\\s.-]/g, '_')}${ext}`;
+        const baseName = path.parse(doc.name).name; // отрезаем существующий .ext
+        const safeName = sanitizeFileName(baseName);
+        const newFileName = `${safeName}${ext}`;
+
         const saved = await downloadAndSave(body.url, 'docs', newFileName);
 
         await db.$transaction(async (tx) => {
