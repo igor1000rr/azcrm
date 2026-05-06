@@ -152,7 +152,26 @@ export async function currentUser() {
   return session?.user ?? null;
 }
 
-/** Хелпер: получить юзера ИЛИ выкинуть 401 (для server actions) */
+/**
+ * Хелпер: получить юзера ИЛИ выкинуть 401 (для server actions).
+ *
+ * 06.05.2026 — пункт #117 аудита: добавлена проверка User.isActive
+ * по БД на каждом запросе. До этого JWT кэшировался на 30 дней,
+ * и при деактивации (toggleUserActive(id, false)) уволенный
+ * сотрудник продолжал работать в текущей сессии до её истечения.
+ *
+ * Сейчас requireUser() при каждом вызове сходит в БД за isActive.
+ * Это +1 SELECT на каждый action, но БД на той же VPS — overhead
+ * <1ms. После деактивации сотрудник на следующем запросе получит
+ * 401 «Учётная запись отключена».
+ *
+ * mustChangePassword тоже проверяется здесь — если флаг True и
+ * текущий route не /change-password, выкидываем 403 с указанием
+ * куда идти. Middleware дополнительно делает redirect.
+ *
+ * Для production масштабов >100 юзеров стоит добавить кэш на ~30 сек,
+ * но для команды Anna на 8 человек overhead незаметный.
+ */
 export async function requireUser() {
   const user = await currentUser();
   if (!user) {
@@ -160,7 +179,31 @@ export async function requireUser() {
     (e as Error & { statusCode?: number }).statusCode = 401;
     throw e;
   }
-  return user;
+
+  // Проверяем isActive в БД на каждом запросе (#117 аудита).
+  // Это нужно чтобы деактивация юзера (увольнение) сразу обрывала
+  // активные сессии, а не ждала истечения 30-дневного JWT.
+  const fresh = await db.user.findUnique({
+    where:  { id: user.id },
+    select: { isActive: true, mustChangePassword: true },
+  });
+
+  if (!fresh) {
+    // Юзер удалён из БД — выкидываем как 401
+    const e = new Error('Учётная запись не найдена');
+    (e as Error & { statusCode?: number }).statusCode = 401;
+    throw e;
+  }
+
+  if (!fresh.isActive) {
+    const e = new Error('Учётная запись отключена');
+    (e as Error & { statusCode?: number }).statusCode = 401;
+    throw e;
+  }
+
+  // Возвращаем актуальный mustChangePassword (флаг мог поменяться
+  // между запросами — например, админ нажал «сбросить пароль»).
+  return { ...user, mustChangePassword: fresh.mustChangePassword };
 }
 
 /** Хелпер: только админ */
