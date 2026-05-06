@@ -87,7 +87,7 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
             </div>
             <div>
               <span className="text-ink-3">Сумма:</span>{' '}
-              <strong className="text-success font-mono">{formatMoney(agg._sum.amount ?? 0)} zl</strong>
+              <strong className="text-success font-mono">{formatMoney(agg._sum.amount ?? 0)} zł</strong>
             </div>
             {canExport && (
               <Link href={`/api/payments/export?period=${period}`}>
@@ -133,7 +133,7 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
                     </td>
                     <td className="px-4 py-2.5 text-ink-3">{p.createdBy?.name ?? '—'}</td>
                     <td className="px-4 py-2.5 text-right font-mono font-bold text-success whitespace-nowrap">
-                      +{formatMoney(p.amount)} zl
+                      +{formatMoney(p.amount)} zł
                     </td>
                   </tr>
                 ))}
