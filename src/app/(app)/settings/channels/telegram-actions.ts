@@ -4,12 +4,13 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
-import { requireAdmin } from '@/lib/auth';
+import { requireAdmin, requireUser } from '@/lib/auth';
 import {
   getMe, setWebhook, deleteWebhook, sendMessage,
   getWebhookSecret, getWebhookUrl,
 } from '@/lib/telegram';
 import { logger } from '@/lib/logger';
+import { telegramAccountFilter } from '@/lib/permissions';
 
 const connectSchema = z.object({
   token:   z.string().min(40, 'Токен бота обязателен (получи у @BotFather)'),
@@ -101,15 +102,40 @@ const sendSchema = z.object({
   text:      z.string().min(1).max(4096),
 });
 
-/** Отправляет сообщение от имени бота + сохраняет в ChatMessage. */
+/**
+ * Отправляет сообщение от имени бота + сохраняет в ChatMessage.
+ *
+ * 06.05.2026 — пункт #58 аудита: до фикса этой функции не было
+ * проверки сессии вообще (только parse). Любой залогиненный мог
+ * отправить через любой бот, включая личный бот Anna.
+ *
+ * Сейчас:
+ *   1. requireUser() — должен быть залогинен
+ *   2. telegramAccountFilter(user) — может писать только через тот канал,
+ *      который этот юзер видит (свой личный или общий ownerId=null).
+ *      ADMIN видит всё, как для WhatsApp.
+ *
+ * sendTelegramMessage используется только из settings/channels — это
+ * админская страница для тестового пинга. Менеджеры в /inbox шлют
+ * через /api/messages/thread-send (там тоже добавлены permission filters).
+ */
 export async function sendTelegramMessage(input: z.infer<typeof sendSchema>) {
+  const user = await requireUser();
   const data = sendSchema.parse(input);
 
-  const account = await db.telegramAccount.findUnique({
-    where: { id: data.accountId },
-    select: { id: true, botToken: true, isActive: true },
+  // Permission: можно слать только через каналы видимые этому юзеру.
+  // ADMIN — все, SALES/LEGAL — свои + общие (ownerId=null).
+  const account = await db.telegramAccount.findFirst({
+    where: {
+      id: data.accountId,
+      isActive: true,
+      ...telegramAccountFilter(user),
+    },
+    select: { id: true, botToken: true },
   });
-  if (!account || !account.isActive) throw new Error('Аккаунт не найден или отключён');
+  if (!account) {
+    throw new Error('Аккаунт не найден, отключён или нет прав');
+  }
 
   const sent = await sendMessage(account.botToken, data.chatId, data.text);
 
@@ -133,6 +159,7 @@ export async function sendTelegramMessage(input: z.infer<typeof sendSchema>) {
           type:              'TEXT',
           body:              data.text,
           externalId:        `${sent.message_id}`,
+          senderId:          user.id,
           createdAt:         new Date(sent.date * 1000),
         },
       }),
