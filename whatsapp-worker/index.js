@@ -9,6 +9,7 @@ const { Client, LocalAuth, MessageMedia } = waPkg;
 import qrcodePkg from 'qrcode';
 const qrcode = qrcodePkg;
 import fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
@@ -24,6 +25,44 @@ const STORAGE_ROOT     = process.env.STORAGE_ROOT ?? path.resolve(process.cwd(),
 const SESSIONS_DIR     = process.env.SESSIONS_DIR ?? path.join(STORAGE_ROOT, 'wa-sessions');
 const WA_MEDIA_DIR     = process.env.WA_MEDIA_DIR ?? path.join(STORAGE_ROOT, 'wa-media');
 
+// Bind worker'а только на localhost. Worker должен быть доступен только
+// для CRM на той же машине (через 127.0.0.1:3100). Если bind на 0.0.0.0
+// и порт открыт в firewall — любой из интернета может слать запросы
+// на отправку WhatsApp от имени компании (пункт #60 аудита).
+//
+// Можно переопределить через WORKER_BIND_HOST если в будущем worker
+// вынесется на отдельную машину.
+const BIND_HOST = process.env.WORKER_BIND_HOST ?? '127.0.0.1';
+
+// Лимит размера media-файла который worker согласен скачать с CRM/CDN.
+// Без лимита fetch() зальёт весь arrayBuffer в память — 5 GB файл убьёт
+// процесс через OOM. WhatsApp всё равно режет 100 MB для документов и
+// 16 MB для видео, поэтому 60 MB с запасом покрывает все легитимные
+// сценарии (пункт #118 аудита).
+const MEDIA_MAX_BYTES = parseInt(process.env.MEDIA_MAX_BYTES ?? `${60 * 1024 * 1024}`, 10);
+
+// Allowlist хостов для SSRF-защиты (пункт #61 аудита). Worker скачивает
+// media только из APP_PUBLIC_URL (наш CRM) и явно разрешённых CDN.
+// Без allowlist подделанный mediaUrl типа `http://169.254.169.254/...`
+// (AWS metadata) или `http://localhost:5432/...` (PostgreSQL handshake)
+// может выкачать секреты с инфраструктуры и отправить их получателю.
+//
+// Парсим APP_PUBLIC_URL чтобы получить host CRM. Дополнительно — список
+// доменов через запятую в WORKER_MEDIA_HOSTS если нужны внешние CDN.
+const ALLOWED_MEDIA_HOSTS = (() => {
+  const hosts = new Set();
+  try {
+    hosts.add(new URL(APP_PUBLIC_URL).host);
+  } catch { /* ignore */ }
+  if (process.env.WORKER_MEDIA_HOSTS) {
+    for (const h of process.env.WORKER_MEDIA_HOSTS.split(',')) {
+      const trimmed = h.trim().toLowerCase();
+      if (trimmed) hosts.add(trimmed);
+    }
+  }
+  return hosts;
+})();
+
 // Если сессия залипла в authenticating дольше этого времени — делаем
 // принудительный destroy + переинициализацию. Это бывает когда puppeteer
 // не дождался полной загрузки UI WhatsApp Web и завис между authenticated
@@ -33,15 +72,24 @@ const AUTHENTICATING_TIMEOUT_MS = 60_000;
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 if (!fs.existsSync(WA_MEDIA_DIR)) fs.mkdirSync(WA_MEDIA_DIR, { recursive: true });
 
+// AUTH_TOKEN ОБЯЗАТЕЛЕН в production. Раньше при отсутствии токена worker
+// просто warn'ил и принимал любые запросы. Если порт открыт в интернет —
+// атакующий из любой точки мог слать /accounts/:id/send и отправлять
+// WhatsApp от имени компании (пункт #60 аудита). Fail-closed.
 if (!AUTH_TOKEN) {
-  console.warn('[worker] WHATSAPP_WORKER_TOKEN не задан — auth отключена');
+  console.error('[worker] FATAL: WHATSAPP_WORKER_TOKEN не задан');
+  console.error('[worker] worker не будет запущен — задайте токен в .env');
+  process.exit(1);
 }
 
 console.log('[worker] config:');
-console.log('  PORT            =', PORT);
-console.log('  AUTH_TOKEN      =', AUTH_TOKEN ? '(set)' : '(not set)');
-console.log('  CRM_WEBHOOK_URL =', CRM_WEBHOOK_URL);
-console.log('  SESSIONS_DIR    =', SESSIONS_DIR);
+console.log('  PORT             =', PORT);
+console.log('  BIND_HOST        =', BIND_HOST);
+console.log('  AUTH_TOKEN       = (set, hidden)');
+console.log('  CRM_WEBHOOK_URL  =', CRM_WEBHOOK_URL);
+console.log('  SESSIONS_DIR     =', SESSIONS_DIR);
+console.log('  ALLOWED_MEDIA    =', [...ALLOWED_MEDIA_HOSTS].join(', '));
+console.log('  MEDIA_MAX_BYTES  =', MEDIA_MAX_BYTES);
 
 const clients = new Map();
 const lastIncomingChat = new Map();
@@ -181,7 +229,11 @@ function bindEvents(accountId, client, entry) {
             const ext = path.extname(mediaName) || `.${guessExt(media.mimetype)}`;
             const storedName = `${crypto.randomBytes(32).toString('hex')}${ext}`;
             const fullPath = path.join(WA_MEDIA_DIR, storedName);
-            fs.writeFileSync(fullPath, buf);
+            // Async writeFile (пункт #121 аудита) — синхронный freeze'ил
+            // event loop при больших файлах. Для 30 MB документа на
+            // загруженной машине это 100-300мс блокировки — за это
+            // время worker не отвечал на параллельные сообщения.
+            await fsp.writeFile(fullPath, buf);
             mediaUrl = `/api/files/wa-media/${storedName}`;
           }
         } catch (e) {
@@ -295,20 +347,69 @@ async function hardResetClient(accountId) {
 }
 
 /**
+ * Проверка что URL разрешён к скачиванию worker'ом (SSRF защита, пункт #61).
+ *
+ * Без этой проверки атакующий может через CRM передать mediaUrl вида:
+ *   http://169.254.169.254/latest/meta-data/iam/security-credentials/
+ *   http://localhost:5432/
+ *   http://localhost:8000/admin/
+ * Worker зафетчит контент и отправит как файл клиенту в WhatsApp —
+ * утечка секретов или сканирование внутренней сети.
+ *
+ * Защита:
+ *   1. Только https:// и http:// (не file://, ftp://, gopher://)
+ *   2. Host должен быть в ALLOWED_MEDIA_HOSTS (только наш CRM по умолчанию)
+ *   3. Никаких IP-литералов из приватных диапазонов даже если allowlist
+ *      добавили — отдельная страховка от misconfig.
+ */
+function isAllowedMediaUrl(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.host.toLowerCase();
+  if (!ALLOWED_MEDIA_HOSTS.has(host)) return false;
+  // Дополнительная защита: запрещаем link-local / metadata IP даже если
+  // кто-то их случайно добавил в allowlist
+  const hostname = u.hostname;
+  if (
+    hostname === '169.254.169.254' ||           // AWS/GCP metadata
+    hostname === 'metadata.google.internal' ||
+    /^127\./.test(hostname) ||                   // localhost
+    /^10\./.test(hostname) ||                    // private
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname) ||
+    /^192\.168\./.test(hostname) ||
+    hostname === '0.0.0.0'
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Скачать media-файл по mediaUrl и собрать MessageMedia для whatsapp-web.js.
  *
- * mediaUrl может быть:
- *   - абсолютным с mediaToken: https://crm.../api/files/uploads/...?mediaToken=...
- *     (выдаётся из /api/messages/{lead,thread}-send через signMediaUrlForWorker)
- *   - абсолютным внешним: https://example.com/foo.png (CDN, redirect и т.п.)
+ * mediaUrl должен быть абсолютным с подписанным mediaToken вида:
+ *   https://crm.../api/files/uploads/...?mediaToken=<jwt>
+ * (выдаётся из /api/messages/{lead,thread}-send через signMediaUrlForWorker).
  *
  * Возвращает MessageMedia или null если скачать не удалось.
  *
  * Anna 04.05.2026: «в CRM видно картинку, а на телефоне нет» — корень
  * был в том что worker НЕ читал поле mediaUrl из запроса вообще,
  * sendMessage(chatId, body) шёл только текстом (или \u00A0 пробелом).
+ *
+ * 06.05.2026 — пункты #61, #118 аудита:
+ *   - allowlist hosts (защита от SSRF)
+ *   - проверка Content-Length перед скачиванием (защита от OOM)
+ *   - early-abort если ответ тяжелее лимита уже после начала чтения
  */
 async function fetchMediaForWhatsApp(mediaUrl) {
+  // SSRF allowlist
+  if (!isAllowedMediaUrl(mediaUrl)) {
+    console.error(`[worker] media URL отклонён (SSRF allowlist): ${mediaUrl.slice(0, 100)}`);
+    return null;
+  }
+
   try {
     const res = await fetch(mediaUrl, {
       // Таймаут чтобы worker не висел вечно если CRM не отвечает
@@ -318,7 +419,39 @@ async function fetchMediaForWhatsApp(mediaUrl) {
       console.error(`[worker] media fetch failed: ${res.status} ${mediaUrl.slice(0, 100)}`);
       return null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
+
+    // Защита от OOM (#118): если сервер обещал >MEDIA_MAX_BYTES — не качаем.
+    // Если не обещал ничего — читаем потоково с проверкой накопленного объёма.
+    const contentLength = res.headers.get('content-length');
+    if (contentLength) {
+      const size = parseInt(contentLength, 10);
+      if (Number.isFinite(size) && size > MEDIA_MAX_BYTES) {
+        console.error(`[worker] media too large by Content-Length: ${size}b > ${MEDIA_MAX_BYTES}b`);
+        return null;
+      }
+    }
+
+    // Stream-чтение с лимитом: если за время скачивания накопилось больше
+    // лимита (Content-Length мог быть фейковым или его не было), — обрываем.
+    const reader = res.body?.getReader();
+    if (!reader) {
+      console.error('[worker] no reader on response body');
+      return null;
+    }
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MEDIA_MAX_BYTES) {
+        try { await reader.cancel(); } catch {}
+        console.error(`[worker] media too large during stream: ${total}b > ${MEDIA_MAX_BYTES}b`);
+        return null;
+      }
+      chunks.push(value);
+    }
+    const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
     const mimetype = res.headers.get('content-type') || 'application/octet-stream';
 
     // Имя файла берём из Content-Disposition если есть, иначе из URL
@@ -349,8 +482,10 @@ async function fetchMediaForWhatsApp(mediaUrl) {
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// AUTH_TOKEN теперь обязателен (process.exit(1) выше при отсутствии),
+// поэтому здесь убираем условную ветку и всегда требуем Bearer.
+// /health оставляем открытым — для healthcheck с хоста.
 app.use((req, res, next) => {
-  if (!AUTH_TOKEN) return next();
   if (req.path === '/health') return next();
   const auth = req.headers.authorization ?? '';
   if (auth !== `Bearer ${AUTH_TOKEN}`) {
@@ -631,8 +766,10 @@ app.post('/accounts/:id/send', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`whatsapp-worker listening on :${PORT}`);
+// Bind на BIND_HOST (по умолчанию 127.0.0.1) — пункт #60 аудита.
+// CRM на той же VPS обращается через localhost, наружу порт не нужен.
+app.listen(PORT, BIND_HOST, () => {
+  console.log(`whatsapp-worker listening on ${BIND_HOST}:${PORT}`);
   console.log(`webhook URL: ${CRM_WEBHOOK_URL}`);
   setTimeout(autoRestoreSessions, 1000);
 });
