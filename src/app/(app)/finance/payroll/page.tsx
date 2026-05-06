@@ -3,6 +3,11 @@
 //   Часы | Ставка/час | Ставка×часы | Премия | ZUS | PIT | Грязными свои | Зп чистая
 //   Зп чистая    = ставка × часы + премии
 //   Грязными свои = зп чистая + ZUS + PIT
+//
+// 06.05.2026 — пункт #2 аудита: формулы переведены на calcPayrollRow + sumPayrollTotals
+// из @/lib/finance/payroll-calc. До этого формулы были inline'ом и дублировались
+// в нескольких местах (сводка, итог, KPI). Теперь всё округление и нормализация
+// (Math.max(0, n) || 0 для невалидных значений) централизовано и тестируется юнитами.
 import Link from 'next/link';
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
@@ -13,6 +18,7 @@ import {
   warsawCurrentMonthBounds, warsawPrevMonthBounds, warsawCurrentYearBounds,
   toWarsawDateStr,
 } from '@/lib/utils';
+import { calcPayrollRow, sumPayrollTotals } from '@/lib/finance/payroll-calc';
 import { PayrollView } from './payroll-view';
 
 export const dynamic = 'force-dynamic';
@@ -47,9 +53,6 @@ export default async function PayrollPage({ searchParams }: PageProps) {
   });
 
   // Часы за период (WorkLog) — фильтр по WorkLog.date.
-  // WorkLog.date это @db.Date (без времени), поэтому сравнение gte/lte
-  // работает по календарным дням независимо от TZ. Более точные границы
-  // в UTC тоже подойдут — Postgres сравнивает только датную часть.
   const workLogs = await db.workLog.findMany({
     where: { date: { gte: from, lte: to } },
     select: { userId: true, hours: true },
@@ -65,30 +68,38 @@ export default async function PayrollPage({ searchParams }: PageProps) {
     const totalHours = userLogs.reduce((s, w) => s + Number(w.hours), 0);
 
     const hourlyRate = Number(u.payrollConfig?.hourlyRate ?? 0);
-    const zus = Number(u.payrollConfig?.zus ?? 0);
-    const pit = Number(u.payrollConfig?.pit ?? 0);
+    const zus        = Number(u.payrollConfig?.zus        ?? 0);
+    const pit        = Number(u.payrollConfig?.pit        ?? 0);
 
-    const ratePart = hourlyRate * totalHours;
-    const netTotal = ratePart + totalCommission;
-    const grossTotal = netTotal + zus + pit;
+    // #2 аудита: расчёт через единый calcPayrollRow вместо inline-формулы.
+    // Внутри округление до 2 знаков и нормализация невалидных значений.
+    const calc = calcPayrollRow({
+      hourlyRate, totalHours, totalCommission, zus, pit,
+    });
 
     return {
       id: u.id, name: u.name, role: u.role,
       hourlyRate, zus, pit,
-      totalHours, ratePart,
+      totalHours,
+      ratePart:        calc.ratePart,
       totalCommission, paidOut, pending,
-      grossTotal, netTotal,
+      grossTotal:      calc.grossTotal,
+      netTotal:        calc.netTotal,
       hasConfig: !!u.payrollConfig,
     };
   });
 
+  // Итоги — через sumPayrollTotals для рассчитанных полей,
+  // остальные суммируем напрямую (commissions/zus/pit/hours/pending —
+  // не результат calcPayrollRow, а отдельные источники).
+  const calcTotals = sumPayrollTotals(rows);
   const totals = {
     commissions: rows.reduce((s, r) => s + r.totalCommission, 0),
-    rate:        rows.reduce((s, r) => s + r.ratePart, 0),
+    rate:        calcTotals.ratePart,
     zus:         rows.reduce((s, r) => s + r.zus, 0),
     pit:         rows.reduce((s, r) => s + r.pit, 0),
-    gross:       rows.reduce((s, r) => s + r.grossTotal, 0),
-    net:         rows.reduce((s, r) => s + r.netTotal, 0),
+    gross:       calcTotals.grossTotal,
+    net:         calcTotals.netTotal,
     hours:       rows.reduce((s, r) => s + r.totalHours, 0),
     pending:     rows.reduce((s, r) => s + r.pending, 0),
   };
