@@ -10,11 +10,16 @@
 //
 // Event flow (POST): FB шлёт payload с подписью X-Hub-Signature-256 (HMAC-SHA256
 // от raw body с ключом = App Secret). Проверяем ДО парсинга JSON.
+//
+// 06.05.2026 — пункт #5 аудита: appSecret хранится в БД зашифрованным.
+// Расшифровываем непосредственно перед verifyMetaSignature.
+// verifyToken НЕ шифруется (это не секрет, а просто строка для FB верификации).
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyMetaSignature, handleMetaWebhook, type MetaWebhookPayload } from '@/lib/meta';
 import { logger } from '@/lib/logger';
+import { decrypt } from '@/lib/crypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,8 +41,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'account not found' }, { status: 404 });
   }
 
+  // verifyToken не зашифрован — простое сравнение
   if (mode === 'subscribe' && token === account.verifyToken && challenge) {
-    // FB ожидает plain text echo
     return new NextResponse(challenge, {
       status:  200,
       headers: { 'Content-Type': 'text/plain' },
@@ -61,7 +66,8 @@ export async function POST(req: NextRequest) {
   const rawBody = await req.text();
   const sig     = req.headers.get('x-hub-signature-256');
 
-  if (!verifyMetaSignature(account.appSecret, rawBody, sig)) {
+  // Расшифровываем appSecret для HMAC проверки
+  if (!verifyMetaSignature(decrypt(account.appSecret), rawBody, sig)) {
     logger.warn(`[meta] bad signature for account ${accountId}`);
     return NextResponse.json({ error: 'bad signature' }, { status: 401 });
   }
@@ -70,14 +76,11 @@ export async function POST(req: NextRequest) {
   try { payload = JSON.parse(rawBody) as MetaWebhookPayload; }
   catch { return NextResponse.json({ error: 'bad json' }, { status: 400 }); }
 
-  // Meta требует ответить 200 быстро (< 20 сек), иначе ретраит и в итоге
-  // отключает webhook. Поэтому обработка лёгкая.
   try {
     const result = await handleMetaWebhook(payload);
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     logger.error('[meta] handler error', err);
-    // Возвращаем 200 чтобы не было ретраев — событие в логах
     return NextResponse.json({ ok: true, logged: true });
   }
 }

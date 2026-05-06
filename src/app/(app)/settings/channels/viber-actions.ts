@@ -3,6 +3,11 @@
 // Server Actions для управления Viber каналами.
 // Подключение через ручной ввод X-Viber-Auth-Token (получается на partners.viber.com).
 // Регистрация webhook через POST /pa/set_webhook на стороне Viber.
+//
+// 06.05.2026 — пункт #5/#8 аудита: authToken шифруется при записи в БД.
+// При чтении (sendViberFromLead, disconnectViberAccount, webhook handler)
+// — расшифровывается через decrypt(). Lazy migration: legacy plaintext
+// токены без префикса v1: возвращаются как есть.
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
@@ -12,6 +17,7 @@ import { setViberWebhook, removeViberWebhook, sendViberText } from '@/lib/viber'
 import { canViewLead } from '@/lib/permissions';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
+import { encrypt, decrypt } from '@/lib/crypto';
 
 const connectSchema = z.object({
   authToken: z.string().min(40, 'Auth Token обязателен (получи на partners.viber.com)'),
@@ -22,24 +28,21 @@ const connectSchema = z.object({
 
 /**
  * Подключает Viber Public Account к CRM:
- *   1. Создаёт запись ViberAccount.
+ *   1. Создаёт запись ViberAccount (authToken шифруется).
  *   2. Регистрирует webhook на стороне Viber (POST /pa/set_webhook).
  *   3. При неудаче — откатывает создание.
- *
- * webhookUrl формируется как ${APP_PUBLIC_URL}/api/viber/webhook?account=<id>.
  */
 export async function connectViberAccount(input: z.infer<typeof connectSchema>) {
   await requireAdmin();
   const data = connectSchema.parse(input);
 
-  // Проверка уникальности по paName (т.к. это unique в schema)
   const exists = await db.viberAccount.findUnique({ where: { paName: data.paName } });
   if (exists) throw new Error(`Public Account "${data.paName}" уже подключён`);
 
-  // Создаём запись (без webhookUrl)
+  // Создаём запись с зашифрованным токеном
   const account = await db.viberAccount.create({
     data: {
-      authToken:   data.authToken,
+      authToken:   encrypt(data.authToken),
       paName:      data.paName,
       label:       data.label,
       ownerId:     data.ownerId ?? null,
@@ -48,7 +51,6 @@ export async function connectViberAccount(input: z.infer<typeof connectSchema>) 
     },
   });
 
-  // Регистрируем webhook
   const baseUrl = process.env.APP_PUBLIC_URL?.replace(/\/$/, '');
   if (!baseUrl) {
     await db.viberAccount.delete({ where: { id: account.id } });
@@ -56,6 +58,8 @@ export async function connectViberAccount(input: z.infer<typeof connectSchema>) 
   }
   const webhookUrl = `${baseUrl}/api/viber/webhook?account=${account.id}`;
 
+  // setViberWebhook требует plaintext token — передаём data.authToken (он у нас в памяти,
+  // ещё не шифрованный).
   try {
     const res = await setViberWebhook(data.authToken, webhookUrl);
     if (res.status !== 0) {
@@ -81,7 +85,8 @@ export async function disconnectViberAccount(accountId: string) {
   const account = await db.viberAccount.findUnique({ where: { id: accountId } });
   if (!account) throw new Error('Аккаунт не найден');
 
-  try { await removeViberWebhook(account.authToken); }
+  // Расшифровываем для removeViberWebhook
+  try { await removeViberWebhook(decrypt(account.authToken)); }
   catch (e) { logger.warn('[viber] removeWebhook failed (игнорируем):', e); }
 
   await db.viberAccount.delete({ where: { id: accountId } });
@@ -107,11 +112,6 @@ const sendSchema = z.object({
 const SEND_MAX       = 30;
 const SEND_WINDOW_MS = 60 * 1000;
 
-/**
- * Отправляет Viber-сообщение клиенту от имени менеджера.
- * receiverId резолвится из существующего ChatThread (externalId).
- * Если thread'а ещё нет — мы не можем отправить (не знаем Viber-id клиента).
- */
 export async function sendViberFromLead(input: z.infer<typeof sendSchema>) {
   const user = await requireUser();
   if (!checkRateLimit(`viber-send:${user.id}`, SEND_MAX, SEND_WINDOW_MS)) {
@@ -136,7 +136,6 @@ export async function sendViberFromLead(input: z.infer<typeof sendSchema>) {
   if (!account) throw new Error('Канал недоступен');
   if (!account.isConnected) throw new Error(`Канал «${account.label}» не подключён`);
 
-  // Найти thread с этим клиентом на этом канале — там лежит externalId (Viber user id)
   const thread = await db.chatThread.findFirst({
     where: {
       clientId:       lead.clientId,
@@ -149,7 +148,10 @@ export async function sendViberFromLead(input: z.infer<typeof sendSchema>) {
     throw new Error('Клиент ещё не писал в Viber — сначала он должен начать диалог');
   }
 
-  const res = await sendViberText(account, thread.externalId, data.body);
+  // sendViberText принимает Pick<ViberAccount, 'authToken' | 'paName'> —
+  // подменяем authToken на расшифрованный (in-memory).
+  const decryptedAccount = { ...account, authToken: decrypt(account.authToken) };
+  const res = await sendViberText(decryptedAccount, thread.externalId, data.body);
   if (res.status !== 0) {
     throw new Error(`Viber API отверг отправку: ${res.status_message || 'unknown'}`);
   }

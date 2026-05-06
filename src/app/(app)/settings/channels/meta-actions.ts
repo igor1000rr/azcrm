@@ -2,18 +2,12 @@
 
 // Server Actions для управления Meta каналами (FB Messenger + Instagram Direct).
 //
-// Подключение через ручной ввод:
-//   - Page Access Token (long-lived) — получается на developers.facebook.com
-//   - App Secret — для проверки подписи webhook
-//   - Verify Token — придумывается, нужен при регистрации webhook на стороне FB
+// 06.05.2026 — пункт #5/#8 аудита: pageAccessToken и appSecret шифруются при
+// записи в БД через AES-256-GCM. verifyToken НЕ шифруем — он не секрет в строгом
+// смысле (FB прислал в публичном webhook URL), хотя теоретически тоже можно.
+// При чтении (sendMetaFromLead, webhook handler) — расшифровываем через decrypt().
 //
-// При подключении делаем GET /me чтобы валидировать токен и подтянуть
-// pageId+pageName. Если у Page привязан Instagram Business — подтягиваем
-// igUserId+igUsername через /me?fields=instagram_business_account{id,username}.
-//
-// Webhook регистрируется НЕ из CRM (нужны права от App), а вручную в FB App
-// Dashboard → Webhooks. URL — endpoint /api/messenger/webhook?account=<id>,
-// Verify Token — тот что мы сохранили в БД.
+// Lazy migration: legacy plaintext токены без префикса v1: возвращаются как есть.
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
@@ -22,6 +16,7 @@ import { requireAdmin, requireUser } from '@/lib/auth';
 import { sendMessengerText, sendInstagramText } from '@/lib/meta';
 import { canViewLead } from '@/lib/permissions';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { encrypt, decrypt } from '@/lib/crypto';
 
 const GRAPH = 'https://graph.facebook.com/v19.0';
 
@@ -40,19 +35,11 @@ interface MePageResponse {
   error?: { message: string; type?: string };
 }
 
-/**
- * Валидирует Page Access Token через GET /me, подтягивает pageId/pageName,
- * проверяет привязку к Instagram. Создаёт MetaAccount.
- *
- * Webhook нужно вручную зарегистрировать в FB App после подключения —
- * URL и Verify Token CRM покажет в UI.
- */
 export async function connectMetaAccount(input: z.infer<typeof connectSchema>) {
   await requireAdmin();
   const data = connectSchema.parse(input);
 
-  // Валидируем токен — запрашиваем сразу с instagram_business_account чтобы
-  // одним запросом узнать оба идентификатора.
+  // Валидируем токен через Graph API (нужен plaintext)
   const url = `${GRAPH}/me?fields=id,name,instagram_business_account{id,username}&access_token=${encodeURIComponent(data.pageAccessToken)}`;
   const res = await fetch(url);
   const me: MePageResponse = await res.json();
@@ -61,18 +48,19 @@ export async function connectMetaAccount(input: z.infer<typeof connectSchema>) {
     throw new Error(`Page Access Token невалиден: ${me.error?.message || 'нет id/name в ответе'}`);
   }
 
-  // Уникальность по pageId
   const exists = await db.metaAccount.findUnique({ where: { pageId: me.id } });
   if (exists) throw new Error(`FB Page "${me.name}" уже подключена`);
 
   const igAccount = me.instagram_business_account;
 
+  // Шифруем pageAccessToken и appSecret. verifyToken оставляем plaintext
+  // (используется только в GET-верификации webhook'а сравнением строк).
   const account = await db.metaAccount.create({
     data: {
       pageId:          me.id,
-      pageAccessToken: data.pageAccessToken,
+      pageAccessToken: encrypt(data.pageAccessToken),
       pageName:        me.name,
-      appSecret:       data.appSecret,
+      appSecret:       encrypt(data.appSecret),
       verifyToken:     data.verifyToken,
       igUserId:        igAccount?.id ?? null,
       igUsername:      igAccount?.username ?? null,
@@ -81,7 +69,7 @@ export async function connectMetaAccount(input: z.infer<typeof connectSchema>) {
       label:           data.label,
       ownerId:         data.ownerId ?? null,
       isActive:        true,
-      isConnected:     true,   // токен валиден — считаем подключённым
+      isConnected:     true,
     },
   });
 
@@ -117,8 +105,6 @@ export async function toggleMetaAccount(accountId: string, isActive: boolean) {
 const sendSchema = z.object({
   leadId:    z.string(),
   accountId: z.string(),
-  // 'MESSENGER' или 'INSTAGRAM' — какой именно поток в Meta использовать.
-  // Один MetaAccount может покрывать оба (если Page связана с IG Business).
   channel:   z.enum(['MESSENGER', 'INSTAGRAM']),
   body:      z.string().min(1).max(2000),
 });
@@ -126,11 +112,6 @@ const sendSchema = z.object({
 const SEND_MAX       = 30;
 const SEND_WINDOW_MS = 60 * 1000;
 
-/**
- * Отправляет сообщение в Messenger или Instagram Direct.
- * recipientId резолвится из существующего ChatThread (externalId =
- * PSID для Messenger или IGSID для Instagram).
- */
 export async function sendMetaFromLead(input: z.infer<typeof sendSchema>) {
   const user = await requireUser();
   if (!checkRateLimit(`meta-send:${user.id}`, SEND_MAX, SEND_WINDOW_MS)) {
@@ -159,7 +140,6 @@ export async function sendMetaFromLead(input: z.infer<typeof sendSchema>) {
     throw new Error('Instagram не подключён к этой Page');
   }
 
-  // Найти thread на нужном канале (MESSENGER или INSTAGRAM) с этим клиентом
   const thread = await db.chatThread.findFirst({
     where: {
       clientId:      lead.clientId,
@@ -172,8 +152,10 @@ export async function sendMetaFromLead(input: z.infer<typeof sendSchema>) {
     throw new Error('Клиент ещё не писал — сначала он должен начать диалог');
   }
 
+  // Расшифровываем pageAccessToken перед отправкой
+  const decryptedAccount = { ...account, pageAccessToken: decrypt(account.pageAccessToken) };
   const sender = data.channel === 'INSTAGRAM' ? sendInstagramText : sendMessengerText;
-  const res = await sender(account, thread.externalId, data.body);
+  const res = await sender(decryptedAccount, thread.externalId, data.body);
   if (res.error) {
     throw new Error(`Meta API отверг отправку: ${res.error.message}`);
   }

@@ -4,19 +4,9 @@
 // В отличие от /api/messages/lead-send этот endpoint не требует leadId —
 // resolver вытаскивает kind/account из самого thread'а.
 //
-// Inbox оперирует thread'ами а не лидами, и не всегда у thread'а есть leadId
-// (новый клиент без созданного лида).
-//
-// Request:  { threadId, body?, mediaUrl?, mediaName?, mediaType? }
-// Response: { ok: boolean, error? }
-//
-// Anna 04.05.2026: добавлена возможность прикреплять файлы — mediaUrl уже
-// был, но валидация требовала обязательное body. Теперь можно отправить
-// только файл.
-//
-// 06.05.2026 — пункт #4 аудита: добавлены permission filters для всех
-// 4 каналов. До этого SALES/LEGAL мог отправить через любой Telegram/
-// Viber/Meta канал зная threadId — включая личные каналы Anna.
+// 06.05.2026 — пункты #4 и #5 аудита:
+//   - permission filters для всех 4 каналов (защита от писать через чужой канал)
+//   - decrypt() для токенов перед отправкой (TG/Viber/Meta хранятся зашифрованно)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
@@ -33,6 +23,7 @@ import { sendMessage as sendTelegramMessage } from '@/lib/telegram';
 import { sendViberText } from '@/lib/viber';
 import { sendMessengerText, sendInstagramText } from '@/lib/meta';
 import { signMediaUrlForWorker } from '@/lib/storage/media-token';
+import { decrypt } from '@/lib/crypto';
 import { revalidatePath } from 'next/cache';
 
 const SEND_MAX       = 30;
@@ -77,7 +68,6 @@ export async function POST(req: NextRequest) {
 
     const ctx = { user, thread, msgBody: cleanBody, mediaUrl, mediaName, mediaType };
 
-    // Роутим по channel самого thread'а
     switch (thread.channel) {
       case 'WHATSAPP': return await sendWa(ctx);
       case 'TELEGRAM': return await sendTg(ctx);
@@ -134,8 +124,6 @@ async function sendWa(ctx: SendCtx) {
   const phone = thread.client?.phone || (thread.externalId ? `+${thread.externalId}` : null);
   if (!phone) return NextResponse.json({ ok: false, error: 'Нет номера получателя' }, { status: 400 });
 
-  // Worker без auth-сессии — даём абсолютный URL с mediaToken (5 мин TTL).
-  // В БД сохраняем оригинальный относительный mediaUrl без токена.
   let workerMediaUrl: string | undefined;
   if (mediaUrl) {
     try {
@@ -175,8 +163,6 @@ async function sendTg(ctx: SendCtx) {
   if (!thread.telegramAccountId || !thread.externalId) {
     return NextResponse.json({ ok: false, error: 'Нет Telegram канала или chat_id' }, { status: 400 });
   }
-  // 06.05.2026 — пункт #4 аудита: добавлен telegramAccountFilter.
-  // SALES/LEGAL не сможет писать через личный бот Anna.
   const account = await db.telegramAccount.findFirst({
     where: { id: thread.telegramAccountId, isActive: true, ...telegramAccountFilter(user) },
     select: { id: true, botToken: true, isConnected: true, label: true },
@@ -188,7 +174,8 @@ async function sendTg(ctx: SendCtx) {
     msgBody = msgBody ? `${msgBody}\n${mediaUrl}` : `📎 ${mediaName ?? 'Файл'}\n${mediaUrl}`;
   }
 
-  const sent = await sendTelegramMessage(account.botToken, thread.externalId, msgBody);
+  // Расшифровываем токен перед вызовом Telegram API
+  const sent = await sendTelegramMessage(decrypt(account.botToken), thread.externalId, msgBody);
   await db.$transaction([
     db.chatMessage.create({
       data: {
@@ -217,7 +204,6 @@ async function sendViber(ctx: SendCtx) {
   if (!thread.viberAccountId || !thread.externalId) {
     return NextResponse.json({ ok: false, error: 'Нет Viber канала или receiver_id' }, { status: 400 });
   }
-  // 06.05.2026 — пункт #4 аудита: добавлен viberAccountFilter.
   const account = await db.viberAccount.findFirst({
     where: { id: thread.viberAccountId, isActive: true, ...viberAccountFilter(user) },
   });
@@ -228,7 +214,9 @@ async function sendViber(ctx: SendCtx) {
     msgBody = msgBody ? `${msgBody}\n${mediaUrl}` : `📎 ${mediaName ?? 'Файл'}\n${mediaUrl}`;
   }
 
-  const res = await sendViberText(account, thread.externalId, msgBody);
+  // Расшифровываем authToken in-memory
+  const decryptedAccount = { ...account, authToken: decrypt(account.authToken) };
+  const res = await sendViberText(decryptedAccount, thread.externalId, msgBody);
   if (res.status !== 0) {
     return NextResponse.json({ ok: false, error: `Viber отверг: ${res.status_message}` }, { status: 400 });
   }
@@ -260,7 +248,6 @@ async function sendMeta(ctx: SendCtx) {
   if (!thread.metaAccountId || !thread.externalId) {
     return NextResponse.json({ ok: false, error: 'Нет Meta канала или recipient_id' }, { status: 400 });
   }
-  // 06.05.2026 — пункт #4 аудита: добавлен metaAccountFilter.
   const account = await db.metaAccount.findFirst({
     where: { id: thread.metaAccountId, isActive: true, ...metaAccountFilter(user) },
   });
@@ -271,8 +258,10 @@ async function sendMeta(ctx: SendCtx) {
     msgBody = msgBody ? `${msgBody}\n${mediaUrl}` : `📎 ${mediaName ?? 'Файл'}\n${mediaUrl}`;
   }
 
+  // Расшифровываем pageAccessToken in-memory
+  const decryptedAccount = { ...account, pageAccessToken: decrypt(account.pageAccessToken) };
   const send = thread.channel === 'INSTAGRAM' ? sendInstagramText : sendMessengerText;
-  const res  = await send(account, thread.externalId, msgBody);
+  const res  = await send(decryptedAccount, thread.externalId, msgBody);
   if (res.error) {
     return NextResponse.json({ ok: false, error: `Meta отверг: ${res.error.message}` }, { status: 400 });
   }
