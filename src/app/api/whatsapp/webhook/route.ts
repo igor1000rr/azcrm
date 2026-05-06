@@ -4,18 +4,8 @@
 //   - 'message.status' — статус доставки исходящего
 //   - 'connection'     — изменение статуса подключения
 //
-// Логика для входящих:
-//   1. Найти клиента по номеру телефона (нормализованному)
-//   2. Если нет — создать ТОЛЬКО клиента (без лида).
-//      Лид менеджер создаст вручную через карточку клиента, выбрав
-//      нужную воронку и этап. Это поведение по требованию Anna —
-//      раньше лид создавался автоматом в дефолтной воронке "Praca",
-//      что было неудобно: бывают консультации, ошибочные обращения,
-//      просто переписка. Теперь сначала переписка → потом ручное
-//      решение в какую воронку положить.
-//   3. Найти/создать ChatThread
-//   4. Создать ChatMessage, инкрементить unreadCount
-//   5. Обновить lastMessageAt в треде
+// 06.05.2026 — пункт #2.5 аудита: используем notifyChannelMessage вместо
+// notify — для общих каналов (ownerId === null) рассылается всем админам.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -23,13 +13,8 @@ import { db } from '@/lib/db';
 import { verifyWebhookToken } from '@/lib/whatsapp';
 import { normalizePhone } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
-import { notify } from '@/lib/notify';
+import { notifyChannelMessage } from '@/lib/notify';
 import { parseBody } from '@/lib/api-validation';
-
-// ============ ZOD-СХЕМЫ ============
-// Worker — наш код, но JSON.parse от него всё равно может прийти битый
-// (баг в worker, partial write, версия рассинхронизирована). Лучше упасть
-// на 400 чем на TypeError в логике.
 
 const IncomingMessageSchema = z.object({
   kind:        z.literal('message.in'),
@@ -70,7 +55,6 @@ type ConnectionEvent = z.infer<typeof ConnectionEventSchema>;
 type MessageStatus   = z.infer<typeof MessageStatusSchema>;
 
 export async function POST(req: NextRequest) {
-  // Проверка токена
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!verifyWebhookToken(token)) {
@@ -92,7 +76,6 @@ export async function POST(req: NextRequest) {
 }
 
 async function handleIncomingMessage(msg: IncomingMessage) {
-  // Дедупликация — если такое сообщение уже было, выходим
   const existing = await db.chatMessage.findFirst({
     where: { externalId: msg.externalId, whatsappAccountId: msg.accountId },
     select: { id: true },
@@ -101,16 +84,12 @@ async function handleIncomingMessage(msg: IncomingMessage) {
 
   const phone = normalizePhone(msg.fromPhone);
 
-  // Найти аккаунт
   const account = await db.whatsappAccount.findUnique({
     where: { id: msg.accountId },
     select: { id: true, ownerId: true, label: true, phoneNumber: true },
   });
   if (!account) return NextResponse.json({ error: 'account not found' }, { status: 404 });
 
-  // Найти клиента по номеру. Если нет — создаём ТОЛЬКО клиента.
-  // Лид менеджер создаст вручную из карточки клиента (см. комментарий
-  // в шапке файла).
   let client = await db.client.findUnique({ where: { phone } });
 
   if (!client) {
@@ -124,7 +103,6 @@ async function handleIncomingMessage(msg: IncomingMessage) {
     });
   }
 
-  // Найти/создать тред
   let thread = await db.chatThread.findFirst({
     where: {
       channel: 'WHATSAPP',
@@ -148,7 +126,6 @@ async function handleIncomingMessage(msg: IncomingMessage) {
     });
   }
 
-  // Создать сообщение
   const messageType = msg.type === 'text' ? 'TEXT'
     : msg.type === 'image' ? 'IMAGE'
     : msg.type === 'document' ? 'DOCUMENT'
@@ -183,16 +160,13 @@ async function handleIncomingMessage(msg: IncomingMessage) {
     }),
   ]);
 
-  // Уведомление + push владельцу канала (если есть)
-  if (account.ownerId) {
-    await notify({
-      userId: account.ownerId,
-      kind:   'NEW_MESSAGE',
-      title:  `Новое сообщение от ${msg.fromName || phone}`,
-      body:   msg.body?.slice(0, 100),
-      link:   `/inbox?thread=${thread.id}`,
-    });
-  }
+  // Уведомление: ownerId или все админы если общий канал (#2.5 аудита).
+  await notifyChannelMessage(account.ownerId, {
+    kind:   'NEW_MESSAGE',
+    title:  `Новое сообщение от ${msg.fromName || phone}`,
+    body:   msg.body?.slice(0, 100),
+    link:   `/inbox?thread=${thread.id}`,
+  });
 
   revalidatePath('/inbox');
   return NextResponse.json({ ok: true });

@@ -79,3 +79,44 @@ async function sendEmailNotification(input: NotifyInput): Promise<void> {
 export async function notifyMany(inputs: NotifyInput[]): Promise<void> {
   for (const input of inputs) await notify(input);
 }
+
+/**
+ * Уведомление о событии на канале связи (WhatsApp/Telegram/Viber/Meta).
+ *
+ * 06.05.2026 — пункт #2.5 аудита.
+ *
+ * Раньше в webhook'ах было:
+ *   if (account.ownerId) {
+ *     await notify({ userId: account.ownerId, ... });
+ *   }
+ *
+ * Если канал общий (ownerId === null — общий WhatsApp фирмы,
+ * поддержка Telegram-бот) — никто не получал push. Сообщения
+ * приходят в inbox, но Anna узнавала только случайно при заходе в систему.
+ *
+ * Теперь:
+ *   - Если ownerId есть — уведомляем владельца как раньше.
+ *   - Если ownerId === null — уведомляем всех активных ADMIN-юзеров.
+ *     Админы (обычно Anna) распределяют или отвечают сами.
+ */
+export async function notifyChannelMessage(
+  ownerId: string | null,
+  payload: Omit<NotifyInput, 'userId'>,
+): Promise<void> {
+  if (ownerId) {
+    await notify({ ...payload, userId: ownerId });
+    return;
+  }
+
+  // Общий канал — находим всех активных админов и рассылаем поочерёдно.
+  // Список обычно маленький (1–2 админа), notify() работает fast —
+  // нет смысла в Promise.all.
+  const admins = await db.user.findMany({
+    where:  { role: 'ADMIN', isActive: true },
+    select: { id: true },
+  });
+
+  for (const a of admins) {
+    await notify({ ...payload, userId: a.id });
+  }
+}

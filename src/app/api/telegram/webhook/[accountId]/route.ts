@@ -1,20 +1,13 @@
 // POST /api/telegram/webhook/:accountId
-// Telegram Bot API слёт обновления прямо сюда. Аутентификация через заголовок
-// X-Telegram-Bot-Api-Secret-Token, который мы задали при setWebhook (HMAC от accountId).
 //
-// Логика:
-//   1. Проверить secret
-//   2. Найти или создать клиента (по телефону из contact, или fallback по tg:<chatId>)
-//      БЕЗ автосоздания лида — менеджер создаст лид вручную из карточки
-//      клиента (Anna 01.05.2026).
-//   3. Найти/создать ChatThread (channel=TELEGRAM, externalId=chatId)
-//   4. Сохранить ChatMessage с дедупликацией по externalId = update_id
+// 06.05.2026 — пункт #2.5 аудита: notifyChannelMessage вместо notify —
+// для общих каналов рассылаем всем админам.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
-import { notify } from '@/lib/notify';
+import { notifyChannelMessage } from '@/lib/notify';
 import { normalizePhone } from '@/lib/utils';
 import { getWebhookSecret, type TelegramUpdate, type TelegramMessage } from '@/lib/telegram';
 import { parseBody } from '@/lib/api-validation';
@@ -24,7 +17,6 @@ import type { MessageType } from '@prisma/client';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-// ============ ZOD-СХЕМА TG UPDATE ============
 const TgUserSchema = z.object({
   id:         z.number().int(),
   is_bot:     z.boolean().optional(),
@@ -78,7 +70,6 @@ export async function POST(
 ) {
   const { accountId } = await ctx.params;
 
-  // 1. Secret валидация
   let expected: string;
   try { expected = getWebhookSecret(accountId); }
   catch (e) {
@@ -133,7 +124,6 @@ async function handleIncomingMessage(
     || `Telegram ${chatId}`;
   const tgUsername = fromUser?.username ?? null;
 
-  // Находим/создаём клиента (без автосоздания лида — Anna 01.05.2026).
   let client: { id: string } | null = null;
   let phone: string | null = null;
 
@@ -154,7 +144,6 @@ async function handleIncomingMessage(
   }
 
   if (!client) {
-    // Создаём ТОЛЬКО клиента. Лид менеджер создаст вручную через карточку.
     const fakePhone = phone || `tg:${chatId}`;
     const created = await db.client.create({
       data: {
@@ -167,7 +156,6 @@ async function handleIncomingMessage(
     client = { id: created.id };
   }
 
-  // 4. Тред
   let thread = await db.chatThread.findFirst({
     where: { channel: 'TELEGRAM', telegramAccountId: account.id, externalId: chatId },
   });
@@ -213,15 +201,13 @@ async function handleIncomingMessage(
     }),
   ]);
 
-  if (account.ownerId) {
-    await notify({
-      userId: account.ownerId,
-      kind:   'NEW_MESSAGE',
-      title:  `Telegram: ${tgUserName}`,
-      body:   preview,
-      link:   `/inbox?thread=${thread.id}`,
-    });
-  }
+  // #2.5 аудита: для общих каналов уведомляем всех админов.
+  await notifyChannelMessage(account.ownerId, {
+    kind:   'NEW_MESSAGE',
+    title:  `Telegram: ${tgUserName}`,
+    body:   preview,
+    link:   `/inbox?thread=${thread.id}`,
+  });
 
   revalidatePath('/inbox');
   return NextResponse.json({ ok: true });
