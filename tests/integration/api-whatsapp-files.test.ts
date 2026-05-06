@@ -1,4 +1,7 @@
 // Integration: API routes — whatsapp/[action], files/upload, upload-generic, delete
+//
+// 06.05.2026 — пункт #37 аудита: файлы/upload теперь использует validateMagicBytes
+// в дополнение к isAllowedFile. Мок file-validation расширен.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type AnyFn = ReturnType<typeof vi.fn>;
@@ -31,7 +34,9 @@ const mockSaveBuffer = vi.fn(async () => ({ url: '/api/files/uploads/test.pdf', 
 const mockRemoveFile = vi.fn();
 // Без implementation — иначе TS зафиксирует тип как { ok: true } и не даст
 // потом передать { ok: false, reason: '...' }. Дефолт ставится в beforeEach.
-const mockIsAllowedFile = vi.fn() as AnyFn;
+const mockIsAllowedFile      = vi.fn() as AnyFn;
+// 06.05.2026 — пункт #37 аудита: новая функция magic-bytes. По дефолту разрешает.
+const mockValidateMagicBytes = vi.fn() as AnyFn;
 const mockCanViewLead = vi.fn(() => true);
 
 vi.mock('@/lib/db',          () => ({ db: mockDb }));
@@ -55,7 +60,10 @@ vi.mock('@/lib/storage',     () => ({
   saveBuffer: mockSaveBuffer,
   removeFile: mockRemoveFile,
 }));
-vi.mock('@/lib/file-validation', () => ({ isAllowedFile: mockIsAllowedFile }));
+vi.mock('@/lib/file-validation', () => ({
+  isAllowedFile:       mockIsAllowedFile,
+  validateMagicBytes:  mockValidateMagicBytes,
+}));
 
 function makeReq(opts: {
   body?: unknown;
@@ -85,13 +93,18 @@ beforeEach(() => {
   mockCheckRateLimit.mockReset();
   mockCheckRateLimit.mockReturnValue(true);
   [mockWorkerConnect, mockWorkerDisconnect, mockWorkerStatus, mockWorkerSendMessage,
-   mockSaveBuffer, mockRemoveFile, mockIsAllowedFile, mockCanViewLead].forEach((m) => m.mockReset());
+   mockSaveBuffer, mockRemoveFile, mockIsAllowedFile, mockValidateMagicBytes,
+   mockCanViewLead].forEach((m) => m.mockReset());
   mockWorkerConnect.mockResolvedValue({ qr: 'qr-data', status: 'pending' });
   mockWorkerDisconnect.mockResolvedValue({ ok: true });
   mockWorkerStatus.mockResolvedValue({ ok: true, isConnected: true });
   mockWorkerSendMessage.mockResolvedValue({ ok: true, messageId: 'msg-123' });
   mockSaveBuffer.mockResolvedValue({ url: '/api/files/uploads/test.pdf', size: 1024 });
   mockIsAllowedFile.mockReturnValue({ ok: true });
+  // По дефолту magic-bytes пропускает (ok: true) — иначе все тесты с
+  // фейковым File('x'.repeat(100)) валились бы т.к. реальных PDF magic
+  // байт у них нет.
+  mockValidateMagicBytes.mockReturnValue({ ok: true });
   mockCanViewLead.mockReturnValue(true);
 });
 
@@ -121,7 +134,6 @@ describe('POST /api/whatsapp/[action]', () => {
     mockDb.whatsappAccount.findFirst.mockResolvedValue({ id: 'wa-1' });
     const res = await callWA('connect', { accountId: 'wa-1' });
     expect(res.status).toBe(200);
-    // workerConnect теперь принимает opts вторым аргументом — { force, wipe }
     expect(mockWorkerConnect).toHaveBeenCalledWith('wa-1', { force: false, wipe: false });
     expect((res.data as { qr: string }).qr).toBe('qr-data');
   });
@@ -214,6 +226,18 @@ describe('POST /api/files/upload', () => {
   it('isAllowedFile вернул ok=false → 415', async () => {
     mockIsAllowedFile.mockReturnValue({ ok: false, reason: 'Исполняемые файлы запрещены' });
     const file = makeFile('x.exe', 'application/octet-stream');
+    const { POST } = await import('@/app/api/files/upload/route');
+    const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-1' }) }) as never) as unknown as MockResponse;
+    expect(res.status).toBe(415);
+  });
+  it('validateMagicBytes вернул ok=false → 415 (#37 аудита)', async () => {
+    // Атакующий обманул isAllowedFile (расширение .pdf, MIME application/pdf),
+    // но содержимое файла — не PDF magic bytes. Должны вернуть 415.
+    mockIsAllowedFile.mockReturnValue({ ok: true });
+    mockValidateMagicBytes.mockReturnValue({
+      ok: false, reason: 'Содержимое не соответствует расширению .pdf',
+    });
+    const file = makeFile('virus.pdf', 'application/pdf');
     const { POST } = await import('@/app/api/files/upload/route');
     const res = await POST(makeReq({ formData: makeForm({ file, clientId: 'cl-1' }) }) as never) as unknown as MockResponse;
     expect(res.status).toBe(415);
