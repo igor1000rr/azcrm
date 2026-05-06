@@ -131,22 +131,6 @@ export default async function LeadPage({ params }: PageProps) {
 
   // ============ ОБЪЕДИНЁННАЯ ПЕРЕПИСКА КЛИЕНТА (все каналы) ============
   // Anna хочет видеть всю историю общения по клиенту независимо от канала.
-  //
-  // Anna 04.05.2026: «Обратные смс не видны в переписке. Ранее было видно».
-  // Корень — раньше переписка фильтровалась по permission scope аккаунта
-  // (видимые юзеру каналы — свои + общие). Если клиент написал на канал
-  // другого менеджера (например его передали, или ответил на номер компании
-  // не закреплённый за Anna), thread имел whatsappAccountId недоступный для
-  // Anna → не попадал в waIds → весь thread с входящими отфильтрован.
-  //
-  // Фикс: разделяю фильтры
-  //   - sendableAccountFilter — кто может ОТПРАВЛЯТЬ (свои + общие, как было).
-  //   - чтение thread'ов клиента — без permission'а: Anna уже прошла
-  //     canViewLead, значит должна видеть всю историю переписки клиента
-  //     в любом канале. Permission по каналу важен только для отправки.
-  //
-  // Безопасность: если у юзера нет canViewLead, он сюда не попадёт (notFound
-  // выше). Так что показ всех thread'ов клиента не расширяет доступ.
 
   const sendableAccountFilter = user.role === 'ADMIN'
     ? { isActive: true }
@@ -178,9 +162,6 @@ export default async function LeadPage({ params }: PageProps) {
     }),
   ]);
 
-  // ВСЕ threads клиента — без фильтра по аккаунту. Через include подтянем
-  // accountLabel для отображения в Bubble — даже если канал юзеру недоступен,
-  // Prisma вернёт его данные (мы лишь не позволим ОТПРАВИТЬ из него).
   const clientThreads = await db.chatThread.findMany({
     where: { clientId: lead.clientId },
     select: {
@@ -192,9 +173,17 @@ export default async function LeadPage({ params }: PageProps) {
   });
   const threadIds = clientThreads.map((t) => t.id);
 
-  const chatMessagesRaw = threadIds.length === 0 ? [] : await db.chatMessage.findMany({
+  // 06.05.2026 — пункт #27 аудита: раньше было orderBy: 'asc' + take: 500.
+  // Если у клиента >500 сообщений (долгий роман—этот легальный кейс для
+  // клиента который работает несколько лет) — показывались САМЫЕ СТАРЫЕ,
+  // а свежие обрезались. Anna видела первые 500 сообщений из 2024 и не видела
+  // обмена за последние недели.
+  //
+  // Фикс: берём ПОСЛЕДНИЕ 500 через desc, затем reverse() для UI
+  // которое ожидает хронологический порядок (старые сверху, новые внизу).
+  const chatMessagesRaw = threadIds.length === 0 ? [] : (await db.chatMessage.findMany({
     where: { threadId: { in: threadIds } },
-    orderBy: { createdAt: 'asc' },
+    orderBy: { createdAt: 'desc' },
     take: 500,
     include: {
       sender:          { select: { name: true } },
@@ -204,13 +193,9 @@ export default async function LeadPage({ params }: PageProps) {
       metaAccount:     { select: { id: true, label: true } },
       thread:          { select: { channel: true } },
     },
-  });
+  })).reverse();
 
   // ============ КНОПКА «WhatsApp» В КАРТОЧКЕ (legacy: ведёт на самый свежий WA-thread) ============
-  // Раньше слала /inbox?phone=...&account=... — но /inbox эти параметры
-  // игнорирует. Сейчас резолвим конкретный WA thread+channel здесь.
-  // Для других каналов кнопок пока нет — переписка показывается в LeadChatPanel
-  // прямо в карточке.
   const waIdsForSend = waAccs.map((a) => a.id);
   const latestWaThread     = clientThreads.find((t) => t.whatsappAccountId);
   const leadWaAccountId    = lead.whatsappAccountId;
@@ -231,8 +216,6 @@ export default async function LeadPage({ params }: PageProps) {
 
   let whatsappHref = '/inbox';
   if (latestWaThread && latestWaThread.whatsappAccountId) {
-    // Открываем существующий WA-thread даже если канал в другом permission scope —
-    // /inbox extraThread fallback покажет thread по id (см. /inbox/page.tsx).
     whatsappHref = `/inbox?thread=${latestWaThread.id}&channel=${latestWaThread.whatsappAccountId}`;
   } else if (preferredWaAccountId) {
     whatsappHref = `/inbox?channel=${preferredWaAccountId}`;
@@ -277,7 +260,6 @@ export default async function LeadPage({ params }: PageProps) {
     } else if (m.viberAccountId && m.viberAccount) {
       kind = 'VIBER';    accountId = m.viberAccount.id;    accountLabel = m.viberAccount.label;
     } else if (m.metaAccountId && m.metaAccount) {
-      // Различаем MESSENGER vs INSTAGRAM по channel самого thread'а
       kind = m.thread.channel === 'INSTAGRAM' ? 'INSTAGRAM' : 'MESSENGER';
       accountId = m.metaAccount.id;
       accountLabel = m.metaAccount.label;
@@ -300,8 +282,6 @@ export default async function LeadPage({ params }: PageProps) {
   });
 
   // Список каналов для селектора отправки — только sendable (свои + общие).
-  // Один MetaAccount разворачивается в два пункта (Messenger + Instagram)
-  // если оба активны на Page.
   const availableChatAccounts: Array<{
     kind:        'WHATSAPP' | 'TELEGRAM' | 'VIBER' | 'MESSENGER' | 'INSTAGRAM';
     accountId:   string;

@@ -11,6 +11,13 @@
 // Конфиг (API-ключи и base URLs) читается из таблицы Setting через
 // getCallAnalysisConfig() с fallback на ENV. Настраивается через UI на
 // /settings/call-analysis.
+//
+// 06.05.2026 — пункты #19/#97 аудита:
+//   - recovery для застрявших PROCESSING звонков (процесс мог упасть
+//     между update PROCESSING и финальным статусом). Сбрасываем в PENDING
+//     если PROCESSING > 30 мин.
+//   - пункт #87: orderBy: 'asc' (сначала старые) вместо 'desc' — иначе
+//     при большой очереди старые звонки никогда не доходят до обработки.
 
 import { db } from '@/lib/db';
 import { notify } from '@/lib/notify';
@@ -23,6 +30,11 @@ import { logger } from '@/lib/logger';
 import type { CallSentiment } from '@prisma/client';
 
 const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL ?? 'http://localhost:3000';
+
+// PROCESSING статус дольше этого времени — значит процесс упал. Реальный
+// processCall работает быстрее: Whisper transcribe обычно ~10-30с,
+// LLM analyze ~5с. Даже звонок в пару часов обрабатывается за минуты.
+const PROCESSING_STALE_MS = 30 * 60 * 1000; // 30 мин
 
 const SYSTEM_PROMPT = `Ты анализируешь телефонные разговоры менеджера юридической миграционной фирмы с клиентом.
 Фирма помогает с легализацией в Польше: карта побыта, виза, karta praca.
@@ -286,18 +298,65 @@ interface BatchResult {
   done:      number;
   skipped:   number;
   failed:    number;
+  recovered: number;   // сколько зависших PROCESSING было сброшено в PENDING
 }
 
-/** Берёт пачку PENDING звонков и обрабатывает по одному. */
+/**
+ * Берёт пачку PENDING звонков и обрабатывает по одному.
+ *
+ * Перед этим — recovery зависших PROCESSING (#19/#97 аудита).
+ * Сценарий: сервер выключился между update PROCESSING и финальным
+ * статусом — звонок навсегда залипает в PROCESSING. Определяем «зависшие»
+ * как updatedAt старше 30 мин в этом статусе — всё что реально сейчас обрабатывается
+ * обычно укладывается в 60с. Сбрасываем их в PENDING — они будут взятыс на обработку
+ * в следующих вызовах cron'а.
+ *
+ * Пункт #87: orderBy: 'asc' — сначала старые. До этого был 'desc' и при
+ * большой очереди свежие звонки вытесняли старые — старые никогда не
+ * доходили до обработки.
+ */
 export async function processPendingCalls(limit = 5): Promise<BatchResult> {
+  // 1. Recovery зависших PROCESSING → сброс в PENDING
+  const staleBefore = new Date(Date.now() - PROCESSING_STALE_MS);
+  const staleCalls = await db.call.findMany({
+    where: {
+      transcriptStatus: 'PROCESSING',
+      // updatedAt в схеме Call нет — используем transcribedAt или createdAt
+      // как fallback. Для «зависших» это приближенно верно: если звонок в
+      // PROCESSING > 30 мин от своего createdAt — точно лежит без движения
+      // (реальный transcribe быстрее).
+      createdAt: { lt: staleBefore },
+    },
+    select: { id: true },
+    take:   50,
+  });
+  let recovered = 0;
+  if (staleCalls.length > 0) {
+    const result = await db.call.updateMany({
+      where: {
+        id: { in: staleCalls.map((c) => c.id) },
+        transcriptStatus: 'PROCESSING',  // защита от race condition
+      },
+      data: {
+        transcriptStatus: 'PENDING',
+        transcriptError:  'восстановлен из PROCESSING (процесс сбойнул)',
+      },
+    });
+    recovered = result.count;
+    if (recovered > 0) {
+      logger.warn(`[call-analysis] recovered ${recovered} stale PROCESSING calls`);
+    }
+  }
+
+  // 2. Обработка PENDING — сначала старые (#87)
   const calls = await db.call.findMany({
     where:   { transcriptStatus: 'PENDING' },
     select:  { id: true },
-    orderBy: { startedAt: 'desc' },
+    orderBy: { startedAt: 'asc' },
     take:    limit,
   });
 
-  const result: BatchResult = { processed: 0, done: 0, skipped: 0, failed: 0 };
+  const result: BatchResult = { processed: 0, done: 0, skipped: 0, failed: 0, recovered };
 
   for (const c of calls) {
     const status = await processCall(c.id);

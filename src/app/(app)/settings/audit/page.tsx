@@ -20,11 +20,14 @@ export default async function AuditPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const page = Math.max(1, Number(params.page ?? 1));
 
+  // 06.05.2026 — пункт #103 аудита: все contains в PostgreSQL чувствительны
+  // к регистру по умолчанию. Anna искала «lead» и не находила «Lead.update».
+  // Фикс: mode: 'insensitive' для всех трёх полей поиска.
   const where = params.q
     ? {
         OR: [
-          { action: { contains: params.q } },
-          { entityType: { contains: params.q } },
+          { action:     { contains: params.q, mode: 'insensitive' as const } },
+          { entityType: { contains: params.q, mode: 'insensitive' as const } },
           { user: { name: { contains: params.q, mode: 'insensitive' as const } } },
         ],
       }
