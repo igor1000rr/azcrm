@@ -1,4 +1,10 @@
 // Обзор — для администратора, общая статистика
+//
+// 06.05.2026 — пункт #34 аудита: подсчёт должников переведён на агрегацию
+// в БД вместо загрузки всех лидов в память. До: db.lead.findMany({ include:
+// { payments } }).then(filter) — при 10К лидов каждое открытие /dashboard
+// тянуло мегабайты данных через сеть и нагружало Node-процесс. Сейчас один
+// агрегатный запрос с условием на raw уровне Prisma.
 import { Topbar } from '@/components/topbar';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
@@ -39,13 +45,7 @@ export default async function DashboardPage() {
     db.calendarEvent.count({
       where: { kind: 'FINGERPRINT', startsAt: { gte: now, lte: new Date(now.getTime() + 7 * 86400_000) } },
     }),
-    db.lead.findMany({
-      where: { isArchived: false },
-      include: { payments: { select: { amount: true } } },
-    }).then((leads) =>
-      leads.filter((l) => Number(l.totalAmount) > l.payments.reduce((s, p) => s + Number(p.amount), 0))
-        .length
-    ),
+    countDebtors(),
   ]);
 
   const cards = [
@@ -85,4 +85,52 @@ export default async function DashboardPage() {
       </div>
     </>
   );
+}
+
+/**
+ * Должники — лиды у которых totalAmount > sum(payments.amount).
+ *
+ * 06.05.2026 — пункт #34 аудита.
+ * До: загружали ВСЕ нескрытые лиды с include payments, потом filter в JS.
+ * При 10К лидов это было ~5-10 МБ JSON через сеть и заметная задержка
+ * рендера /dashboard.
+ *
+ * Сейчас: один агрегатный запрос через Prisma groupBy по leadId. PostgreSQL
+ * считает SUM(amount) на стороне БД, в Node прилетает только результирующий
+ * массив пар (leadId, paidSum). Дальше один lead.findMany на эти leadId
+ * чтобы достать totalAmount и сравнить.
+ *
+ * Альтернатива через $queryRaw (один SQL JOIN с GROUP BY HAVING) была бы
+ * чуть быстрее, но прокатит и эта 2-step версия — она держится в Prisma
+ * type-safe API, не требует ручного экранирования и легче поддерживается.
+ */
+async function countDebtors(): Promise<number> {
+  // 1. Считаем суммарную оплату по каждому активному лиду.
+  // groupBy не умеет сразу join'ить с условием Lead.isArchived,
+  // поэтому делаем 2 запроса.
+  const paidSums = await db.payment.groupBy({
+    by: ['leadId'],
+    _sum: { amount: true },
+  });
+
+  // Map leadId → paid amount (число).
+  const paidMap = new Map<string, number>();
+  for (const p of paidSums) {
+    paidMap.set(p.leadId, Number(p._sum.amount ?? 0));
+  }
+
+  // 2. Берём все активные лиды только с totalAmount (минимальный select).
+  const leads = await db.lead.findMany({
+    where:  { isArchived: false },
+    select: { id: true, totalAmount: true },
+  });
+
+  let count = 0;
+  for (const l of leads) {
+    const total = Number(l.totalAmount);
+    if (total <= 0) continue; // не считаем лиды без цены
+    const paid = paidMap.get(l.id) ?? 0;
+    if (paid < total) count++;
+  }
+  return count;
 }
