@@ -1,10 +1,15 @@
 // NextAuth v5 — credentials провайдер для AZ Group CRM
+//
+// 06.05.2026 — добавлено логирование попыток входа в AuditLog. До этого
+// был только in-memory rate-limit по email (10/15мин). Теперь каждая
+// успешная/неуспешная попытка пишется в AuditLog с IP/UA — Anna может
 import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { db } from './db';
 import { checkRateLimit, resetRateLimit } from './rate-limit';
 import { verifyTotp, findBackupCodeMatch, isLikelyTotpCode } from './two-factor';
+import { audit } from './audit';
 import type { UserRole } from '@prisma/client';
 import { logger } from '@/lib/logger';
 
@@ -24,11 +29,21 @@ declare module 'next-auth' {
   }
 }
 
-// Лимит попыток логина: 10 за 15 минут на email. Защищает И от brute-force
-// пароля, И от перебора TOTP-кодов (всего 10^6 = миллион вариантов, при
-// 10 попытках в 15 мин подбор займёт миллионы лет).
 const LOGIN_MAX        = 10;
 const LOGIN_WINDOW_MS  = 15 * 60 * 1000;
+
+// Логируем неудачную попытку входа. userId=null потому что юзер не
+// авторизовался. email и reason идут в after-payload. audit() сам
+// вытащит IP и user-agent из next/headers.
+async function logFailedLogin(email: string, reason: string) {
+  await audit({
+    userId:     null,
+    action:     'auth.failed_login',
+    entityType: 'User',
+    entityId:   undefined,
+    after:      { email, reason },
+  });
+}
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
@@ -39,8 +54,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       credentials: {
         email:    { label: 'Email',  type: 'email' },
         password: { label: 'Пароль', type: 'password' },
-        // 2FA: TOTP-код или backup-код (XXXX-XXXX). Передаётся только
-        // на втором шаге логина после precheckLogin().
         totp:     { label: 'Код 2FA', type: 'text' },
       },
       async authorize(credentials) {
@@ -52,39 +65,41 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const rlKey = `login:${email}`;
         if (!checkRateLimit(rlKey, LOGIN_MAX, LOGIN_WINDOW_MS)) {
           logger.warn(`[auth] rate-limit hit for ${email}`);
+          await logFailedLogin(email, 'rate_limit');
           return null;
         }
 
         const user = await db.user.findUnique({ where: { email } });
-        if (!user) return null;
-        if (!user.isActive) return null;
+        if (!user) {
+          await logFailedLogin(email, 'unknown_email');
+          return null;
+        }
+        if (!user.isActive) {
+          await logFailedLogin(email, 'inactive');
+          return null;
+        }
 
         const ok = await bcrypt.compare(password, user.passwordHash);
-        if (!ok) return null;
+        if (!ok) {
+          await logFailedLogin(email, 'bad_password');
+          return null;
+        }
 
         // ============ 2FA проверка ============
-        // Если у юзера активирована 2FA, требуем валидный TOTP или backup-код.
-        // Без них return null = ошибка signIn — фронт должен ДО этого сделать
-        // precheckLogin() и узнать что нужен код, чтобы показать второй шаг.
         if (user.twoFactorEnabled && user.totpSecret) {
           if (!totp) {
-            // Это страховка на случай если фронт не сделал precheck — без totp
-            // не пускаем. На UI это покажется как «Неверные данные», поэтому
-            // важно чтобы фронт правильно вызывал precheckLogin().
+            await logFailedLogin(email, '2fa_required');
             return null;
           }
 
           let twoFaOk = false;
           if (isLikelyTotpCode(totp)) {
-            // 6 цифр — стандартный TOTP
             twoFaOk = verifyTotp(user.totpSecret, totp);
           } else {
-            // Иначе пробуем как backup-код (XXXX-XXXX)
             const codes = (user.twoFactorBackupCodes ?? []) as string[];
             const matchIdx = await findBackupCodeMatch(codes, totp);
             if (matchIdx >= 0) {
               twoFaOk = true;
-              // Удаляем использованный backup-код — они одноразовые
               const remaining = codes.filter((_, i) => i !== matchIdx);
               await db.user.update({
                 where: { id: user.id },
@@ -93,7 +108,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             }
           }
 
-          if (!twoFaOk) return null;
+          if (!twoFaOk) {
+            await logFailedLogin(email, 'bad_2fa');
+            return null;
+          }
         }
 
         resetRateLimit(rlKey);
@@ -101,6 +119,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         await db.user.update({
           where: { id: user.id },
           data:  { lastSeenAt: new Date(), status: 'ONLINE' },
+        });
+
+        // Логируем успешный вход — это нужно для compliance и расследования
+        // инцидентов. При входе с нового необычного IP Anna увидит в журнале.
+        await audit({
+          userId:     user.id,
+          action:     'auth.success',
+          entityType: 'User',
+          entityId:   user.id,
         });
 
         return {
@@ -121,7 +148,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         t.role = (user as { role?: UserRole }).role;
         t.mustChangePassword = (user as { mustChangePassword?: boolean }).mustChangePassword ?? false;
       }
-      // При вызове update() из клиента (после смены пароля) — перечитаем флаг из БД
       if (trigger === 'update' && (token as { uid?: string }).uid) {
         const fresh = await db.user.findUnique({
           where: { id: (token as { uid: string }).uid },
@@ -156,21 +182,7 @@ export async function currentUser() {
  * Хелпер: получить юзера ИЛИ выкинуть 401 (для server actions).
  *
  * 06.05.2026 — пункт #117 аудита: добавлена проверка User.isActive
- * по БД на каждом запросе. До этого JWT кэшировался на 30 дней,
- * и при деактивации (toggleUserActive(id, false)) уволенный
- * сотрудник продолжал работать в текущей сессии до её истечения.
- *
- * Сейчас requireUser() при каждом вызове сходит в БД за isActive.
- * Это +1 SELECT на каждый action, но БД на той же VPS — overhead
- * <1ms. После деактивации сотрудник на следующем запросе получит
- * 401 «Учётная запись отключена».
- *
- * mustChangePassword тоже проверяется здесь — если флаг True и
- * текущий route не /change-password, выкидываем 403 с указанием
- * куда идти. Middleware дополнительно делает redirect.
- *
- * Для production масштабов >100 юзеров стоит добавить кэш на ~30 сек,
- * но для команды Anna на 8 человек overhead незаметный.
+ * по БД на каждом запросе.
  */
 export async function requireUser() {
   const user = await currentUser();
@@ -180,16 +192,12 @@ export async function requireUser() {
     throw e;
   }
 
-  // Проверяем isActive в БД на каждом запросе (#117 аудита).
-  // Это нужно чтобы деактивация юзера (увольнение) сразу обрывала
-  // активные сессии, а не ждала истечения 30-дневного JWT.
   const fresh = await db.user.findUnique({
     where:  { id: user.id },
     select: { isActive: true, mustChangePassword: true },
   });
 
   if (!fresh) {
-    // Юзер удалён из БД — выкидываем как 401
     const e = new Error('Учётная запись не найдена');
     (e as Error & { statusCode?: number }).statusCode = 401;
     throw e;
@@ -201,8 +209,6 @@ export async function requireUser() {
     throw e;
   }
 
-  // Возвращаем актуальный mustChangePassword (флаг мог поменяться
-  // между запросами — например, админ нажал «сбросить пароль»).
   return { ...user, mustChangePassword: fresh.mustChangePassword };
 }
 
