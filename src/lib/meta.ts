@@ -84,6 +84,33 @@ export async function sendInstagramText(
   return sendMessengerText(account, recipientIgsid, text);
 }
 
+// ============ ОТПИСКА PAGE ОТ WEBHOOK ============
+
+/**
+ * Отозвать подписку Page на события нашего FB App — DELETE /me/subscribed_apps.
+ *
+ * 06.05.2026 — пункт #2.16 аудита.
+ *
+ * ПРОБЛЕМА: при удалении MetaAccount из CRM подписка Page на
+ * события в FB НЕ отзывалась. Meta продолжала слать на webhook входящие
+ * сообщения, наш endpoint отвечал 401 (account not found) — это трата
+ * ресурсов и Meta может отключить webhook из-за повторных ошибок.
+ *
+ * РЕШЕНИЕ: вызываем DELETE перед db.delete. Ошибки от Meta логируем
+ * но не падаем — важнее удалить из нашей БД (право Anna), чем
+ * идеально закрыть на стороне Meta. Если Meta API недоступен или токен
+ * уже expired — всё равно удаляем из нашей БД.
+ *
+ * https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
+ */
+export async function unsubscribePageWebhook(
+  pageAccessToken: string,
+): Promise<{ success?: boolean; error?: { message: string } }> {
+  const url = `${GRAPH}/me/subscribed_apps?access_token=${encodeURIComponent(pageAccessToken)}`;
+  const res = await fetch(url, { method: 'DELETE' });
+  return res.json();
+}
+
 // ============ ОБРАБОТКА ВХОДЯЩЕГО WEBHOOK ============
 
 interface MetaMessagingEvent {

@@ -7,15 +7,20 @@
 // смысле (FB прислал в публичном webhook URL), хотя теоретически тоже можно.
 // При чтении (sendMetaFromLead, webhook handler) — расшифровываем через decrypt().
 //
+// 06.05.2026 — пункт #2.16 аудита: disconnectMetaAccount теперь вызывает
+// unsubscribePageWebhook перед удалением записи из БД. До: Meta продолжала слать
+// события на webhook после удаления Page из CRM, бессмысленно тратя ресурсы.
+//
 // Lazy migration: legacy plaintext токены без префикса v1: возвращаются как есть.
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireAdmin, requireUser } from '@/lib/auth';
-import { sendMessengerText, sendInstagramText } from '@/lib/meta';
+import { sendMessengerText, sendInstagramText, unsubscribePageWebhook } from '@/lib/meta';
 import { canViewLead } from '@/lib/permissions';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 import { encrypt, decrypt } from '@/lib/crypto';
 
 const GRAPH = 'https://graph.facebook.com/v19.0';
@@ -83,10 +88,29 @@ export async function connectMetaAccount(input: z.infer<typeof connectSchema>) {
   };
 }
 
+/**
+ * Отключение Meta-канала.
+ *
+ * 06.05.2026 — пункт #2.16 аудита: перед удалением записи из НАШЕЙ БД
+ * вызываем DELETE /me/subscribed_apps на стороне Meta. Так Page перестанет
+ * шлать нам входящие сообщения. Ошибки игнорируем (логируем warn) —
+ * важнее удалить из нашей БД, чем идеально закрыть на стороне Meta
+ * (токен мог expired, сеть недоступна, и тд).
+ */
 export async function disconnectMetaAccount(accountId: string) {
   await requireAdmin();
   const account = await db.metaAccount.findUnique({ where: { id: accountId } });
   if (!account) throw new Error('Аккаунт не найден');
+
+  // Отзываем подписку Page в Meta (#2.16 аудита)
+  try {
+    const result = await unsubscribePageWebhook(decrypt(account.pageAccessToken));
+    if (result.error) {
+      logger.warn(`[meta] unsubscribe error for ${account.pageName}:`, result.error.message);
+    }
+  } catch (e) {
+    logger.warn('[meta] unsubscribe failed (игнорируем):', e);
+  }
 
   await db.metaAccount.delete({ where: { id: accountId } });
   revalidatePath('/settings/channels');
