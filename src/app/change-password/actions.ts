@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { audit } from '@/lib/audit';
-import { PASSWORD_MIN_LENGTH } from '@/app/(app)/settings/team/actions';
+import { PASSWORD_MIN_LENGTH } from '@/lib/password-policy';
 
 const schema = z.object({
   currentPassword: z.string().min(1, 'Введите текущий пароль'),
@@ -24,8 +24,8 @@ const schema = z.object({
  * Смена собственного пароля. Используется и при принудительной смене
  * (mustChangePassword=true), и для добровольной смены из профиля.
  *
- * 06.05.2026 — пункт #33 аудита: минимум пароля унифицирован с team/actions.
- * До: 8 здесь, 6 в team — различные правила в разных местах.
+ * 06.05.2026 — пункт #33 аудита: минимум пароля импортируется из
+ * @/lib/password-policy — единый источник истины для всех мест валидации.
  */
 export async function changeMyPassword(
   input: z.infer<typeof schema>,

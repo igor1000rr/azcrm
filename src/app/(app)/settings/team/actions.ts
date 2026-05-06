@@ -3,8 +3,8 @@
 // Управление пользователями (только ADMIN)
 //
 // 06.05.2026 — пункт #33 аудита: унифицирован минимум пароля всех файлах.
-// До: в team/actions.ts было min(6), в change-password — min(8), seed генерировал 12.
-// Сейчас всюду 12 — это минимум для современного пароля без 2FA, рекомендовано NIST.
+// PASSWORD_MIN_LENGTH импортируется из @/lib/password-policy (вынесена из этого
+// файла — 'use server' разрешает экспортировать только async функции).
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
@@ -12,9 +12,7 @@ import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { audit } from '@/lib/audit';
-
-// Минимум длины пароля — источник истины. Изменение одного числа распространяется на все места.
-export const PASSWORD_MIN_LENGTH = 12;
+import { PASSWORD_MIN_LENGTH } from '@/lib/password-policy';
 
 const userSchema = z.object({
   id:       z.string().optional(),

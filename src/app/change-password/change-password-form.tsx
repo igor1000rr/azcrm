@@ -3,9 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { changeMyPassword } from './actions';
-
-// 06.05.2026 — пункт #33 аудита: фронт-валидация тоже на 12 символов.
-const PASSWORD_MIN_LENGTH = 12;
+import { PASSWORD_MIN_LENGTH } from '@/lib/password-policy';
 
 export function ChangePasswordForm() {
   const router = useRouter();
