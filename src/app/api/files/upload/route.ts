@@ -1,12 +1,16 @@
 // POST /api/files/upload  — multipart/form-data
 // Загрузка файла в карточку клиента (общая папка)
+//
+// 06.05.2026 — пункт #37 аудита: добавлена magic-bytes проверка после
+// считывания буфера. Это вторая линия защиты после isAllowedFile.
 
 import { NextRequest, NextResponse } from 'next/server';
+import path from 'node:path';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { clientVisibilityFilter } from '@/lib/permissions';
 import { saveBuffer } from '@/lib/storage';
-import { isAllowedFile } from '@/lib/file-validation';
+import { isAllowedFile, validateMagicBytes } from '@/lib/file-validation';
 import { revalidatePath } from 'next/cache';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 МБ
@@ -27,7 +31,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'file too large (max 50 MB)' }, { status: 413 });
     }
 
-    // Whitelist расширений и MIME — отбиваем .exe/.html/.php/.sh
+    // 1. Whitelist расширений и MIME — отбиваем .exe/.html/.php/.sh
     const check = isAllowedFile(file.name, file.type || '');
     if (!check.ok) {
       return NextResponse.json({ error: check.reason }, { status: 415 });
@@ -41,6 +45,17 @@ export async function POST(req: NextRequest) {
     if (!client) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
     const buffer = Buffer.from(await file.arrayBuffer());
+
+    // 2. Magic-bytes — проверка реального содержимого на соответствие
+    // расширению (#37 аудита). Защита от случая когда атакующий
+    // переименовал .exe в .pdf и выставил Content-Type: application/pdf —
+    // первые байты файла его выдадут (.exe начинается с MZ, не с %PDF).
+    const ext = path.extname(file.name).toLowerCase();
+    const magicCheck = validateMagicBytes(buffer, ext);
+    if (!magicCheck.ok) {
+      return NextResponse.json({ error: magicCheck.reason }, { status: 415 });
+    }
+
     const saved = await saveBuffer('uploads', buffer, file.name);
 
     const record = await db.clientFile.create({
