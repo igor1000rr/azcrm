@@ -15,6 +15,8 @@ import { auth } from '@/lib/auth';
 //   /api/push/vapid                — публичный VAPID-ключ для браузера
 //   /api/public/*                  — формы лендинга. Защита: rate-limit по IP,
 //                                    honeypot, CORS-allowlist, валидация zod.
+//   /api/health                    — простой health-check для uptime мониторинга.
+//                                    Без auth, возвращает 200 если БД отвечает.
 const PUBLIC_API_PREFIXES = [
   '/api/auth',
   '/api/onlyoffice/callback',
@@ -26,6 +28,7 @@ const PUBLIC_API_PREFIXES = [
   '/api/files',
   '/api/push/vapid',
   '/api/public',
+  '/api/health',
 ];
 
 // Страницы куда можно ходить даже с mustChangePassword=true. Сама
@@ -56,9 +59,7 @@ export default auth((req) => {
 
   // 06.05.2026 — пункты #32 + #64 аудита:
   // Если юзер залогинен и mustChangePassword=true — redirect на
-  // /change-password из любого другого места. До этого флаг в JWT
-  // был, но никто его не читал — сотрудник мог продолжать работать
-  // со сброшенным паролем.
+  // /change-password из любого другого места.
   if (req.auth?.user?.mustChangePassword) {
     const allowed = CHANGE_PASSWORD_ALLOW.some(
       (p) => path === p || path.startsWith(p + '/'),

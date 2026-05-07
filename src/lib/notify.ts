@@ -77,7 +77,8 @@ async function sendEmailNotification(input: NotifyInput): Promise<void> {
 }
 
 export async function notifyMany(inputs: NotifyInput[]): Promise<void> {
-  for (const input of inputs) await notify(input);
+  // Promise.all — параллельно (07.05.2026 заменило for await для ускорения).
+  await Promise.all(inputs.map((input) => notify(input)));
 }
 
 /**
@@ -98,6 +99,11 @@ export async function notifyMany(inputs: NotifyInput[]): Promise<void> {
  *   - Если ownerId есть — уведомляем владельца как раньше.
  *   - Если ownerId === null — уведомляем всех активных ADMIN-юзеров.
  *     Админы (обычно Anna) распределяют или отвечают сами.
+ *
+ * 07.05.2026: рассылка админам через Promise.all — параллельно.
+ * До: for (const a of admins) await notify(...) — латенси в webhook'е складывались
+ * (при 5 админах и 200ms email = 1 сек). Telegram ожидает ответ за НЕСКОЛЬКО секунд,
+ * иначе делает retry — поэтому webhook должен отвечать быстро.
  */
 export async function notifyChannelMessage(
   ownerId: string | null,
@@ -108,15 +114,12 @@ export async function notifyChannelMessage(
     return;
   }
 
-  // Общий канал — находим всех активных админов и рассылаем поочерёдно.
-  // Список обычно маленький (1–2 админа), notify() работает fast —
-  // нет смысла в Promise.all.
   const admins = await db.user.findMany({
     where:  { role: 'ADMIN', isActive: true },
     select: { id: true },
   });
 
-  for (const a of admins) {
-    await notify({ ...payload, userId: a.id });
-  }
+  await Promise.all(
+    admins.map((a) => notify({ ...payload, userId: a.id })),
+  );
 }
